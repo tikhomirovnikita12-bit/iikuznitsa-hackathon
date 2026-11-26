@@ -1,6 +1,7 @@
 const byId = (id) => document.getElementById(id);
 const ui = Object.fromEntries([
-  "mode", "catalog-size", "vehicle-filter", "vehicle", "vehicle-facts", "session",
+  "mode", "catalog-size", "vehicle", "vehicle-facts", "session",
+  "vehicle-popup", "vehicle-options", "vehicle-empty",
   "selection", "selection-error", "retry-catalog", "diagnose", "diagnostic", "result",
   "chat-context", "messages", "chat-error", "composer", "question", "send", "suggestions",
   "ticket-panel", "journal", "announcement",
@@ -11,6 +12,9 @@ const view = {
   diagnosisError: null, chatError: null, ticketError: null, needsTicketCheck: false,
   pendingQuestion: "", pendingEdits: new Map(), pollTimer: null,
 };
+const vehiclePicker = { selected: null, matches: [], activeIndex: -1 };
+const plateLetters = { а: "a", в: "b", е: "e", к: "k", м: "m", н: "h", о: "o",
+  р: "p", с: "c", т: "t", у: "y", х: "x" };
 const sectionNames = {
   signs: "Признаки", causes: "Возможные причины", checks: "Проверки",
   work: "Возможные работы", clarify: "Что уточнить",
@@ -107,7 +111,9 @@ function showHeading(node, text) {
 }
 
 function setControls() {
-  ui.diagnose.disabled = !view.pair || Boolean(view.busy);
+  const editingVehicle = ui.vehicle.value !== selectedVehicleId();
+  ui.session.disabled = !vehiclePicker.selected || editingVehicle;
+  ui.diagnose.disabled = !view.pair || Boolean(view.busy) || editingVehicle;
   ui.diagnose.textContent = view.busy === "diagnose" ? "Получаем результат…" : "Получить результат диагностики";
   ui.question.disabled = !view.state?.diagnosis || Boolean(view.busy);
   ui.send.disabled = ui.question.disabled;
@@ -465,20 +471,104 @@ function announce(text) {
   ui.announcement.textContent = text;
 }
 
-function showVehicleChoices(current) {
-  const query = ui["vehicle-filter"].value.trim().toLowerCase();
-  const vehicles = view.catalog.vehicles.filter((vehicle) => vehicle.vehicle_id === current ||
-    (vehicle.vehicle_id + " " + vehicle.engine_model).toLowerCase().includes(query));
-  ui.vehicle.replaceChildren(option("", vehicles.length ? "Выберите госномер" : "Совпадений нет"),
-    ...vehicles.map((vehicle) => option(vehicle.vehicle_id, vehicle.vehicle_id + " · " + vehicle.engine_model)));
-  ui.vehicle.value = current || "";
+function selectedVehicleId() {
+  return vehiclePicker.selected?.vehicle_id || "";
+}
+
+function searchText(value) {
+  return value.toLowerCase().replace(/[\s.-]+/g, "");
+}
+
+function showVehicleChoices(text) {
+  const query = searchText(text);
+  const plate = query.replace(/[авекмнорстух]/g, (letter) => plateLetters[letter]);
+  vehiclePicker.matches = view.catalog.vehicles.filter((vehicle) =>
+    searchText(vehicle.vehicle_id).includes(plate) || searchText(vehicle.engine_model).includes(query));
+  vehiclePicker.activeIndex = -1;
+  ui.vehicle.removeAttribute("aria-activedescendant");
+  ui["vehicle-options"].replaceChildren(...vehiclePicker.matches.map((vehicle, index) => {
+    const row = element("li", "vehicle-option");
+    row.id = "vehicle-option-" + index;
+    row.dataset.index = index;
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", "false");
+    row.append(element("strong", "", vehicle.vehicle_id), element("small", "", vehicle.engine_model));
+    return row;
+  }));
+  ui["vehicle-empty"].hidden = Boolean(vehiclePicker.matches.length);
+  ui["vehicle-popup"].hidden = false;
+  ui.vehicle.setAttribute("aria-expanded", "true");
+}
+
+function openVehicleChoices() {
+  const text = ui.vehicle.value;
+  showVehicleChoices(text === selectedVehicleId() ? "" : text);
+}
+
+function restoreVehicleInput() {
+  ui.vehicle.value = selectedVehicleId();
+  ui["vehicle-popup"].hidden = true;
+  ui.vehicle.setAttribute("aria-expanded", "false");
+  ui.vehicle.removeAttribute("aria-activedescendant");
+  setControls();
+}
+
+function selectVehicle(vehicle) {
+  const vehicleId = vehicle?.vehicle_id || "";
+  const changed = vehicleId !== selectedVehicleId();
+  vehiclePicker.selected = vehicle;
+  restoreVehicleInput();
+  if (changed) {
+    showSessions(vehicle);
+    choose(vehicleId, "");
+  }
+}
+
+function moveVehicleOption(direction) {
+  if (ui["vehicle-popup"].hidden) openVehicleChoices();
+  const options = ui["vehicle-options"].children;
+  if (!options.length) return;
+  const previous = vehiclePicker.activeIndex;
+  const index = previous === -1 && direction < 0
+    ? options.length - 1 : Math.max(0, Math.min(options.length - 1, previous + direction));
+  options[previous]?.setAttribute("aria-selected", "false");
+  const active = options[index];
+  active.setAttribute("aria-selected", "true");
+  vehiclePicker.activeIndex = index;
+  ui.vehicle.setAttribute("aria-activedescendant", active.id);
+  active.scrollIntoView({ block: "nearest" });
+}
+
+function vehicleKeydown(event) {
+  if (event.isComposing) return;
+  const isOpen = !ui["vehicle-popup"].hidden;
+  switch (event.key) {
+    case "ArrowDown":
+    case "ArrowUp":
+      event.preventDefault();
+      moveVehicleOption(event.key === "ArrowDown" ? 1 : -1);
+      break;
+    case "Enter": {
+      event.preventDefault();
+      if (!isOpen) break;
+      const { matches, activeIndex } = vehiclePicker;
+      const vehicle = matches[activeIndex] || (matches.length === 1 ? matches[0] : null);
+      if (vehicle) selectVehicle(vehicle);
+      break;
+    }
+    case "Escape":
+      if (isOpen) {
+        event.preventDefault();
+        restoreVehicleInput();
+      }
+      break;
+  }
 }
 
 function showSessions(vehicle, selected = "") {
   const placeholder = vehicle ? "Выберите сессию" : "Сначала выберите ТС";
   ui.session.replaceChildren(option("", placeholder));
   ui["vehicle-facts"].hidden = !vehicle;
-  ui.session.disabled = !vehicle;
   if (!vehicle) return;
   ui["vehicle-facts"].replaceChildren(element("strong", "", vehicle.engine_model),
     document.createTextNode([vehicle.model || vehicle.make, vehicle.fuel].filter(Boolean).join(" · ")));
@@ -548,9 +638,9 @@ async function loadCatalog() {
       hybrid: "Синтетические данные · агент команды",
       team: "Синтетические данные · стенд команды",
     })[view.catalog.mode] || "Синтетические данные";
-    showVehicleChoices(vehicle?.vehicle_id);
+    vehiclePicker.selected = vehicle || null;
+    restoreVehicleInput();
     showSessions(vehicle, vehicle?.sessions.some((item) => item.session_id === sessionId) ? sessionId : "");
-    ui["vehicle-filter"].disabled = false;
     ui.vehicle.disabled = false;
     await choose(vehicleId, sessionId, true);
   } catch (error) {
@@ -672,22 +762,32 @@ async function updateDraft(edits, submit) {
   }
 }
 
-ui["vehicle-filter"].addEventListener("input", () => showVehicleChoices(ui.vehicle.value));
-ui["vehicle-filter"].addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    event.preventDefault();
-    ui.vehicle.focus();
-  }
+ui.vehicle.addEventListener("focus", () => {
+  ui.vehicle.select();
+  openVehicleChoices();
 });
-ui.vehicle.addEventListener("change", () => {
-  const vehicle = view.catalog.vehicles.find((item) => item.vehicle_id === ui.vehicle.value);
-  showSessions(vehicle);
-  choose(ui.vehicle.value, "");
+ui.vehicle.addEventListener("click", () => {
+  if (ui.vehicle.value === selectedVehicleId()) ui.vehicle.select();
+  if (ui["vehicle-popup"].hidden) openVehicleChoices();
 });
-ui.session.addEventListener("change", () => choose(ui.vehicle.value, ui.session.value));
+ui.vehicle.addEventListener("input", () => {
+  showVehicleChoices(ui.vehicle.value);
+  setControls();
+});
+ui.vehicle.addEventListener("keydown", vehicleKeydown);
+ui.vehicle.addEventListener("blur", () => {
+  if (ui.vehicle.value) restoreVehicleInput();
+  else selectVehicle(null);
+});
+ui["vehicle-options"].addEventListener("mousedown", (event) => event.preventDefault());
+ui["vehicle-options"].addEventListener("click", (event) => {
+  const row = event.target.closest(".vehicle-option");
+  if (row) selectVehicle(vehiclePicker.matches[Number(row.dataset.index)]);
+});
+ui.session.addEventListener("change", () => choose(selectedVehicleId(), ui.session.value));
 ui.selection.addEventListener("submit", (event) => {
   event.preventDefault();
-  action("diagnose", "diagnose", "POST");
+  if (!ui.diagnose.disabled) action("diagnose", "diagnose", "POST");
 });
 ui.composer.addEventListener("submit", (event) => {
   event.preventDefault();

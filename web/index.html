@@ -29,13 +29,17 @@
       <form class="panel context-card" id="selection">
         <h2 id="context-title">Транспорт и сессия</h2>
         <p id="catalog-size" class="context-caption">Каталог загружается…</p>
-        <div class="field filter-field">
-          <label for="vehicle-filter">Найти ТС</label>
-          <input type="search" id="vehicle-filter" placeholder="Госномер или двигатель" autocomplete="off" disabled>
-        </div>
         <div class="field">
           <label for="vehicle">Транспортное средство</label>
-          <select id="vehicle" disabled><option value="">Выберите госномер</option></select>
+          <div class="vehicle-picker">
+            <input id="vehicle" type="text" role="combobox" aria-autocomplete="list"
+                   aria-controls="vehicle-options" aria-expanded="false" placeholder="Госномер или двигатель"
+                   autocomplete="off" autocapitalize="off" spellcheck="false" disabled>
+            <div id="vehicle-popup" class="vehicle-popup" hidden>
+              <ul id="vehicle-options" class="vehicle-options" role="listbox" aria-label="Транспортные средства"></ul>
+              <p id="vehicle-empty" class="vehicle-empty" role="status" hidden>ТС не найдены</p>
+            </div>
+          </div>
         </div>
         <div class="vehicle-facts" id="vehicle-facts" hidden></div>
         <div class="field">

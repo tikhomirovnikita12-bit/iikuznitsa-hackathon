@@ -102,8 +102,20 @@ def slow_mock():
             thread.join(5)
 
 
-def pick(page, vehicle, session):
-    page.locator("#vehicle").select_option(vehicle)
+def vehicle_option(page, vehicle):
+    return page.locator("#vehicle-options").get_by_role("option", name=vehicle)
+
+
+def pick(page, vehicle, session, *, touch=False):
+    field = page.locator("#vehicle")
+    field.fill(vehicle)
+    match = vehicle_option(page, vehicle)
+    if touch:
+        match.tap()
+    else:
+        match.click()
+    expect(field).to_have_value(vehicle)
+    expect(field).to_have_attribute("aria-expanded", "false")
     page.locator("#session").select_option(session)
     expect(page.locator("#diagnose")).to_be_enabled()
 
@@ -162,8 +174,31 @@ def desktop_checks(browser, base, out, results):
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.goto(base)
-    pick(page, *OIL)
+    field = page.get_by_role("combobox", name="Транспортное средство")
+    field.fill("ямз 236")
+    expect(vehicle_option(page, OIL[0])).to_contain_text("ЯМЗ-236М2")
+    expect(vehicle_option(page, CHAIN[0])).to_have_count(0)
+    page.screenshot(path=out / "vehicle-picker.png")
+    field.fill("нет такого тс")
+    expect(page.get_by_text("ТС не найдены")).to_be_visible()
+    expect(page.locator("#session")).to_be_disabled()
+    field.fill("Е549")
+    field.press("ArrowDown")
+    expect(vehicle_option(page, OIL[0])).to_have_attribute("aria-selected", "true")
+    field.press("Enter")
+    expect(field).to_have_value(OIL[0])
+    expect(field).to_have_attribute("aria-expanded", "false")
+    page.locator("#session").select_option(OIL[1])
+    expect(page.locator("#diagnose")).to_be_enabled()
     diagnose(page, "Обнаружено отклонение")
+    field.fill("P456")
+    expect(vehicle_option(page, FAILED[0])).to_be_visible()
+    expect(page.locator("#diagnose")).to_be_disabled()
+    field.press("Escape")
+    expect(field).to_have_value(OIL[0])
+    expect(page.locator("#session")).to_have_value(OIL[1])
+    expect(page.locator("#diagnose")).to_be_enabled()
+    results.append({"pair": OIL, "step": "Поиск ТС по двигателю и номеру, выбор клавиатурой и отмена", "result": "passed"})
     expect(page.locator("#result")).to_contain_text("Высокий риск")
     expect(page.locator("#result")).to_contain_text("0,84")
     expect(page.locator("#result")).to_contain_text("F02")
@@ -257,10 +292,7 @@ def mobile_and_race(playwright, browser, base, directory, out, results):
     page = mobile.new_page()
     with stand(0, directory) as mobile_base:
         page.goto(mobile_base)
-        page.locator("#vehicle-filter").fill("E549")
-        page.locator("#vehicle-filter").press("Enter")
-        expect(page.locator("#vehicle")).to_be_focused()
-        pick(page, *OIL)
+        pick(page, *OIL, touch=True)
         diagnose(page, "Обнаружено отклонение")
         page.screenshot(path=out / "mobile.png")
         assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
@@ -270,7 +302,7 @@ def mobile_and_race(playwright, browser, base, directory, out, results):
         draft(page)
         submit(page)
         expect(page.locator(".ticket-badge")).to_be_visible()
-        results.append({"pair": OIL, "step": "390 CSS px, клавиатура, ссылки и номер", "result": "passed"})
+        results.append({"pair": OIL, "step": "390 CSS px, выбор ТС касанием, ссылки и номер", "result": "passed"})
     mobile.close()
 
     context = browser.new_context()
@@ -355,9 +387,9 @@ def record(browser, base, folder):
     try:
         page.goto(base)
         until(1.7)
-        page.locator("#vehicle-filter").fill(OIL[0])
+        page.locator("#vehicle").fill(OIL[0])
         until(3)
-        page.locator("#vehicle").select_option(OIL[0])
+        vehicle_option(page, OIL[0]).click()
         until(4.5)
         page.locator("#session").select_option(OIL[1])
         until(6)
@@ -392,8 +424,8 @@ def record(browser, base, folder):
         times["ticket_id"] = page.locator(".ticket-badge").inner_text()
         until(46)
         page.evaluate("window.scrollTo(0, 0)")
-        page.locator("#vehicle-filter").fill(FAILED[0])
-        page.locator("#vehicle").select_option(FAILED[0])
+        page.locator("#vehicle").fill(FAILED[0])
+        vehicle_option(page, FAILED[0]).click()
         until(48)
         page.locator("#session").select_option(FAILED[1])
         until(50)

@@ -66,7 +66,7 @@ a { color: var(--green); text-underline-offset: .18em; }
 .context-caption { font-size: .87rem; color: var(--muted); margin-top: .22rem; }
 .field { display: grid; gap: .27rem; margin-top: 1rem; }
 .field label, .composer label { font-size: .92rem; font-weight: 650; }
-input[type="search"], select, textarea {
+.vehicle-picker input, select, textarea {
   width: 100%; min-width: 0; color: var(--ink); background-color: #f7fafa; border: 1px solid #a9bfc0;
   border-radius: 9px; padding: .59rem .72rem; min-height: 45px;
 }
@@ -80,6 +80,22 @@ select {
   background-size: 5px 5px; background-repeat: no-repeat;
 }
 textarea { display: block; resize: vertical; white-space: pre-wrap; }
+.vehicle-picker { position: relative; }
+.vehicle-popup {
+  position: absolute; z-index: 3; top: calc(100% + .35rem); inset-inline: 0;
+  max-height: min(16rem, 42vh); overflow-y: auto; overscroll-behavior: contain;
+  background: var(--paper); border: 1px solid #a9bfc0; border-radius: 9px;
+  box-shadow: 0 6px 18px #10272d19;
+}
+.vehicle-options { list-style: none; padding: 0; margin: 0; }
+.vehicle-option {
+  min-height: 44px; padding: .5rem .7rem; display: flex; flex-wrap: wrap;
+  align-items: baseline; justify-content: space-between; gap: .1rem .55rem; cursor: pointer;
+}
+.vehicle-option + .vehicle-option { border-top: 1px solid var(--line); }
+.vehicle-option:hover, .vehicle-option[aria-selected="true"] { background: #e6f2e9; }
+.vehicle-option small, .vehicle-empty { color: var(--muted); font-size: .875rem; }
+.vehicle-empty { padding: .65rem .7rem; }
 .vehicle-facts {
   border-left: 3px solid #8dbcaa; margin-top: .7rem; padding-left: .65rem; color: var(--muted);
   font-size: .875rem; overflow-wrap: anywhere;
