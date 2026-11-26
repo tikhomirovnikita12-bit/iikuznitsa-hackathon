@@ -61,6 +61,9 @@ class Agent:
                 "clarify — неясен узел и контекст его не определяет. query — короткий русский поисковый запрос "
                 "по узлу и признакам; question — уточняющий вопрос. Контекст, история и вопрос: " + context, PLAN, trace)
             action = plan["action"]
+            # Exact UI commands are stable even when a small model misreads the history.
+            if question.strip(" .!?").casefold() in {"создай заявку", "создать заявку"}:
+                action = "ticket"
             generic_check = any(phrase in question.casefold() for phrase in
                                 ("что проверить", "с чего начать", "что посмотреть", "что делать дальше"))
             if ml["status"] == "normal" and generic_check and len(question.split()) <= 5:

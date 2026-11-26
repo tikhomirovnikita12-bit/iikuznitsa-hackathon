@@ -21,6 +21,8 @@ def main():
                 history.append([q, reply["verdict"]])
                 row = json.loads(log.read_text().splitlines()[-1])
                 row.update(draft=bool(reply["ticket_draft"]), references=reply["references"])
+                if q == "Создай заявку" and not reply["ticket_draft"]:
+                    raise RuntimeError("Полный проход не сформировал черновик")
                 turns.append(row)
             calls = [c for t in turns for c in t["calls"]]
             reports.append(dict(turns=turns, seconds=sum(t["seconds"] for t in turns),
