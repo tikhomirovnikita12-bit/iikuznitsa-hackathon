@@ -82,7 +82,7 @@ def main():
             )
             running.append((process, name, port))
             wait_for_health(opener, process, name, port)
-        print(f"Цифровой механик: http://{HOST}:8000/ · Swagger UI: http://{HOST}:8000/docs", flush=True)
+        print(f"API: http://{HOST}:8000/health · Swagger UI: http://{HOST}:8000/docs", flush=True)
         while True:
             for service in running:
                 ensure_running(*service)

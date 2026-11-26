@@ -78,13 +78,7 @@ class BackendTests(unittest.TestCase):
             "revision": revision, "urgency": "high", "confirmed": True,
         })
 
-    def test_dashboard_assets_and_engine_manual_catalog(self):
-        page = self.client.get("/")
-        self.assertEqual(page.status_code, 200)
-        self.assertIn("Диагностика двигателя", page.text)
-        for asset in ("workshop.css", "workshop.js", "workshop.webp"):
-            with self.subTest(asset=asset):
-                self.assertEqual(self.client.get(f"/assets/{asset}").status_code, 200)
+    def test_engine_manual_catalog(self):
         response = self.client.get("/api/manuals")
         self.assertEqual(response.status_code, 200)
         library = response.json()

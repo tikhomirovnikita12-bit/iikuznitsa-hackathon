@@ -12,7 +12,6 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from .agent import Agent
 from .mechanic import Mechanic
@@ -26,7 +25,6 @@ from .workflow import Catalog, Workflow
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FRONTEND = ROOT / "frontend"
 
 
 @dataclass(frozen=True)
@@ -109,12 +107,6 @@ def create_app(settings: Settings | None = None, *, ml_transport=None, toir_tran
             "error": {"code": "invalid_request", "message": "Проверьте поля запроса."},
             "issues": [{"path": list(item["loc"]), "message": item["msg"]} for item in error.errors()],
         })
-
-    application.mount("/assets", StaticFiles(directory=FRONTEND / "assets"), name="frontend-assets")
-
-    @application.get("/", include_in_schema=False)
-    def dashboard():
-        return FileResponse(FRONTEND / "index.html", media_type="text/html", headers={"Cache-Control": "no-cache"})
 
     @application.get("/health")
     def health(workflow: Context):
