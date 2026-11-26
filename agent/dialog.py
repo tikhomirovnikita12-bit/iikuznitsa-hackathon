@@ -1,6 +1,7 @@
 """Case-scoped dialogue, structured Ollama output and per-turn accounting."""
 import json
 import os
+import re
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -17,6 +18,27 @@ def schema(**fields):
 STRING = {"type": "string"}
 PLAN = schema(action={"type": "string", "enum": ["diagnosis", "search", "ticket", "movement", "clarify"]},
               query=STRING, question=STRING)
+
+
+def passages(hit):
+    """Keep complete source passages; skip damaged tables, captions and clipped text."""
+    raw = hit["text"]
+    if re.search(r"[\ufffd\ue000-\uf8ff\u2500-\u259f]|вероятная причина\s+способ устранения", raw, re.I):
+        return []
+    if re.match(r"\s*(?:рис\.|таблица\s+\d)", raw, re.I):
+        return []
+    if hit.get("verified"):
+        return [line for line in raw.splitlines() if 12 <= len(line) <= 600]
+    clean = re.sub(r"(?<=[а-яё])-\s*\n\s*(?=[а-яё])", "", raw)
+    clean = " ".join(clean.split())
+    if len(clean) > 700 or re.search(r"[а-яё]- [а-яё]|\d+\s*[–—]\s*\w+.*?;\s*\d+\s*[–—]", clean):
+        return []
+    if not clean.endswith((".", "!", "?")):
+        return []
+    # Keep paragraphs with numeric limits intact so their exceptions stay attached.
+    if any(ch.isdigit() for ch in clean):
+        return [clean] if len(clean) <= 500 else []
+    return [sent for sent in re.split(r"(?<=[.!?])\s+(?=[А-ЯЁ])", clean) if 16 <= len(sent) <= 350]
 
 
 class Ollama:
@@ -64,9 +86,18 @@ class Agent:
             # Exact UI commands are stable even when a small model misreads the history.
             if question.strip(" .!?").casefold() in {"создай заявку", "создать заявку"}:
                 action = "ticket"
+            wording = question.casefold().strip(" .!?")
+            next_step = wording in {"а что мне делать", "что мне делать", "че сделать надо",
+                                    "что делать", "скажи как делать", "что проверить сначала",
+                                    "а что проверить сначала", "что делать дальше", "с чего начать"}
+            if next_step:
+                action = "search"
+            if wording in {"покажи результат диагностики", "покажи диагностику"}:
+                action = "diagnosis"
+            reply["intent"] = action
             generic_check = any(phrase in question.casefold() for phrase in
                                 ("что проверить", "с чего начать", "что посмотреть", "что делать дальше"))
-            if ml["status"] == "normal" and generic_check and len(question.split()) <= 5:
+            if ml["status"] == "normal" and (generic_check or next_step) and len(question.split()) <= 5:
                 reply["clarifying_question"] = "По этой записи отклонений нет. Какой узел или симптом вас интересует?"
                 return reply
             if action == "clarify":
@@ -81,6 +112,9 @@ class Agent:
             # Preserve the mechanic's terminology for specific manual questions.
             if action == "search" and len(question.split()) >= 5:
                 query = question
+            first_coolant_check = ml["anomaly_type"] == "F03" and (next_step or action == "diagnosis")
+            if first_coolant_check:
+                query = "Проверять уровень охлаждающей жидкости в расширительном бачке"
             if ml["anomaly_type"] == "F02":
                 if action == "movement" or "кпа" in question.lower():
                     query = "При каких условиях проверять давление масла?"
@@ -97,7 +131,7 @@ class Agent:
                 trace["tools"].append(dict(name="search", query=query,
                     pages=[(h["manual"], h["pdf_page"]) for h in hits]))
                 if hits:
-                    self.select(reply, action, question, hits, trace)
+                    self.select(reply, action, question, hits, trace, first_coolant_check, next_step)
                 if reply["references"]:
                     break
                 if attempt == 0:
@@ -122,22 +156,32 @@ class Agent:
             with self.log.open("a") as stream:
                 stream.write(json.dumps(trace, ensure_ascii=False) + "\n")
 
-    def select(self, reply, action, question, hits, trace):
+    def select(self, reply, action, question, hits, trace, coolant=False, next_step=False):
         # The provider selects original passages. Only server-owned text reaches the UI.
         options = {}
         for hit in hits:
-            lines = hit["text"].splitlines() if hit.get("verified") else [hit["text"]]
-            for i, line in enumerate(lines[:10]):
-                if line.strip():
-                    options[f"{hit['fragment_id']}:{i}"] = line
+            for i, line in enumerate(passages(hit)[:10]):
+                if coolant and not all(term in line.lower() for term in ("уров", "охлаждающ", "холодн")):
+                    continue
+                options[f"{hit['fragment_id']}:{i}"] = line
+        if not options:
+            return
+        if coolant:
+            key, passage = next(iter(options.items()))
+            fid = key.rsplit(":", 1)[0]
+            reply["checks"].append(dict(text=passage, fragment_id=fid))
+            reply["references"].append(self.manuals.reference(fid, reply["ml_observations"]["engine_model"]))
+            return
+        fields = ["checks"] if next_step or action == "ticket" else ["checks", "risk", "possible_causes"]
+        limit = 1 if next_step or action == "diagnosis" else 2
         item = schema(source={"type":"string", "enum":list(options)},
-                      field={"type":"string","enum":["checks","risk","possible_causes"]})
-        answer = self.provider.ask("Выбери до трёх применимых фрагментов. Для 'сначала' или заявки "
+                      field={"type":"string","enum":fields})
+        answer = self.provider.ask("Выбери только прямой ответ на вопрос. Для 'сначала' или заявки "
             "выбери начальную проверку в checks. Для условий измерения выбери полный норматив. "
             "Если данные нерелевантны, верни пустой массив. Вопрос: " + question + " " + action +
             "\n" + json.dumps({k:v[:800] for k,v in options.items()}, ensure_ascii=False),
-            schema(items={"type":"array","items":item,"maxItems":3}), trace)
-        for selected in answer["items"][:3]:
+            schema(items={"type":"array","items":item,"maxItems":limit}), trace)
+        for selected in answer["items"][:limit]:
             key = selected["source"]
             if key not in options:
                 continue

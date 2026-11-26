@@ -2,7 +2,7 @@
   {
     "turns": [
       {
-        "id": "624fb0773b9c4d2abef65f425f97ff82",
+        "id": "a0b4941ab3ab460089fc6ea828c99369",
         "vehicle_id": "E549YT198",
         "session_id": "S-0011",
         "question": "Что проверить сначала?",
@@ -32,18 +32,18 @@
         "calls": [
           {
             "model": "gemma2:2b",
-            "seconds": 1.646488041151315,
+            "seconds": 1.6328020840883255,
             "input_tokens": 261,
             "output_tokens": 64
           },
           {
             "model": "gemma2:2b",
-            "seconds": 2.854376459028572,
-            "input_tokens": 1277,
-            "output_tokens": 169
+            "seconds": 1.8922375002875924,
+            "input_tokens": 773,
+            "output_tokens": 56
           }
         ],
-        "seconds": 4.541926125064492,
+        "seconds": 3.560446792282164,
         "draft": false,
         "references": [
           {
@@ -55,14 +55,14 @@
         ]
       }
     ],
-    "seconds": 4.541926125064492,
-    "input_tokens": 1538,
-    "output_tokens": 233
+    "seconds": 3.560446792282164,
+    "input_tokens": 1034,
+    "output_tokens": 120
   },
   {
     "turns": [
       {
-        "id": "e5996afd22b442fdaf562bc81791f0ed",
+        "id": "adf09793fc3b49afbcc7d8aaa61c936b",
         "vehicle_id": "E549YT198",
         "session_id": "S-0011",
         "question": "Что проверить сначала?",
@@ -92,18 +92,18 @@
         "calls": [
           {
             "model": "gemma2:2b",
-            "seconds": 1.1307967500761151,
+            "seconds": 1.1275586658157408,
             "input_tokens": 261,
             "output_tokens": 64
           },
           {
             "model": "gemma2:2b",
-            "seconds": 2.779079250060022,
-            "input_tokens": 1277,
-            "output_tokens": 169
+            "seconds": 1.1215828750282526,
+            "input_tokens": 773,
+            "output_tokens": 56
           }
         ],
-        "seconds": 3.9185520000755787,
+        "seconds": 2.2556132092140615,
         "draft": false,
         "references": [
           {
@@ -115,14 +115,14 @@
         ]
       }
     ],
-    "seconds": 3.9185520000755787,
-    "input_tokens": 1538,
-    "output_tokens": 233
+    "seconds": 2.2556132092140615,
+    "input_tokens": 1034,
+    "output_tokens": 120
   },
   {
     "turns": [
       {
-        "id": "430ba711fd0440b19c5e202da4531d49",
+        "id": "548d4a3a362b40328860934bc6357db0",
         "vehicle_id": "E549YT198",
         "session_id": "S-0011",
         "question": "Что проверить сначала?",
@@ -152,18 +152,18 @@
         "calls": [
           {
             "model": "gemma2:2b",
-            "seconds": 1.1024528327398002,
+            "seconds": 1.2366112917661667,
             "input_tokens": 261,
             "output_tokens": 64
           },
           {
             "model": "gemma2:2b",
-            "seconds": 2.776755374856293,
-            "input_tokens": 1277,
-            "output_tokens": 169
+            "seconds": 1.15229416731745,
+            "input_tokens": 773,
+            "output_tokens": 56
           }
         ],
-        "seconds": 3.8913846253417432,
+        "seconds": 2.398911749944091,
         "draft": false,
         "references": [
           {
@@ -175,14 +175,14 @@
         ]
       }
     ],
-    "seconds": 3.8913846253417432,
-    "input_tokens": 1538,
-    "output_tokens": 233
+    "seconds": 2.398911749944091,
+    "input_tokens": 1034,
+    "output_tokens": 120
   },
   {
     "turns": [
       {
-        "id": "6d9557d294784742a6dbb61c69bb0734",
+        "id": "0409d161e57c4316b03ecb39dc234260",
         "vehicle_id": "E549YT198",
         "session_id": "S-0011",
         "question": "Покажи диагностику",
@@ -212,18 +212,18 @@
         "calls": [
           {
             "model": "gemma2:2b",
-            "seconds": 1.1294589997269213,
+            "seconds": 1.12256950000301,
             "input_tokens": 261,
             "output_tokens": 43
           },
           {
             "model": "gemma2:2b",
-            "seconds": 2.873499915935099,
-            "input_tokens": 1277,
-            "output_tokens": 169
+            "seconds": 1.758787791710347,
+            "input_tokens": 773,
+            "output_tokens": 51
           }
         ],
-        "seconds": 4.01237070793286,
+        "seconds": 2.8929365831427276,
         "draft": false,
         "references": [
           {
@@ -235,7 +235,7 @@
         ]
       },
       {
-        "id": "a0b26edbb0f844afafe9a941aad538e7",
+        "id": "69638585263c4f98886492777dd71d3f",
         "vehicle_id": "E549YT198",
         "session_id": "S-0011",
         "question": "Что проверить сначала?",
@@ -265,18 +265,18 @@
         "calls": [
           {
             "model": "gemma2:2b",
-            "seconds": 1.3623487083241343,
+            "seconds": 1.3298728330992162,
             "input_tokens": 281,
             "output_tokens": 56
           },
           {
             "model": "gemma2:2b",
-            "seconds": 2.8381551248021424,
-            "input_tokens": 1277,
-            "output_tokens": 169
+            "seconds": 1.1782216248102486,
+            "input_tokens": 773,
+            "output_tokens": 56
           }
         ],
-        "seconds": 4.210556291975081,
+        "seconds": 2.5352679579518735,
         "draft": false,
         "references": [
           {
@@ -288,7 +288,7 @@
         ]
       },
       {
-        "id": "7c7656e376354ceca15b600ead615e63",
+        "id": "8a603fe7629e44058c288698e51edd64",
         "vehicle_id": "E549YT198",
         "session_id": "S-0011",
         "question": "Создай заявку",
@@ -321,18 +321,18 @@
         "calls": [
           {
             "model": "gemma2:2b",
-            "seconds": 1.3214911660179496,
+            "seconds": 1.2769811251200736,
             "input_tokens": 299,
             "output_tokens": 52
           },
           {
             "model": "gemma2:2b",
-            "seconds": 4.205118958838284,
-            "input_tokens": 1277,
-            "output_tokens": 169
+            "seconds": 2.4457013327628374,
+            "input_tokens": 773,
+            "output_tokens": 91
           }
         ],
-        "seconds": 5.53846695786342,
+        "seconds": 3.733367041684687,
         "draft": true,
         "references": [
           {
@@ -344,8 +344,8 @@
         ]
       }
     ],
-    "seconds": 13.76139395777136,
-    "input_tokens": 4672,
-    "output_tokens": 658
+    "seconds": 9.161571582779288,
+    "input_tokens": 3160,
+    "output_tokens": 349
   }
 ]

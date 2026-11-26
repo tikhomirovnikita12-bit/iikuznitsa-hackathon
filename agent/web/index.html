@@ -1,6 +1,6 @@
 <!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Цифровой механик</title>
-<style>body{font:16px system-ui;max-width:48rem;margin:auto;padding:1rem;color:#182e32}button,select,input{font:inherit;padding:.5rem;margin:.25rem}article,fieldset{margin:1rem 0;padding:1rem;border:1px solid #bcc}pre{white-space:pre-wrap}input{max-width:80%}</style>
+<style>body{font:16px system-ui;max-width:48rem;margin:auto;padding:1rem;color:#182e32}button,select,input{font:inherit;padding:.5rem;margin:.25rem}article,fieldset{margin:1rem 0;padding:1rem;border:1px solid #bcc}article{padding:1.2rem;border-radius:.6rem;line-height:1.5;overflow-wrap:anywhere}article>b{display:block;color:#526369;font-size:.9rem}h3{font-size:1rem;margin:1em 0 .25em}ul{margin:.2em 0;padding-left:1.3em}li{margin:.45em 0}details{margin:.75em 0;color:#42565a}summary{cursor:pointer}a{display:block;font-size:.85rem}input{max-width:80%}</style>
 <h1>Цифровой механик</h1><label>ТС <select id="vehicle"></select></label><label>Проверка <select id="sid"></select></label>
 <button id="diagnose">Получить результат диагностики</button><main id="chat"></main>
 <form id="ask"><input id="question" required placeholder="Вопрос механику" aria-label="Вопрос"><button>Отправить</button></form>
@@ -15,16 +15,31 @@ async function send(q){
  const generation=epoch, ids={vehicle_id:v.value,session_id:s.value};
  const card=node(chat,'article','');node(card,'b',q);const status=node(card,'p','Обработка…');
  try{const r=await post('/api/chat',{...ids,question:q});if(generation!==epoch)return;
- status.textContent=r.verdict;const m=r.ml_observations;
- node(card,'p','Качество записи: '+m.signal_quality+' · Уверенность: '+(m.confidence??'—')+' · Оценка: '+(m.anomaly_score??'—'));
- node(card,'p',[m.engine_model,m.anomaly_type,m.description,m.model_version].filter(Boolean).join(' · '));
- for(const [k,label] of [['possible_causes','Возможные причины'],['risk','Риск'],['checks','Проверки']]){
- for(const item of r[k]){const p=node(card,'p',label+': '+item.text+' ');const ref=r.references.find(x=>x.fragment_id===item.fragment_id);if(ref){const a=node(p,'a',ref.manual+', стр. '+ref.pdf_page);a.href=ref.url;a.target='_blank'}}}
+ const m=r.ml_observations, diagnostic=!r.intent||r.intent==='diagnosis';
+ const quality={good:'Запись хорошего качества',warning:'В записи есть помехи',bad:'Запись непригодна для анализа'};
+ status.textContent=diagnostic||r.intent==='movement'?r.verdict:'';
+ status.hidden=!status.textContent;
+ if(diagnostic)node(card,'p',m.description);
+ if(m.signal_quality!=='good')node(card,'p',quality[m.signal_quality]);
+ const details=node(card,'details','');node(details,'summary','Данные проверки');
+ if(m.signal_quality==='good')node(details,'p',quality.good);
+ const score=x=>x==null?'нет оценки':x.toLocaleString('ru-RU')+' из 1';
+ node(details,'p','Уверенность модели: '+score(m.confidence));
+ node(details,'p','Оценка отклонения: '+score(m.anomaly_score));
+ node(details,'p',[m.engine_model,m.anomaly_type,m.model_version].filter(Boolean).join(' · '));
+ const parent=diagnostic?details:card;
+ if(!r.ticket_draft)for(const [k,label] of [['possible_causes','Возможные причины'],['risk','Риск'],['checks','Что проверить']]){
+ if(!r[k].length)continue;
+ node(parent,'h3',label);const list=node(parent,'ul','');
+ for(const item of r[k]){const li=node(list,'li',item.text);const ref=r.references.find(x=>x.fragment_id===item.fragment_id);
+ if(ref){const a=node(li,'a','Руководство · стр. '+ref.pdf_page);a.title=ref.manual;a.href=ref.url;a.target='_blank'}}}
+ card.append(details);
  if(r.clarifying_question)node(card,'p',r.clarifying_question);
  if(r.ticket_draft){const form=node(card,'fieldset','');node(form,'legend','Проект заявки');
  const d=r.ticket_draft;node(form,'p',[d.vehicle_id,d.session_id,d.anomaly_type,d.urgency].join(' · '));node(form,'p',d.conclusion);
  for(const op of d.operations)node(form,'p',op);
  node(form,'p','Запчасти: '+(d.spare_parts.join(', ')||'не указаны'));
+ for(const ref of r.references){const a=node(form,'a','Руководство · стр. '+ref.pdf_page);a.href=ref.url;a.title=ref.manual;a.target='_blank'}
  const b=node(form,'button','Подтвердить отправку');b.onclick=async()=>{b.disabled=true;try{const ticket=await post('/api/confirm',{...ids,draft_id:r.draft_id});b.textContent=ticket.ticket_id}catch(e){b.textContent=e.message}}}
  }catch(e){status.textContent=e.message}}
 fetch('/api/fleet').then(r=>r.json()).then(f=>{for(const id of Object.keys(f))v.add(new Option(id,id));v.onchange=()=>{clear();s.replaceChildren();for(const id of f[v.value])s.add(new Option(id,id))};v.onchange();s.onchange=clear});
