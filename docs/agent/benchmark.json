@@ -1,0 +1,351 @@
+[
+  {
+    "turns": [
+      {
+        "id": "624fb0773b9c4d2abef65f425f97ff82",
+        "vehicle_id": "E549YT198",
+        "session_id": "S-0011",
+        "question": "Что проверить сначала?",
+        "tools": [
+          {
+            "name": "diagnose"
+          },
+          {
+            "name": "search",
+            "query": "Какие причины пониженного давления указаны в руководстве?",
+            "pages": [
+              [
+                "236-3902150-Б РЭ",
+                53
+              ],
+              [
+                "236-3902150-Б РЭ",
+                25
+              ],
+              [
+                "236-3902150-Б РЭ",
+                52
+              ]
+            ]
+          }
+        ],
+        "calls": [
+          {
+            "model": "gemma2:2b",
+            "seconds": 1.646488041151315,
+            "input_tokens": 261,
+            "output_tokens": 64
+          },
+          {
+            "model": "gemma2:2b",
+            "seconds": 2.854376459028572,
+            "input_tokens": 1277,
+            "output_tokens": 169
+          }
+        ],
+        "seconds": 4.541926125064492,
+        "draft": false,
+        "references": [
+          {
+            "fragment_id": "yamz-236-3902150-b-re-p053-low-oil-pressure",
+            "manual": "236-3902150-Б РЭ",
+            "pdf_page": 53,
+            "url": "/manuals/yamz-236-3902150-b-re#page=53"
+          }
+        ]
+      }
+    ],
+    "seconds": 4.541926125064492,
+    "input_tokens": 1538,
+    "output_tokens": 233
+  },
+  {
+    "turns": [
+      {
+        "id": "e5996afd22b442fdaf562bc81791f0ed",
+        "vehicle_id": "E549YT198",
+        "session_id": "S-0011",
+        "question": "Что проверить сначала?",
+        "tools": [
+          {
+            "name": "diagnose"
+          },
+          {
+            "name": "search",
+            "query": "Какие причины пониженного давления указаны в руководстве?",
+            "pages": [
+              [
+                "236-3902150-Б РЭ",
+                53
+              ],
+              [
+                "236-3902150-Б РЭ",
+                25
+              ],
+              [
+                "236-3902150-Б РЭ",
+                52
+              ]
+            ]
+          }
+        ],
+        "calls": [
+          {
+            "model": "gemma2:2b",
+            "seconds": 1.1307967500761151,
+            "input_tokens": 261,
+            "output_tokens": 64
+          },
+          {
+            "model": "gemma2:2b",
+            "seconds": 2.779079250060022,
+            "input_tokens": 1277,
+            "output_tokens": 169
+          }
+        ],
+        "seconds": 3.9185520000755787,
+        "draft": false,
+        "references": [
+          {
+            "fragment_id": "yamz-236-3902150-b-re-p053-low-oil-pressure",
+            "manual": "236-3902150-Б РЭ",
+            "pdf_page": 53,
+            "url": "/manuals/yamz-236-3902150-b-re#page=53"
+          }
+        ]
+      }
+    ],
+    "seconds": 3.9185520000755787,
+    "input_tokens": 1538,
+    "output_tokens": 233
+  },
+  {
+    "turns": [
+      {
+        "id": "430ba711fd0440b19c5e202da4531d49",
+        "vehicle_id": "E549YT198",
+        "session_id": "S-0011",
+        "question": "Что проверить сначала?",
+        "tools": [
+          {
+            "name": "diagnose"
+          },
+          {
+            "name": "search",
+            "query": "Какие причины пониженного давления указаны в руководстве?",
+            "pages": [
+              [
+                "236-3902150-Б РЭ",
+                53
+              ],
+              [
+                "236-3902150-Б РЭ",
+                25
+              ],
+              [
+                "236-3902150-Б РЭ",
+                52
+              ]
+            ]
+          }
+        ],
+        "calls": [
+          {
+            "model": "gemma2:2b",
+            "seconds": 1.1024528327398002,
+            "input_tokens": 261,
+            "output_tokens": 64
+          },
+          {
+            "model": "gemma2:2b",
+            "seconds": 2.776755374856293,
+            "input_tokens": 1277,
+            "output_tokens": 169
+          }
+        ],
+        "seconds": 3.8913846253417432,
+        "draft": false,
+        "references": [
+          {
+            "fragment_id": "yamz-236-3902150-b-re-p053-low-oil-pressure",
+            "manual": "236-3902150-Б РЭ",
+            "pdf_page": 53,
+            "url": "/manuals/yamz-236-3902150-b-re#page=53"
+          }
+        ]
+      }
+    ],
+    "seconds": 3.8913846253417432,
+    "input_tokens": 1538,
+    "output_tokens": 233
+  },
+  {
+    "turns": [
+      {
+        "id": "6d9557d294784742a6dbb61c69bb0734",
+        "vehicle_id": "E549YT198",
+        "session_id": "S-0011",
+        "question": "Покажи диагностику",
+        "tools": [
+          {
+            "name": "diagnose"
+          },
+          {
+            "name": "search",
+            "query": "Какие причины пониженного давления указаны в руководстве?",
+            "pages": [
+              [
+                "236-3902150-Б РЭ",
+                53
+              ],
+              [
+                "236-3902150-Б РЭ",
+                25
+              ],
+              [
+                "236-3902150-Б РЭ",
+                52
+              ]
+            ]
+          }
+        ],
+        "calls": [
+          {
+            "model": "gemma2:2b",
+            "seconds": 1.1294589997269213,
+            "input_tokens": 261,
+            "output_tokens": 43
+          },
+          {
+            "model": "gemma2:2b",
+            "seconds": 2.873499915935099,
+            "input_tokens": 1277,
+            "output_tokens": 169
+          }
+        ],
+        "seconds": 4.01237070793286,
+        "draft": false,
+        "references": [
+          {
+            "fragment_id": "yamz-236-3902150-b-re-p053-low-oil-pressure",
+            "manual": "236-3902150-Б РЭ",
+            "pdf_page": 53,
+            "url": "/manuals/yamz-236-3902150-b-re#page=53"
+          }
+        ]
+      },
+      {
+        "id": "a0b26edbb0f844afafe9a941aad538e7",
+        "vehicle_id": "E549YT198",
+        "session_id": "S-0011",
+        "question": "Что проверить сначала?",
+        "tools": [
+          {
+            "name": "diagnose"
+          },
+          {
+            "name": "search",
+            "query": "Какие причины пониженного давления указаны в руководстве?",
+            "pages": [
+              [
+                "236-3902150-Б РЭ",
+                53
+              ],
+              [
+                "236-3902150-Б РЭ",
+                25
+              ],
+              [
+                "236-3902150-Б РЭ",
+                52
+              ]
+            ]
+          }
+        ],
+        "calls": [
+          {
+            "model": "gemma2:2b",
+            "seconds": 1.3623487083241343,
+            "input_tokens": 281,
+            "output_tokens": 56
+          },
+          {
+            "model": "gemma2:2b",
+            "seconds": 2.8381551248021424,
+            "input_tokens": 1277,
+            "output_tokens": 169
+          }
+        ],
+        "seconds": 4.210556291975081,
+        "draft": false,
+        "references": [
+          {
+            "fragment_id": "yamz-236-3902150-b-re-p053-low-oil-pressure",
+            "manual": "236-3902150-Б РЭ",
+            "pdf_page": 53,
+            "url": "/manuals/yamz-236-3902150-b-re#page=53"
+          }
+        ]
+      },
+      {
+        "id": "7c7656e376354ceca15b600ead615e63",
+        "vehicle_id": "E549YT198",
+        "session_id": "S-0011",
+        "question": "Создай заявку",
+        "tools": [
+          {
+            "name": "diagnose"
+          },
+          {
+            "name": "search",
+            "query": "Какие причины пониженного давления указаны в руководстве?",
+            "pages": [
+              [
+                "236-3902150-Б РЭ",
+                53
+              ],
+              [
+                "236-3902150-Б РЭ",
+                25
+              ],
+              [
+                "236-3902150-Б РЭ",
+                52
+              ]
+            ]
+          },
+          {
+            "name": "prepare_ticket"
+          }
+        ],
+        "calls": [
+          {
+            "model": "gemma2:2b",
+            "seconds": 1.3214911660179496,
+            "input_tokens": 299,
+            "output_tokens": 52
+          },
+          {
+            "model": "gemma2:2b",
+            "seconds": 4.205118958838284,
+            "input_tokens": 1277,
+            "output_tokens": 169
+          }
+        ],
+        "seconds": 5.53846695786342,
+        "draft": true,
+        "references": [
+          {
+            "fragment_id": "yamz-236-3902150-b-re-p053-low-oil-pressure",
+            "manual": "236-3902150-Б РЭ",
+            "pdf_page": 53,
+            "url": "/manuals/yamz-236-3902150-b-re#page=53"
+          }
+        ]
+      }
+    ],
+    "seconds": 13.76139395777136,
+    "input_tokens": 4672,
+    "output_tokens": 658
+  }
+]
