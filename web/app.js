@@ -166,8 +166,6 @@ function renderDiagnosis() {
   } else if (!diagnosis) {
     showHeading(result, view.pair ? "Диагностика ещё не запрошена" : "Выберите транспорт и сессию");
     if (view.pair) result.append(element("p", "context-key", view.pair.vehicle_id + " / " + view.pair.session_id));
-    result.append(element("p", "muted", view.pair ? "Запросите результат для выбранной сессии."
-      : "Здесь появятся вердикт и первое действие для моториста."));
     return;
   }
 
@@ -209,14 +207,14 @@ function renderDiagnosis() {
   }
   if (view.state.brief_error) result.append(alert(view.state.brief_error, "error"));
 
-  const metrics = element("div", "metrics");
+  const metrics = element("dl", "metrics");
   for (const [label, value] of [
     ["Уверенность · 0–1", diagnosis.confidence],
     ["Балл отклонения · 0–1", diagnosis.anomaly_score],
     ["Качество записи", qualityNames[diagnosis.signal_quality]],
   ]) {
     const cell = element("div", "metric");
-    cell.append(element("span", "", label), element("strong", "",
+    cell.append(element("dt", "", label), element("dd", "",
       value == null ? "Нет значения" : typeof value === "number" ? score.format(value) : value));
     metrics.append(cell);
   }
