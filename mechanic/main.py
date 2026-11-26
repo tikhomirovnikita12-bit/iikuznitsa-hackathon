@@ -114,7 +114,7 @@ if team:
 
 PROXY_ROUTES = {
     ("GET", "/api/catalog"), ("GET", "/api/state"), ("POST", "/api/diagnose"),
-    ("POST", "/api/chat"), ("PUT", "/api/draft"), ("POST", "/api/ticket"),
+    ("POST", "/api/chat"), ("POST", "/api/draft"), ("PUT", "/api/draft"), ("POST", "/api/ticket"),
 }
 
 
@@ -181,7 +181,7 @@ def vehicle_for(pair: Pair) -> dict:
 @app.get("/api/state")
 def session_state(pair: Annotated[Pair, Query()]):
     vehicle_for(pair)
-    return public_state(read_state(pair))
+    return session_response(pair, read_state(pair))
 
 
 def read_state(pair: Pair):
@@ -192,7 +192,11 @@ def read_state(pair: Pair):
 
 
 def present(pair: Pair, state: dict):
-    return public_state(team.populate(state, pair) if team else state)
+    return session_response(pair, team.populate(state, pair) if team else state)
+
+
+def session_response(pair: Pair, state: dict):
+    return {**public_state(state), "draft_available": draft_available(VEHICLE_BY_ID[pair.vehicle_id], state)}
 
 
 def post(url: str, payload: dict, timeout: float) -> httpx.Response:
@@ -394,6 +398,74 @@ def response_to_chat(vehicle, diagnosis, state, question):
     return demo_agent.answer(vehicle, diagnosis, question), None, "fixture", []
 
 
+def draft_available(vehicle: dict, state: dict) -> bool:
+    if not state["diagnosis"] or state["draft"] or state["brief_error"]:
+        return False
+    diagnosis = Diagnosis.model_validate(state["diagnosis"])
+    if diagnosis.status != "anomaly" or demo_agent.case_for(vehicle, diagnosis) == "mismatch":
+        return False
+    if TEAM_AGENT_URL:
+        return bool(state["brief"] and state["brief"].get("references"))
+    proposal = demo_agent.draft(vehicle, diagnosis)
+    return bool(proposal and all(
+        sources.valid_reference(reference, vehicle["engine_model"]) for reference in proposal.references
+    ))
+
+
+def save_proposal(state: dict, pair: Pair, diagnosis: Diagnosis, draft: DraftFields, origin: str):
+    if state["draft"] is not None:
+        return
+    if team:
+        draft_started = perf_counter()
+        team.prepare(pair, draft)
+        record_call(state, audit("backend.drafts.create", draft_started))
+    else:
+        state["draft"] = TicketRequest(
+            **diagnosis.model_dump(include={"vehicle_id", "session_id", "anomaly_type"}),
+            **draft.model_dump(),
+        ).model_dump()
+        state["ticket"]["status"] = "draft"
+    state["draft_origin"] = origin
+
+
+@app.post("/api/draft")
+def prepare_draft(pair: Pair):
+    vehicle = vehicle_for(pair)
+    snapshot = read_state(pair)
+    if snapshot["draft"]:
+        return session_response(pair, snapshot)
+    if not draft_available(vehicle, snapshot):
+        raise ApiError(409, "draft_unavailable", "Для черновика пока недостаточно подтверждённых данных.")
+
+    diagnosis = Diagnosis.model_validate(snapshot["diagnosis"])
+    started = perf_counter()
+    tool = "agent.chat" if TEAM_AGENT_URL else "agent.fixture"
+    try:
+        reply, draft, origin, calls = response_to_chat(vehicle, diagnosis, snapshot, "Подготовь заявку")
+        if draft is None:
+            raise ApiError(422, "draft_unavailable", reply.summary)
+        verify_references(draft.references, vehicle, required=True)
+        if origin == "fixture":
+            calls.extend(bind_fixture_sources([draft], vehicle, diagnosis))
+    except ApiError as error:
+        add_call(pair, tool, started, status_for(error))
+        raise
+    except ValidationError as error:
+        add_call(pair, tool, started, "error")
+        raise ApiError(502, "agent_invalid_response", "Ответ агента не соответствует схеме.") from error
+
+    def save(state):
+        current = team.stored_diagnosis(pair) if team else state["diagnosis"]
+        if current != snapshot["diagnosis"]:
+            raise ApiError(409, "diagnosis_changed", "Результат проверки изменился. Обновите сессию.")
+        record_call(state, audit(tool, started))
+        for call in calls:
+            record_call(state, call)
+        save_proposal(state, pair, diagnosis, draft, origin)
+
+    return present(pair, store.update(pair.key(), save))
+
+
 @app.post("/api/chat")
 def chat(request: ChatRequest):
     vehicle = vehicle_for(request)
@@ -432,18 +504,8 @@ def chat(request: ChatRequest):
         record_call(state, audit(tool, started))
         for call in calls:
             record_call(state, call)
-        if draft is not None and state["draft"] is None:
-            if team:
-                draft_started = perf_counter()
-                team.prepare(request, draft)
-                record_call(state, audit("backend.drafts.create", draft_started))
-            else:
-                state["draft"] = TicketRequest(
-                    **diagnosis.model_dump(include={"vehicle_id", "session_id", "anomaly_type"}),
-                    **draft.model_dump(),
-                ).model_dump()
-                state["ticket"]["status"] = "draft"
-            state["draft_origin"] = origin
+        if draft is not None:
+            save_proposal(state, request, diagnosis, draft, origin)
 
     return present(request, store.update(request.key(), save))
 
@@ -469,8 +531,8 @@ def save_draft(request: DraftUpdate):
         if not draft:
             raise ApiError(409, "draft_locked", "Черновик отсутствует или его статус изменился.")
         team.patch(draft, request)
-        return public_state(read_state(request))
-    return public_state(store.update(request.key(), lambda state: edit_draft(state, request, vehicle)))
+        return session_response(request, read_state(request))
+    return session_response(request, store.update(request.key(), lambda state: edit_draft(state, request, vehicle)))
 
 
 def send_toir(draft: dict) -> dict:
@@ -511,7 +573,7 @@ def submit(request: TicketSubmit):
         if draft.state in ("draft", "delivery_failed"):
             status = {"sent": "ok", "delivery_unknown": "unknown"}.get(result.state, "error")
             add_call(request, "mock_toir.tickets", started, status)
-        return public_state(read_state(request))
+        return session_response(request, read_state(request))
     claimed = False
 
     def claim(state):
@@ -524,7 +586,7 @@ def submit(request: TicketSubmit):
 
     state = store.update(request.key(), claim)
     if not claimed:
-        return public_state(state)
+        return session_response(request, state)
 
     started = perf_counter()
     result = send_toir(state["draft"])
@@ -534,4 +596,4 @@ def submit(request: TicketSubmit):
         status = {"created": "ok", "error": "error", "unknown": "unknown"}[result["status"]]
         record_call(latest, audit("mock_toir.tickets", started, status))
 
-    return public_state(store.update(request.key(), finish))
+    return session_response(request, store.update(request.key(), finish))

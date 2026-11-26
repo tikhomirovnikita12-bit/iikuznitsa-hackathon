@@ -2,6 +2,8 @@ const byId = (id) => document.getElementById(id);
 const ui = Object.fromEntries([
   "mode", "catalog-size", "vehicle", "vehicle-facts", "session",
   "vehicle-popup", "vehicle-options", "vehicle-empty",
+  "context", "workarea", "context-summary", "context-title", "context-vehicle", "context-session",
+  "edit-context", "collapse-context", "journal-panel", "ask-question",
   "selection", "selection-error", "retry-catalog", "diagnose", "diagnostic", "result",
   "chat-context", "messages", "chat-error", "composer", "question", "send", "suggestions",
   "ticket-panel", "journal", "announcement",
@@ -10,8 +12,9 @@ const ui = Object.fromEntries([
 const view = {
   catalog: null, pair: null, state: null, generation: 0, busy: null,
   diagnosisError: null, chatError: null, ticketError: null, needsTicketCheck: false,
-  pendingQuestion: "", pendingEdits: new Map(), pollTimer: null,
+  pendingQuestion: "", pendingEdits: new Map(), pollTimer: null, editingContext: false,
 };
+const compactLayout = matchMedia("(max-width: 820px)");
 const vehiclePicker = { selected: null, matches: [], activeIndex: -1 };
 const plateLetters = { а: "a", в: "b", е: "e", к: "k", м: "m", н: "h", о: "o",
   р: "p", с: "c", т: "t", у: "y", х: "x" };
@@ -116,6 +119,8 @@ function setControls() {
   ui.diagnose.disabled = !view.pair || Boolean(view.busy) || editingVehicle;
   ui.diagnose.textContent = view.busy === "diagnose" ? "Получаем результат…" : "Получить результат диагностики";
   ui.question.disabled = !view.state?.diagnosis || Boolean(view.busy);
+  ui["ask-question"].hidden = !view.state?.diagnosis;
+  ui["ask-question"].disabled = ui.question.disabled;
   ui.send.disabled = ui.question.disabled;
   ui.send.textContent = view.busy === "chat" ? "Ждём ответ…" : "Спросить";
 }
@@ -125,21 +130,39 @@ function formatDate(value) {
   return Number.isNaN(parsed.getTime()) ? value : date.format(parsed);
 }
 
+const manualPageTopics = {
+  "yamz236-re": { 19: "нормы давления", 53: "причины падения" },
+};
+
 function references(items) {
-  const group = element("div", "refs");
-  const used = new Set();
+  const list = element("div", "refs");
+  const byManual = new Map();
   for (const reference of items || []) {
     const manual = view.catalog?.manuals?.find((doc) => [doc.manual, doc.filename].includes(reference.manual));
-    const label = (manual?.label || reference.manual) + " · стр. PDF " + reference.pdf_page;
-    if (used.has(label)) continue;
-    used.add(label);
-    const link = element(manual ? "a" : "span", "ref", label);
-    if (manual) {
-      link.href = "/sources/" + encodeURIComponent(manual.slug) + "/" + Number(reference.pdf_page);
+    const key = manual || reference.manual;
+    if (!byManual.has(key)) {
+      byManual.set(key, { manual, title: manual?.label || reference.manual, pages: new Set() });
     }
-    group.append(link);
+    byManual.get(key).pages.add(Number(reference.pdf_page));
   }
-  return group;
+
+  for (const { manual, title, pages } of byManual.values()) {
+    const group = element("div", "ref-manual");
+    const links = element("div", "ref-pages");
+    group.append(element("span", "ref-title", title), links);
+    for (const page of [...pages].sort((a, b) => a - b)) {
+      const topic = manualPageTopics[manual?.slug]?.[page];
+      const label = "стр. " + page + (topic ? " — " + topic : "");
+      const link = element(manual ? "a" : "span", manual ? "ref" : "ref-unavailable", label);
+      if (manual) {
+        link.href = "/sources/" + encodeURIComponent(manual.slug) + "/" + page;
+        link.setAttribute("aria-label", label + " · " + title);
+      }
+      links.append(link);
+    }
+    list.append(group);
+  }
+  return list;
 }
 
 function renderDiagnosis() {
@@ -197,6 +220,23 @@ function renderDiagnosis() {
   next.append(element("p", "action", brief?.first_check || defaultCheck[diagnosis.status]));
   if (brief?.references?.length) next.append(references(brief.references));
   result.append(next);
+
+  if (view.state.draft || (!view.diagnosisError && view.state.draft_available)) {
+    const controls = element("div", "diagnosis-actions");
+    const draftButton = button(view.state.draft ? "Открыть заявку"
+      : view.busy === "prepare" ? "Готовим черновик…" : "Подготовить заявку");
+    draftButton.id = "diagnosis-draft";
+    draftButton.setAttribute("aria-controls", "ticket-panel");
+    draftButton.disabled = Boolean(view.busy);
+    draftButton.addEventListener("click", view.state.draft ? revealTicket : prepareDraft);
+    controls.append(draftButton);
+    if (!view.state.draft && view.ticketError) {
+      const error = alert(view.ticketError, "error");
+      error.setAttribute("role", "alert");
+      controls.append(error);
+    }
+    result.append(controls);
+  }
 
   if (brief) {
     const risk = element("div", "risk-line");
@@ -276,13 +316,12 @@ function renderChat() {
   const prompts = ["Что проверить сначала?", "Можно ли своим ходом перегнать машину?"];
   if (diagnosis.status === "anomaly") {
     if (diagnosis.anomaly_type === "F02") prompts.unshift("Когда замерять давление и почему оно падает?");
-    prompts.push(view.state.draft ? "Открыть заявку" : "Создай заявку");
   }
   for (const prompt of prompts) {
     const chip = element("button", "", prompt);
     chip.type = "button";
     chip.disabled = Boolean(view.busy);
-    chip.addEventListener("click", () => prompt === "Открыть заявку" ? revealTicket() : sendQuestion(prompt));
+    chip.addEventListener("click", () => sendQuestion(prompt));
     suggestions.append(chip);
   }
 }
@@ -453,8 +492,32 @@ function renderJournal() {
   ui.journal.replaceChildren(list);
 }
 
+function renderContext() {
+  const collapsible = compactLayout.matches && view.pair && view.state?.diagnosis && !view.diagnosisError;
+  const collapsed = Boolean(collapsible && !view.editingContext);
+  if (collapsed) {
+    ui["context-vehicle"].textContent = view.pair.vehicle_id;
+    ui["context-session"].textContent = vehiclePicker.selected.engine_model + " · " + view.pair.session_id;
+  }
+  ui["context-summary"].hidden = !collapsed;
+  ui.selection.hidden = collapsed;
+  ui["collapse-context"].hidden = !collapsible || collapsed;
+}
+
+function updateLayout() {
+  const destination = compactLayout.matches ? ui.workarea : ui.context;
+  const journal = ui["journal-panel"];
+  if (journal.parentElement !== destination) {
+    const focused = document.activeElement;
+    destination.append(journal);
+    if (journal.contains(focused)) focused.focus({ preventScroll: true });
+  }
+  renderContext();
+}
+
 function render() {
   setControls();
+  renderContext();
   renderDiagnosis();
   renderChat();
   renderTicket();
@@ -602,7 +665,7 @@ async function choose(vehicleId, sessionId, restore = false) {
   if (!restore) syncLocation(vehicleId, sessionId);
   view.pair = !invalid && vehicle && sessionId ? { vehicle_id: vehicleId, session_id: sessionId } : null;
   Object.assign(view, { state: null, diagnosisError: invalid, chatError: null, ticketError: null,
-    needsTicketCheck: false, pendingQuestion: "", busy: view.pair ? "load" : null });
+    needsTicketCheck: false, pendingQuestion: "", busy: view.pair ? "load" : null, editingContext: false });
   setAlert(ui["selection-error"], invalid?.message);
   render();
   if (!view.pair) return;
@@ -655,6 +718,14 @@ function revealTicket() {
   ui["ticket-panel"].scrollIntoView({ block: "start" });
 }
 
+async function prepareDraft() {
+  const generation = view.generation;
+  const state = await action("prepare", "draft", "POST");
+  if (generation !== view.generation) return;
+  if (state?.draft) revealTicket();
+  else byId("diagnosis-draft")?.focus();
+}
+
 function scheduleTicketCheck() {
   clearTimeout(view.pollTimer);
   if (view.state?.ticket?.status === "sending" && !view.needsTicketCheck && !view.busy) {
@@ -696,22 +767,23 @@ async function action(kind, path, method, payload = {}) {
     view.chatError = null;
     view.pendingQuestion = payload.message;
   }
-  if (["save", "submit"].includes(kind)) view.ticketError = null;
+  if (["prepare", "save", "submit"].includes(kind)) view.ticketError = null;
   render();
-  if (kind === "diagnose" && matchMedia("(max-width: 820px)").matches) {
+  if (kind === "diagnose" && compactLayout.matches) {
     ui.diagnostic.scrollIntoView({ block: "start" });
   }
   try {
     const state = await api(path, method, { ...view.pair, ...payload });
     if (generation !== view.generation) return null;
     view.state = state;
+    if (kind === "diagnose") view.editingContext = false;
     if (kind === "save" || kind === "submit") view.pendingEdits.delete(draftKey());
     return state;
   } catch (error) {
     if (generation !== view.generation) return null;
     if (kind === "diagnose") view.diagnosisError = error;
     if (kind === "chat") view.chatError = error.message;
-    if (kind === "save") view.ticketError = error.message;
+    if (kind === "prepare" || kind === "save") view.ticketError = error.message;
     if (kind === "submit") {
       view.needsTicketCheck = error.status === 0 || error.status >= 500 || error.status === 409;
       view.ticketError = view.needsTicketCheck
@@ -723,7 +795,7 @@ async function action(kind, path, method, payload = {}) {
       view.busy = null;
       view.pendingQuestion = "";
       render();
-      if (kind === "diagnose" && matchMedia("(max-width: 820px)").matches) {
+      if (kind === "diagnose" && compactLayout.matches) {
         ui.diagnostic.scrollIntoView({ block: "start" });
       }
       scheduleTicketCheck();
@@ -783,6 +855,20 @@ ui["vehicle-options"].addEventListener("click", (event) => {
   if (row) selectVehicle(vehiclePicker.matches[Number(row.dataset.index)]);
 });
 ui.session.addEventListener("change", () => choose(selectedVehicleId(), ui.session.value));
+ui["edit-context"].addEventListener("click", () => {
+  view.editingContext = true;
+  renderContext();
+  ui["context-title"].focus({ preventScroll: true });
+});
+ui["collapse-context"].addEventListener("click", () => {
+  view.editingContext = false;
+  renderContext();
+  ui["edit-context"].focus({ preventScroll: true });
+});
+ui["ask-question"].addEventListener("click", () => {
+  ui.question.focus({ preventScroll: true });
+  ui.question.scrollIntoView({ block: "center" });
+});
 ui.selection.addEventListener("submit", (event) => {
   event.preventDefault();
   if (!ui.diagnose.disabled) action("diagnose", "diagnose", "POST");
@@ -798,4 +884,6 @@ ui.question.addEventListener("keydown", (event) => {
 });
 ui["retry-catalog"].addEventListener("click", loadCatalog);
 
+compactLayout.addEventListener("change", updateLayout);
+updateLayout();
 loadCatalog();

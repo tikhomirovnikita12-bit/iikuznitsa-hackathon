@@ -22,9 +22,19 @@
   </header>
 
   <main class="layout" id="workspace" tabindex="-1">
-    <aside class="context" aria-labelledby="context-title">
+    <aside class="context" id="context" aria-label="Транспорт и сессия">
+      <div class="panel context-summary" id="context-summary" hidden>
+        <p class="context-choice">
+          <strong id="context-vehicle"></strong>
+          <span id="context-session"></span>
+        </p>
+        <button id="edit-context" type="button" class="button secondary" aria-controls="selection">Сменить</button>
+      </div>
       <form class="panel context-card" id="selection">
-        <h2 id="context-title">Транспорт и сессия</h2>
+        <div class="context-heading">
+          <h2 id="context-title" tabindex="-1">Транспорт и сессия</h2>
+          <button id="collapse-context" type="button" class="button secondary" hidden>Свернуть</button>
+        </div>
         <p id="catalog-size" class="context-caption">Каталог загружается…</p>
         <div class="field">
           <label for="vehicle">Транспортное средство</label>
@@ -49,13 +59,13 @@
         <p id="selection-error" class="alert error" role="alert" hidden></p>
         <button class="button secondary" id="retry-catalog" type="button" hidden>Повторить загрузку каталога</button>
       </form>
-      <details class="panel journal">
+      <details class="panel journal" id="journal-panel">
         <summary>Журнал вызовов</summary>
         <div id="journal"><p class="muted">Выберите сессию, чтобы увидеть её вызовы.</p></div>
       </details>
     </aside>
 
-    <div class="workarea">
+    <div class="workarea" id="workarea">
       <section id="diagnostic" class="panel diagnostic" aria-labelledby="result-title">
         <p class="section-label">Результат диагностики</p>
         <div id="result" aria-live="polite" aria-atomic="true">
@@ -69,6 +79,7 @@
             <h2 id="chat-title">Вопросы по проверке</h2>
             <p id="chat-context" class="muted">Доступен после получения результата</p>
           </div>
+          <button id="ask-question" class="button secondary" type="button" aria-controls="question" hidden>Задать вопрос</button>
         </div>
         <div id="messages" class="messages" role="log" aria-label="История диалога" aria-live="polite"></div>
         <p id="chat-error" class="alert error" role="alert" hidden></p>

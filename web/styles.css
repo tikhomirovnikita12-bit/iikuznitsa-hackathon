@@ -57,6 +57,12 @@ a { color: var(--accent); text-underline-offset: .18em; }
 .workarea { min-width: 0; display: grid; gap: 1rem; }
 .panel { border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper); }
 .context-card { padding: 1rem; }
+.context-summary, .context-heading {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .4rem .75rem;
+}
+.context-summary { padding: .7rem 1rem; }
+.context-choice { min-width: 0; overflow-wrap: anywhere; }
+.context-choice span { display: block; color: var(--muted); font-size: .875rem; }
 .context-card h2, .chat h2, .ticket-panel h2 { font-size: 1.15rem; font-weight: 700; }
 .context-caption {
   font-size: .875rem; color: var(--muted); margin-top: .22rem;
@@ -139,6 +145,9 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
 .first-check .action { font-size: 1.05rem; font-weight: 690; }
 .risk-line { display: flex; flex-wrap: wrap; gap: .35rem .6rem; align-items: baseline; }
 .risk-line p { flex: 1 1 16rem; }
+.diagnosis-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; margin: .85rem 0; }
+.diagnosis-actions .alert { flex: 1 1 100%; }
+.diagnosis-actions .progress { margin: 0; }
 .metrics {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: .9rem 0 .6rem; border-block: 1px solid var(--line);
@@ -162,7 +171,10 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .chat { min-width: 0; }
-.chat-header { padding: .7rem var(--section-padding); border-bottom: 1px solid var(--line); background: var(--surface); }
+.chat-header {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .55rem .8rem;
+  padding: .7rem var(--section-padding); border-bottom: 1px solid var(--line); background: var(--surface);
+}
 .chat-header p { margin-top: .2rem; font-size: .9rem; }
 .messages { display: grid; }
 .messages:empty { display: none; }
@@ -182,7 +194,11 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
 .answer-block ul { margin: .28rem 0 .38rem; padding-inline-start: 1.25rem; }
 .answer-block li + li { margin-top: .25rem; }
 .answer-block .refs { margin-top: .25rem; }
-.refs { display: flex; flex-wrap: wrap; align-items: baseline; gap: .35rem .5rem; min-width: 0; }
+.refs { display: grid; gap: .35rem; min-width: 0; }
+.ref-manual { display: grid; gap: .1rem; }
+.ref-title { color: var(--muted); font-size: .875rem; overflow-wrap: anywhere; }
+.ref-pages { display: flex; flex-wrap: wrap; gap: .15rem .8rem; align-items: baseline; }
+.ref-unavailable { color: var(--muted); font-size: .875rem; }
 .ref {
   display: inline-flex; align-items: center; color: var(--accent); text-decoration: underline;
   font-size: .9rem; font-weight: 600; min-height: 30px; padding-block: .2rem; overflow-wrap: anywhere;
@@ -255,6 +271,7 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
   .metric { display: flex; justify-content: space-between; align-items: baseline; gap: .6rem; }
   .metric + .metric { border-inline-start: 0; border-top: 1px solid var(--line); }
   .metric dd { text-align: end; }
+  .diagnosis-actions .button { width: 100%; }
   .composer-row { grid-template-columns: minmax(0, 1fr); }
   .composer-row button { justify-self: stretch; }
   .ticket-actions > button { width: 100%; }

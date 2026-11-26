@@ -135,8 +135,16 @@ def ask(page, text, expected, keyboard=False):
     expect(page.locator("#messages .bubble:not(.user)").last).to_contain_text(expected)
 
 
-def draft(page):
-    ask(page, "Создай заявку", "Черновик подготовлен")
+def prepare_ticket_button(page):
+    return page.locator("#result").get_by_role("button", name="Подготовить заявку", exact=True)
+
+
+def draft(page, *, from_result=False):
+    if from_result:
+        prepare_ticket_button(page).click()
+        expect(page.locator("#ticket-title")).to_be_focused()
+    else:
+        ask(page, "Создай заявку", "Черновик подготовлен")
     expect(page.locator("#ticket-title")).to_have_text("Черновик дефектовки")
     expect(page.get_by_role("button", name="Подтвердить и отправить")).to_be_disabled()
 
@@ -191,6 +199,7 @@ def desktop_checks(browser, base, out, results):
     page.locator("#session").select_option(OIL[1])
     expect(page.locator("#diagnose")).to_be_enabled()
     diagnose(page, "Обнаружено отклонение")
+    expect(page.locator("#context > #journal-panel")).to_be_visible()
     field.fill("P456")
     expect(vehicle_option(page, FAILED[0])).to_be_visible()
     expect(page.locator("#diagnose")).to_be_disabled()
@@ -202,6 +211,11 @@ def desktop_checks(browser, base, out, results):
     expect(page.locator("#result")).to_contain_text("Высокий риск")
     expect(page.locator("#result")).to_contain_text("0,84")
     expect(page.locator("#result")).to_contain_text("F02")
+    manual = page.locator("#result .ref-manual")
+    expect(manual).to_have_count(1)
+    expect(manual.locator(".ref-title")).to_have_text("ЯМЗ-236. Руководство по эксплуатации")
+    expect(manual.locator('a[href="/sources/yamz236-re/19"]')).to_have_text("стр. 19 — нормы давления")
+    expect(manual.locator('a[href="/sources/yamz236-re/53"]')).to_have_text("стр. 53 — причины падения")
     page.screenshot(path=out / "desktop.png")
     ask(page, OIL_QUESTION, "400–700 кПа", keyboard=True)
     expect(page.locator("#messages")).to_contain_text("После длительной эксплуатации")
@@ -215,7 +229,8 @@ def desktop_checks(browser, base, out, results):
     ask(page, "Где взять прошивку для магнитолы?", "нет подтверждённой страницы")
     results.append({"pair": OIL, "step": "Источники, перегон и вопрос вне базы", "result": "passed"})
 
-    draft(page)
+    draft(page, from_result=True)
+    expect(page.locator(".ticket-badge")).to_have_count(0)
     page.locator("#urgency").select_option("medium")
     note = page.locator("#conclusion").input_value() + " Замер запланирован."
     page.locator("#conclusion").fill(note)
@@ -230,6 +245,8 @@ def desktop_checks(browser, base, out, results):
     number = ticket.inner_text()
     page.reload()
     expect(ticket).to_have_text(number)
+    page.locator("#result").get_by_role("button", name="Открыть заявку", exact=True).click()
+    expect(page.locator("#ticket-title")).to_be_focused()
     assert not page.get_by_role("button", name="Подтвердить и отправить").count()
     query = {"vehicle_id": OIL[0], "session_id": OIL[1]}
     stored = page.request.get(base + "/api/state", params=query).json()
@@ -242,6 +259,7 @@ def desktop_checks(browser, base, out, results):
 
     page.locator("#session").select_option(NORMAL[1])
     diagnose(page, "Значимых отклонений не обнаружено")
+    expect(prepare_ticket_button(page)).to_have_count(0)
     ask(page, "Что проверить сначала?", "S-0010")
     assert not page.locator("#messages").get_by_text("низкое давление", exact=False).count()
     page.locator("#session").select_option(OIL[1])
@@ -250,6 +268,7 @@ def desktop_checks(browser, base, out, results):
 
     pick(page, *FAILED)
     diagnose(page, "Сбой проверки записи")
+    expect(prepare_ticket_button(page)).to_have_count(0)
     expect(page.locator("#result")).to_contain_text("перегрузка микрофона")
     expect(page.locator("#result")).to_contain_text("Повторите запись")
     assert page.locator("#result").get_by_text("Нет значения", exact=True).count() == 2
@@ -276,6 +295,7 @@ def desktop_checks(browser, base, out, results):
 
     pick(page, *MISMATCH)
     diagnose(page, "Обнаружено отклонение")
+    expect(prepare_ticket_button(page)).to_have_count(0)
     expect(page.locator("#result")).to_contain_text("указан как бензиновый")
     ask(page, "Есть ли смысл проверять дизельную топливоподачу?", "Уточните фактическую модификацию")
     ask(page, "Создай заявку", "указан как бензиновый")
@@ -292,17 +312,34 @@ def mobile_and_race(playwright, browser, base, directory, out, results):
     page = mobile.new_page()
     with stand(0, directory) as mobile_base:
         page.goto(mobile_base)
+        expect(page.locator("#context-summary")).to_be_hidden()
         pick(page, *OIL, touch=True)
         diagnose(page, "Обнаружено отклонение")
+        expect(page.locator("#context-summary")).to_be_visible()
+        expect(page.locator("#context-summary")).to_contain_text(OIL[0])
+        expect(page.locator("#context-summary")).to_contain_text(OIL[1])
+        expect(page.locator("#context-summary")).to_contain_text("ЯМЗ-236М2")
+        expect(page.locator("#selection")).to_be_hidden()
+        expect(page.locator("#workarea > #journal-panel:last-child")).to_be_visible()
         page.screenshot(path=out / "mobile.png")
         assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
+        page.locator("#edit-context").tap()
+        expect(page.locator("#selection")).to_be_visible()
+        expect(page.locator("#vehicle")).to_have_value(OIL[0])
+        expect(page.locator("#session")).to_have_value(OIL[1])
+        page.locator("#collapse-context").tap()
+        expect(page.locator("#selection")).to_be_hidden()
         ask(page, OIL_QUESTION, "400–700 кПа")
+        page.locator("#ask-question").tap()
+        expect(page.locator("#question")).to_be_focused()
+        expect(page.locator("#question")).to_be_in_viewport()
         pdf_source(page, "/sources/yamz236-re/19", 19, "400-700 кПа")
         pdf_source(page, "/sources/yamz236-re/53", 53, "Пониженное давление масла в системе смазки")
-        draft(page)
+        draft(page, from_result=True)
         submit(page)
         expect(page.locator(".ticket-badge")).to_be_visible()
-        results.append({"pair": OIL, "step": "390 CSS px, выбор ТС касанием, ссылки и номер", "result": "passed"})
+        results.append({"pair": OIL, "step": "390 CSS px, компактный выбор ТС, переход к вопросу, ссылки и заявка",
+                        "result": "passed"})
     mobile.close()
 
     context = browser.new_context()
@@ -412,8 +449,7 @@ def record(browser, base, folder):
         page.go_back()
         expect(page.locator("#question")).to_be_enabled()
         until(27)
-        page.locator("#suggestions").get_by_role("button", name="Создай заявку").click()
-        expect(page.locator("#ticket-title")).to_have_text("Черновик дефектовки")
+        draft(page, from_result=True)
         checkpoint("draft")
         until(34)
         page.get_by_label("Подтверждаю выбранный приоритет").check()
