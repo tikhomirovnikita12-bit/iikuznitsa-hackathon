@@ -1,0 +1,703 @@
+const byId = (id) => document.getElementById(id);
+const ui = Object.fromEntries([
+  "mode", "catalog-size", "vehicle-filter", "vehicle", "vehicle-facts", "session",
+  "selection", "selection-error", "retry-catalog", "diagnose", "diagnostic", "result",
+  "chat-context", "messages", "chat-error", "composer", "question", "send", "suggestions",
+  "ticket-panel", "journal", "announcement",
+].map((id) => [id, byId(id)]));
+
+const view = {
+  catalog: null, pair: null, state: null, generation: 0, busy: null,
+  diagnosisError: null, chatError: null, ticketError: null, needsTicketCheck: false,
+  pendingQuestion: "", pendingEdits: new Map(), pollTimer: null,
+};
+const sectionNames = {
+  signs: "Признаки", causes: "Возможные причины", checks: "Проверки",
+  work: "Возможные работы", clarify: "Что уточнить",
+};
+const urgencyNames = { low: "Низкий", medium: "Средний", high: "Высокий" };
+const riskLabels = {
+  low: ["Низкий риск", "good"], medium: ["Средний риск", "warn"],
+  high: ["Высокий риск", "danger"], unassessed: ["Риск требует уточнения", "neutral"],
+};
+const qualityNames = { good: "Хорошее", warning: "С помехами", bad: "Непригодна" };
+const callStatuses = {
+  ok: "Успешно", error: "Ошибка", timeout: "Тайм-аут", unknown: "Результат неизвестен", rejected: "Отклонено",
+};
+const outcomes = {
+  normal: "Значимых отклонений не обнаружено",
+  anomaly: "Обнаружено отклонение",
+  check_failed: "Сбой проверки записи",
+};
+const date = new Intl.DateTimeFormat("ru-RU", {
+  dateStyle: "short", timeStyle: "short", timeZone: "Europe/Moscow",
+});
+const score = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 3 });
+
+class ApiFault extends Error {
+  constructor(code, message, status = 0) {
+    super(message);
+    this.code = code;
+    this.status = status;
+  }
+}
+
+async function api(path, method = "GET", payload) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 65000);
+  try {
+    const response = await fetch("/api/" + path, {
+      method, cache: "no-store", signal: controller.signal,
+      headers: payload ? { "Content-Type": "application/json" } : {},
+      body: payload ? JSON.stringify(payload) : undefined,
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data) {
+      throw new ApiFault(data?.error?.code || "server_error",
+        data?.error?.message || "Бэкенд вернул ошибку. Проверьте состояние сервиса.", response.status);
+    }
+    return data;
+  } catch (error) {
+    if (error instanceof ApiFault) throw error;
+    if (controller.signal.aborted) throw new ApiFault("client_timeout", "Сервер не ответил вовремя.");
+    throw new ApiFault("offline", "Связь с бэкендом недоступна. Проверьте подключение.");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+function option(value, label) {
+  return new Option(label, value);
+}
+
+function setAlert(node, message) {
+  node.textContent = message || "";
+  node.hidden = !message;
+}
+
+function alert(text, variant = "") {
+  return element("p", "alert " + variant, text);
+}
+
+function progress(text) {
+  const node = element("p", "progress");
+  node.setAttribute("role", "status");
+  const spinner = element("span", "spinner");
+  spinner.setAttribute("aria-hidden", "true");
+  node.append(spinner, document.createTextNode(text));
+  return node;
+}
+
+function button(text, variant = "secondary", type = "button") {
+  const node = element("button", "button " + variant, text);
+  node.type = type;
+  return node;
+}
+
+function showHeading(node, text) {
+  node.replaceChildren(element("h2", "", text));
+  node.firstElementChild.id = "result-title";
+}
+
+function setControls() {
+  ui.diagnose.disabled = !view.pair || Boolean(view.busy);
+  ui.diagnose.textContent = view.busy === "diagnose" ? "Получаем результат…" : "Получить результат диагностики";
+  ui.question.disabled = !view.state?.diagnosis || Boolean(view.busy);
+  ui.send.disabled = ui.question.disabled;
+  ui.send.textContent = view.busy === "chat" ? "Ждём ответ…" : "Спросить";
+}
+
+function formatDate(value) {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : date.format(parsed);
+}
+
+function references(items) {
+  const group = element("div", "refs");
+  const used = new Set();
+  for (const reference of items || []) {
+    const manual = view.catalog?.manuals?.find((doc) => [doc.manual, doc.filename].includes(reference.manual));
+    const label = (manual?.label || reference.manual) + " · стр. PDF " + reference.pdf_page;
+    if (used.has(label)) continue;
+    used.add(label);
+    const link = element(manual ? "a" : "span", "ref", label);
+    if (manual) {
+      link.href = "/sources/" + encodeURIComponent(manual.slug) + "/" + Number(reference.pdf_page);
+    }
+    group.append(link);
+  }
+  return group;
+}
+
+function renderDiagnosis() {
+  const result = ui.result;
+  const diagnosis = view.state?.diagnosis;
+  ui.diagnostic.dataset.status = diagnosis?.status || "";
+  if (view.busy === "diagnose" || view.busy === "load") {
+    showHeading(result, view.busy === "diagnose" ? "Запрашиваем диагностику" : "Открываем сессию");
+    result.append(progress(view.busy === "diagnose" ? "Ожидаем ответ сервиса" : "Восстанавливаем диалог и заявку"));
+    return;
+  }
+  if (view.diagnosisError) {
+    const titles = {
+      invalid_pair: "Проверьте пару ТС и сессии", unknown_vehicle: "Транспорт не найден",
+      ml_timeout: "Тайм-аут диагностики", client_timeout: "Тайм-аут запроса", team_timeout: "Тайм-аут бэкенда",
+      ml_unavailable: "Сервис диагностики недоступен", ml_invalid_response: "Некорректный ответ диагностики",
+      team_unavailable: "Бэкенд команды недоступен", offline: "Связь потеряна",
+    };
+    ui.diagnostic.dataset.status = "error";
+    showHeading(result, titles[view.diagnosisError.code] || "Запрос завершился с ошибкой");
+    result.append(alert(view.diagnosisError.message, "error"));
+    if (!diagnosis) return;
+    result.append(element("p", "section-label", "Последний сохранённый результат"));
+  } else if (!diagnosis) {
+    showHeading(result, view.pair ? "Диагностика ещё не запрошена" : "Выберите транспорт и сессию");
+    if (view.pair) result.append(element("p", "context-key", view.pair.vehicle_id + " / " + view.pair.session_id));
+    result.append(element("p", "muted", view.pair ? "Запросите результат для выбранной сессии."
+      : "Здесь появятся вердикт и первое действие для моториста."));
+    return;
+  }
+
+  const heading = element(view.diagnosisError ? "h3" : "h2", "", outcomes[diagnosis.status]);
+  if (!view.diagnosisError) {
+    heading.id = "result-title";
+    result.replaceChildren(heading);
+  } else {
+    result.append(heading);
+  }
+  const meta = element("div", "result-meta");
+  meta.append(element("span", "context-key",
+    diagnosis.vehicle_id + " / " + diagnosis.session_id + " · " + diagnosis.model_version));
+  result.append(meta);
+  if (diagnosis.anomaly_type) {
+    result.append(element("p", "diagnosis-type",
+      (diagnosis.anomaly_title || view.catalog?.fault_types?.[diagnosis.anomaly_type] || "Возможное отклонение")
+      + " · " + diagnosis.anomaly_type));
+  }
+  result.append(element("p", "diagnosis-description", diagnosis.description));
+  const brief = view.state.brief;
+  const next = element("div", "first-check");
+  next.append(element("h3", "", "Первое действие"));
+  const defaultCheck = {
+    normal: "Продолжайте штатный контроль двигателя.",
+    check_failed: "Повторите запись. По этой записи вывод о двигателе невозможен.",
+    anomaly: "Уточните симптомы и фактические измерения для дефектовки.",
+  };
+  next.append(element("p", "action", brief?.first_check || defaultCheck[diagnosis.status]));
+  if (brief?.references?.length) next.append(references(brief.references));
+  result.append(next);
+
+  if (brief) {
+    const risk = element("div", "risk-line");
+    const [label, theme] = riskLabels[brief.risk] || riskLabels.unassessed;
+    risk.append(element("span", "flag " + theme, label), element("p", "", brief.rationale));
+    result.append(risk);
+    if (brief.origin === "fixture") result.append(element("p", "context-key", "Тестовая рекомендация"));
+  }
+  if (view.state.brief_error) result.append(alert(view.state.brief_error, "error"));
+
+  const metrics = element("div", "metrics");
+  for (const [label, value] of [
+    ["Уверенность · 0–1", diagnosis.confidence],
+    ["Балл отклонения · 0–1", diagnosis.anomaly_score],
+    ["Качество записи", qualityNames[diagnosis.signal_quality]],
+  ]) {
+    const cell = element("div", "metric");
+    cell.append(element("span", "", label), element("strong", "",
+      value == null ? "Нет значения" : typeof value === "number" ? score.format(value) : value));
+    metrics.append(cell);
+  }
+  result.append(metrics);
+  const threshold = view.catalog.confidence_threshold;
+  if (diagnosis.confidence != null && diagnosis.confidence < threshold) {
+    result.append(alert("Низкая уверенность (" + score.format(diagnosis.confidence)
+      + "). Порог предупреждения " + score.format(threshold) + ". Подтвердите результат контрольной проверкой."));
+  }
+  if (diagnosis.signal_quality === "warning") {
+    result.append(alert("Запись с помехами. Повторите запись для проверки результата."));
+  }
+}
+
+function answerBlock(section) {
+  const expandable = section.kind === "work";
+  const block = element(expandable ? "details" : "section", "answer-block");
+  block.append(element(expandable ? "summary" : "h3", "", sectionNames[section.kind]));
+  const list = element("ul");
+  for (const item of section.items) list.append(element("li", "", item));
+  block.append(list);
+  if (section.references?.length) block.append(references(section.references));
+  return block;
+}
+
+function userMessage(text) {
+  const bubble = element("article", "bubble user");
+  bubble.append(element("p", "message-meta", "Вы"), element("p", "", text));
+  return bubble;
+}
+
+function renderChat() {
+  ui["chat-context"].textContent = view.state?.diagnosis ? view.pair.vehicle_id + " / " + view.pair.session_id
+    : "Доступен после получения результата";
+  const openDetails = [...ui.messages.querySelectorAll("details")].map((node) => node.open);
+  const fragment = document.createDocumentFragment();
+  for (const message of view.state?.messages || []) {
+    if (message.role === "user") {
+      fragment.append(userMessage(message.text));
+      continue;
+    }
+    const bubble = element("article", "bubble");
+    bubble.append(element("p", "message-meta", message.origin === "fixture" ? "Механик · тестовый ответ" : "Механик"),
+      element("p", "answer-title", message.summary));
+    for (const section of message.sections || []) bubble.append(answerBlock(section));
+    fragment.append(bubble);
+  }
+  if (view.pendingQuestion) fragment.append(userMessage(view.pendingQuestion));
+  if (view.busy === "chat") fragment.append(progress("Подготавливаем ответ"));
+  ui.messages.replaceChildren(fragment);
+  [...ui.messages.querySelectorAll("details")].forEach((node, index) => { node.open = Boolean(openDetails[index]); });
+  setAlert(ui["chat-error"], view.chatError);
+
+  const suggestions = ui.suggestions;
+  suggestions.replaceChildren();
+  const diagnosis = view.state?.diagnosis;
+  suggestions.hidden = !diagnosis;
+  if (!diagnosis) return;
+  const prompts = ["Что проверить сначала?", "Можно ли своим ходом перегнать машину?"];
+  if (diagnosis.status === "anomaly") {
+    if (diagnosis.anomaly_type === "F02") prompts.unshift("Когда замерять давление и почему оно падает?");
+    prompts.push(view.state.draft ? "Открыть заявку" : "Создай заявку");
+  }
+  for (const prompt of prompts) {
+    const chip = element("button", "", prompt);
+    chip.type = "button";
+    chip.disabled = Boolean(view.busy);
+    chip.addEventListener("click", () => prompt === "Открыть заявку" ? revealTicket() : sendQuestion(prompt));
+    suggestions.append(chip);
+  }
+}
+
+function draftKey() {
+  return JSON.stringify(view.pair);
+}
+
+function field(id, label, control) {
+  const container = element("div", "field");
+  const title = element("label", "", label);
+  title.htmlFor = id;
+  control.id = id;
+  container.append(title, control);
+  return container;
+}
+
+function textarea(value, rows, required = false) {
+  const input = element("textarea");
+  input.value = value;
+  input.rows = rows;
+  input.maxLength = 4000;
+  input.required = required;
+  return input;
+}
+
+function listItems(value) {
+  return value.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+function fieldSummary(draft) {
+  const summary = element("dl", "ticket-review");
+  for (const [label, value] of [
+    ["Заключение", draft.conclusion], ["Приоритет", urgencyNames[draft.urgency]],
+    ["Работы", draft.operations], ["Запчасти", draft.spare_parts], ["Источники", references(draft.references)],
+  ]) {
+    const row = element("div");
+    const detail = element("dd");
+    if (value instanceof Node) {
+      detail.append(value);
+    } else if (Array.isArray(value) && value.length) {
+      const list = element("ul");
+      for (const item of value) list.append(element("li", "", item));
+      detail.append(list);
+    } else {
+      detail.textContent = Array.isArray(value) ? "Не определены" : value;
+    }
+    row.append(element("dt", "", label), detail);
+    summary.append(row);
+  }
+  return summary;
+}
+
+function editableDraft(draft) {
+  const edits = view.pendingEdits.get(draftKey()) || draft;
+  const form = element("form", "ticket-form");
+  const conclusion = textarea(edits.conclusion, 3, true);
+  const operations = textarea(edits.operations.join("\n"), 4, true);
+  const parts = textarea(edits.spare_parts.join("\n"), 2);
+  const priority = element("select");
+  priority.required = true;
+  priority.add(option("", "Выберите приоритет"));
+  for (const [value, label] of Object.entries(urgencyNames)) priority.add(option(value, label));
+  priority.value = edits.urgency || "";
+  form.append(field("conclusion", "Заключение", conclusion), field("urgency", "Приоритет", priority),
+    field("operations", "Работы, по одной на строку", operations), field("parts", "Запчасти, по одной на строку", parts));
+  parts.placeholder = "Не определены";
+  form.append(element("h3", "field-hint", "Источники"), references(draft.references));
+
+  const confirm = element("label", "priority-confirm");
+  const checkbox = element("input");
+  checkbox.type = "checkbox";
+  confirm.append(checkbox, document.createTextNode("Подтверждаю выбранный приоритет"));
+  const actions = element("div", "ticket-actions");
+  const save = button(view.busy === "save" ? "Сохраняем…" : "Сохранить изменения");
+  const submit = button("Подтвердить и отправить", "primary", "submit");
+  save.disabled = Boolean(view.busy);
+  submit.disabled = true;
+  for (const control of [conclusion, operations, parts, priority, checkbox]) control.disabled = Boolean(view.busy);
+  actions.append(submit, save);
+  form.append(confirm, actions);
+
+  function values(trim) {
+    const lines = trim ? listItems : (text) => text.split("\n");
+    return { conclusion: trim ? conclusion.value.trim() : conclusion.value, urgency: priority.value,
+      operations: lines(operations.value), spare_parts: lines(parts.value) };
+  }
+
+  for (const control of [conclusion, operations, parts, priority]) {
+    control.addEventListener("input", () => {
+      view.pendingEdits.set(draftKey(), values(false));
+      checkbox.checked = false;
+      submit.disabled = true;
+    });
+  }
+  checkbox.addEventListener("change", () => { submit.disabled = !checkbox.checked; });
+  save.addEventListener("click", () => {
+    if (form.reportValidity()) updateDraft(values(true), false);
+  });
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (checkbox.checked) updateDraft(values(true), true);
+  });
+  return form;
+}
+
+function renderTicket() {
+  const panel = ui["ticket-panel"];
+  const draft = view.state?.draft;
+  const ticket = view.state?.ticket;
+  panel.hidden = !draft;
+  if (!draft || !ticket) {
+    panel.replaceChildren();
+    return;
+  }
+  const title = element("h2", "", ticket.status === "created" ? "Заявка на дефектовку" : "Черновик дефектовки");
+  title.id = "ticket-title";
+  title.tabIndex = -1;
+  const header = element("div", "ticket-head");
+  header.append(title);
+  if (ticket.ticket_id) header.append(element("strong", "ticket-badge", ticket.ticket_id));
+  panel.replaceChildren(header);
+  if (view.state.draft_origin === "fixture") panel.append(element("p", "origin", "Тестовый черновик"));
+
+  const ids = element("div", "ticket-ids");
+  for (const text of ["ТС " + draft.vehicle_id, "Сессия " + draft.session_id, "Код ML " + draft.anomaly_type]) {
+    ids.append(element("span", "", text));
+  }
+  panel.append(ids);
+
+  if (view.ticketError) panel.append(alert(view.ticketError, "error"));
+  if (ticket.status === "created") panel.append(alert("Заявка зарегистрирована в ТОиР.", "success"));
+  if (ticket.message) panel.append(alert(ticket.message, ticket.status === "error" ? "error" : ""));
+  const sending = ticket.status === "sending" || view.busy === "submit";
+  if (sending) panel.append(progress("Отправляем заявку в ТОиР"));
+
+  if (view.needsTicketCheck) {
+    const check = button("Проверить статус");
+    check.disabled = Boolean(view.busy);
+    check.addEventListener("click", () => refreshTicket(true));
+    const actions = element("div", "ticket-actions");
+    actions.append(check);
+    panel.append(actions);
+  }
+
+  const canEdit = !view.needsTicketCheck && !sending && ["draft", "error"].includes(ticket.status);
+  panel.append(canEdit ? editableDraft(draft) : fieldSummary(draft));
+}
+
+function renderJournal() {
+  const calls = view.state?.calls;
+  if (!calls?.length) {
+    ui.journal.replaceChildren(element("p", "muted", view.pair ? "Вызовов пока нет."
+      : "Выберите сессию, чтобы увидеть её вызовы."));
+    return;
+  }
+  const list = element("ol", "calls");
+  for (const call of calls) {
+    const row = element("li");
+    const parts = [callStatuses[call.status] || call.status, call.duration_ms + " мс"];
+    if (call.model) parts.push(call.model);
+    if (call.input_tokens != null || call.output_tokens != null) {
+      parts.push("вход " + (call.input_tokens ?? "—") + " / выход " + (call.output_tokens ?? "—"));
+    }
+    row.append(element("strong", "", call.tool), element("span", "", parts.join(" · ")));
+    list.append(row);
+  }
+  ui.journal.replaceChildren(list);
+}
+
+function render() {
+  setControls();
+  renderDiagnosis();
+  renderChat();
+  renderTicket();
+  renderJournal();
+}
+
+function stateRoute() {
+  return "state?" + new URLSearchParams(view.pair);
+}
+
+function announce(text) {
+  ui.announcement.textContent = text;
+}
+
+function showVehicleChoices(current) {
+  const query = ui["vehicle-filter"].value.trim().toLowerCase();
+  const vehicles = view.catalog.vehicles.filter((vehicle) => vehicle.vehicle_id === current ||
+    (vehicle.vehicle_id + " " + vehicle.engine_model).toLowerCase().includes(query));
+  ui.vehicle.replaceChildren(option("", vehicles.length ? "Выберите госномер" : "Совпадений нет"),
+    ...vehicles.map((vehicle) => option(vehicle.vehicle_id, vehicle.vehicle_id + " · " + vehicle.engine_model)));
+  ui.vehicle.value = current || "";
+}
+
+function showSessions(vehicle, selected = "") {
+  const placeholder = vehicle ? "Выберите сессию" : "Сначала выберите ТС";
+  ui.session.replaceChildren(option("", placeholder));
+  ui["vehicle-facts"].hidden = !vehicle;
+  ui.session.disabled = !vehicle;
+  if (!vehicle) return;
+  ui["vehicle-facts"].replaceChildren(element("strong", "", vehicle.engine_model),
+    document.createTextNode([vehicle.model || vehicle.make, vehicle.fuel].filter(Boolean).join(" · ")));
+  for (const session of [...vehicle.sessions].reverse()) {
+    ui.session.add(option(session.session_id, session.session_id + " · " + formatDate(session.checked_at)));
+  }
+  ui.session.value = selected;
+}
+
+function syncLocation(vehicle, session) {
+  const url = new URL(location.href);
+  for (const [key, value] of [["vehicle_id", vehicle], ["session_id", session]]) {
+    if (value) url.searchParams.set(key, value);
+    else url.searchParams.delete(key);
+  }
+  history.replaceState(null, "", url);
+}
+
+function faultForSelection(vehicle, sessionId, vehicleId) {
+  if (vehicleId && !vehicle) return new ApiFault("unknown_vehicle", "Выберите ТС из каталога.");
+  if (sessionId && !vehicle?.sessions.some((session) => session.session_id === sessionId)) {
+    return new ApiFault("invalid_pair", "Сессия не принадлежит выбранному ТС. Выберите его сессию.");
+  }
+  return null;
+}
+
+async function choose(vehicleId, sessionId, restore = false) {
+  const generation = ++view.generation;
+  clearTimeout(view.pollTimer);
+  ui.question.value = "";
+  const vehicle = view.catalog.vehicles.find((item) => item.vehicle_id === vehicleId);
+  const invalid = faultForSelection(vehicle, sessionId, vehicleId);
+  if (!restore) syncLocation(vehicleId, sessionId);
+  view.pair = !invalid && vehicle && sessionId ? { vehicle_id: vehicleId, session_id: sessionId } : null;
+  Object.assign(view, { state: null, diagnosisError: invalid, chatError: null, ticketError: null,
+    needsTicketCheck: false, pendingQuestion: "", busy: view.pair ? "load" : null });
+  setAlert(ui["selection-error"], invalid?.message);
+  render();
+  if (!view.pair) return;
+  try {
+    const state = await api(stateRoute());
+    if (generation === view.generation) view.state = state;
+  } catch (error) {
+    if (generation === view.generation) view.diagnosisError = error;
+  } finally {
+    if (generation === view.generation) {
+      view.busy = null;
+      render();
+      scheduleTicketCheck();
+    }
+  }
+}
+
+async function loadCatalog() {
+  ui["retry-catalog"].hidden = true;
+  ui["catalog-size"].textContent = "Каталог загружается…";
+  setAlert(ui["selection-error"], null);
+  try {
+    view.catalog = await api("catalog");
+    const params = new URLSearchParams(location.search);
+    const vehicleId = params.get("vehicle_id") || "";
+    const sessionId = params.get("session_id") || "";
+    const vehicle = view.catalog.vehicles.find((item) => item.vehicle_id === vehicleId);
+    ui["catalog-size"].textContent = view.catalog.vehicles.length + " ТС в каталоге";
+    ui.mode.textContent = ({
+      demo: "Синтетические данные · тестовый чат",
+      hybrid: "Синтетические данные · агент команды",
+      team: "Синтетические данные · стенд команды",
+    })[view.catalog.mode] || "Синтетические данные";
+    showVehicleChoices(vehicle?.vehicle_id);
+    showSessions(vehicle, vehicle?.sessions.some((item) => item.session_id === sessionId) ? sessionId : "");
+    ui["vehicle-filter"].disabled = false;
+    ui.vehicle.disabled = false;
+    await choose(vehicleId, sessionId, true);
+  } catch (error) {
+    ui["catalog-size"].textContent = "Каталог недоступен";
+    setAlert(ui["selection-error"], error.message);
+    ui["retry-catalog"].hidden = false;
+  }
+}
+
+function revealTicket() {
+  const title = byId("ticket-title");
+  if (!title) return;
+  title.focus({ preventScroll: true });
+  ui["ticket-panel"].scrollIntoView({ block: "start" });
+}
+
+function scheduleTicketCheck() {
+  clearTimeout(view.pollTimer);
+  if (view.state?.ticket?.status === "sending" && !view.needsTicketCheck && !view.busy) {
+    view.pollTimer = setTimeout(() => refreshTicket(false), 850);
+  }
+}
+
+async function refreshTicket(explicit) {
+  if (view.busy || !view.pair) return;
+  const generation = view.generation;
+  view.busy = "verify";
+  if (explicit) renderTicket();
+  try {
+    const state = await api(stateRoute());
+    if (generation !== view.generation) return;
+    view.state = state;
+    view.needsTicketCheck = false;
+    view.ticketError = null;
+  } catch (error) {
+    if (generation !== view.generation) return;
+    view.needsTicketCheck = true;
+    view.ticketError = "Статус заявки пока недоступен. " + error.message;
+  } finally {
+    if (generation === view.generation) {
+      view.busy = null;
+      render();
+      scheduleTicketCheck();
+    }
+  }
+}
+
+async function action(kind, path, method, payload = {}) {
+  if (!view.pair || view.busy) return null;
+  clearTimeout(view.pollTimer);
+  const generation = view.generation;
+  view.busy = kind;
+  if (kind === "diagnose") view.diagnosisError = null;
+  if (kind === "chat") {
+    view.chatError = null;
+    view.pendingQuestion = payload.message;
+  }
+  if (["save", "submit"].includes(kind)) view.ticketError = null;
+  render();
+  if (kind === "diagnose" && matchMedia("(max-width: 820px)").matches) {
+    ui.diagnostic.scrollIntoView({ block: "start" });
+  }
+  try {
+    const state = await api(path, method, { ...view.pair, ...payload });
+    if (generation !== view.generation) return null;
+    view.state = state;
+    if (kind === "save" || kind === "submit") view.pendingEdits.delete(draftKey());
+    return state;
+  } catch (error) {
+    if (generation !== view.generation) return null;
+    if (kind === "diagnose") view.diagnosisError = error;
+    if (kind === "chat") view.chatError = error.message;
+    if (kind === "save") view.ticketError = error.message;
+    if (kind === "submit") {
+      view.needsTicketCheck = error.status === 0 || error.status >= 500 || error.status === 409;
+      view.ticketError = view.needsTicketCheck
+        ? "Результат отправки неизвестен. Проверьте статус заявки. " + error.message : error.message;
+    }
+    return null;
+  } finally {
+    if (generation === view.generation) {
+      view.busy = null;
+      view.pendingQuestion = "";
+      render();
+      if (kind === "diagnose" && matchMedia("(max-width: 820px)").matches) {
+        ui.diagnostic.scrollIntoView({ block: "start" });
+      }
+      scheduleTicketCheck();
+    }
+  }
+}
+
+async function sendQuestion(value) {
+  const message = value.trim();
+  if (!message || !view.state?.diagnosis || view.busy) return;
+  const generation = view.generation;
+  const result = await action("chat", "chat", "POST", { message });
+  if (!result || generation !== view.generation) return;
+  ui.question.value = "";
+  if (result.draft && /заявк/i.test(message)) revealTicket();
+  else ui.messages.lastElementChild?.scrollIntoView({ block: "nearest" });
+}
+
+async function updateDraft(edits, submit) {
+  const kind = submit ? "submit" : "save";
+  const generation = view.generation;
+  const revision = view.state.draft_revision ?? undefined;
+  const result = await action(kind, submit ? "ticket" : "draft", submit ? "POST" : "PUT",
+    submit ? { edits, revision, priority_confirmed: true } : { edits, revision });
+  if (!result || generation !== view.generation) return;
+  if (submit) {
+    announce(result.ticket.ticket_id ? "Заявка " + result.ticket.ticket_id + " зарегистрирована."
+      : result.ticket.message || "Статус заявки обновлён.");
+    revealTicket();
+  } else {
+    view.ticketError = null;
+    ui["ticket-panel"].querySelector(".ticket-head").append(element("p", "flag good", "Изменения сохранены"));
+    announce("Изменения сохранены.");
+  }
+}
+
+ui["vehicle-filter"].addEventListener("input", () => showVehicleChoices(ui.vehicle.value));
+ui["vehicle-filter"].addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    ui.vehicle.focus();
+  }
+});
+ui.vehicle.addEventListener("change", () => {
+  const vehicle = view.catalog.vehicles.find((item) => item.vehicle_id === ui.vehicle.value);
+  showSessions(vehicle);
+  choose(ui.vehicle.value, "");
+});
+ui.session.addEventListener("change", () => choose(ui.vehicle.value, ui.session.value));
+ui.selection.addEventListener("submit", (event) => {
+  event.preventDefault();
+  action("diagnose", "diagnose", "POST");
+});
+ui.composer.addEventListener("submit", (event) => {
+  event.preventDefault();
+  sendQuestion(ui.question.value);
+});
+ui.question.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  sendQuestion(ui.question.value);
+});
+ui["retry-catalog"].addEventListener("click", loadCatalog);
+
+loadCatalog();

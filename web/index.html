@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10272d">
+  <meta name="description" content="Результаты акустической проверки двигателя, заводские руководства и заявки на дефектовку.">
+  <title>Цифровой механик</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script type="module" src="/assets/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#workspace">К рабочей области</a>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <div class="brand">
+        <span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+        <div>
+          <h1>Цифровой механик</h1>
+          <p>Пост акустической диагностики</p>
+        </div>
+      </div>
+      <span class="mode" id="mode" role="status">Синтетический парк</span>
+    </div>
+  </header>
+
+  <main class="layout" id="workspace" tabindex="-1">
+    <aside class="context" aria-labelledby="context-title">
+      <form class="panel context-card" id="selection">
+        <h2 id="context-title">Транспорт и сессия</h2>
+        <p id="catalog-size" class="context-caption">Каталог загружается…</p>
+        <div class="field filter-field">
+          <label for="vehicle-filter">Найти ТС</label>
+          <input type="search" id="vehicle-filter" placeholder="Госномер или двигатель" autocomplete="off" disabled>
+        </div>
+        <div class="field">
+          <label for="vehicle">Транспортное средство</label>
+          <select id="vehicle" disabled><option value="">Выберите госномер</option></select>
+        </div>
+        <div class="vehicle-facts" id="vehicle-facts" hidden></div>
+        <div class="field">
+          <label for="session">Сессия диагностики</label>
+          <select id="session" disabled><option value="">Сначала выберите ТС</option></select>
+        </div>
+        <button class="button primary diagnose-button" id="diagnose" type="submit" disabled>
+          Получить результат диагностики
+        </button>
+        <p id="selection-error" class="alert error" role="alert" hidden></p>
+        <button class="button secondary" id="retry-catalog" type="button" hidden>Повторить загрузку каталога</button>
+      </form>
+      <details class="panel journal">
+        <summary>Журнал вызовов</summary>
+        <div id="journal"><p class="muted">Выберите сессию, чтобы увидеть её вызовы.</p></div>
+      </details>
+    </aside>
+
+    <div class="workarea">
+      <section id="diagnostic" class="panel diagnostic" aria-labelledby="result-title">
+        <p class="section-label">Результат диагностики</p>
+        <div id="result" aria-live="polite" aria-atomic="true">
+          <h2 id="result-title">Выберите транспорт и сессию</h2>
+          <p class="muted">Здесь появятся вердикт и первое действие для моториста.</p>
+        </div>
+      </section>
+
+      <section id="chat" class="panel chat" aria-labelledby="chat-title">
+        <div class="chat-header">
+          <div>
+            <h2 id="chat-title">Диалог с механиком</h2>
+            <p id="chat-context" class="muted">Доступен после получения результата</p>
+          </div>
+        </div>
+        <div id="messages" class="messages" role="log" aria-label="История диалога" aria-live="polite"></div>
+        <p id="chat-error" class="alert error" role="alert" hidden></p>
+        <form id="composer" class="composer">
+          <div id="suggestions" class="suggestions" role="group" aria-label="Быстрые вопросы" hidden></div>
+          <label for="question">Ваш вопрос</label>
+          <div class="composer-row">
+            <textarea id="question" rows="1" maxlength="1600" placeholder="Например, что проверить сначала?" disabled></textarea>
+            <button class="button primary" type="submit" id="send" disabled>Спросить</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="ticket-panel" class="panel ticket-panel" aria-labelledby="ticket-title" hidden></section>
+    </div>
+  </main>
+  <div id="announcement" class="visually-hidden" role="status" aria-live="polite"></div>
+</body>
+</html>
