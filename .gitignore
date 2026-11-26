@@ -3,3 +3,5 @@ __pycache__/
 /.env
 /.venv/
 /.pytest_cache/
+/.runtime/
+/007_хакатон_ИИ.zip
