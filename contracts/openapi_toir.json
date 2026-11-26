@@ -1,0 +1,248 @@
+{
+ "components": {
+  "schemas": {
+   "HTTPValidationError": {
+    "properties": {
+     "detail": {
+      "items": {
+       "$ref": "#/components/schemas/ValidationError"
+      },
+      "title": "Detail",
+      "type": "array"
+     }
+    },
+    "title": "HTTPValidationError",
+    "type": "object"
+   },
+   "Reference": {
+    "properties": {
+     "manual": {
+      "description": "Название или обозначение документа",
+      "examples": [
+       "236-3902150-Б РЭ"
+      ],
+      "minLength": 1,
+      "title": "Manual",
+      "type": "string"
+     },
+     "pdf_page": {
+      "description": "Номер страницы PDF",
+      "minimum": 1.0,
+      "title": "Pdf Page",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "manual",
+     "pdf_page"
+    ],
+    "title": "Reference",
+    "type": "object"
+   },
+   "TicketRequest": {
+    "properties": {
+     "anomaly_type": {
+      "description": "Значение anomaly_type из ответа /diagnose",
+      "pattern": "^F(0[1-9]|1[0-4])$",
+      "title": "Anomaly Type",
+      "type": "string"
+     },
+     "conclusion": {
+      "description": "Диагноз",
+      "minLength": 1,
+      "title": "Conclusion",
+      "type": "string"
+     },
+     "operations": {
+      "description": "Работы",
+      "items": {
+       "type": "string"
+      },
+      "minItems": 1,
+      "title": "Operations",
+      "type": "array"
+     },
+     "references": {
+      "description": "Ссылки на источники",
+      "items": {
+       "$ref": "#/components/schemas/Reference"
+      },
+      "minItems": 1,
+      "title": "References",
+      "type": "array"
+     },
+     "session_id": {
+      "examples": [
+       "S-0005"
+      ],
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+     },
+     "spare_parts": {
+      "description": "Запчасти, список может быть пустым",
+      "items": {
+       "type": "string"
+      },
+      "title": "Spare Parts",
+      "type": "array"
+     },
+     "urgency": {
+      "description": "Приоритет",
+      "enum": [
+       "low",
+       "medium",
+       "high"
+      ],
+      "title": "Urgency",
+      "type": "string"
+     },
+     "vehicle_id": {
+      "examples": [
+       "M333YK47"
+      ],
+      "minLength": 1,
+      "title": "Vehicle Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "vehicle_id",
+     "session_id",
+     "anomaly_type",
+     "conclusion",
+     "urgency",
+     "operations",
+     "spare_parts",
+     "references"
+    ],
+    "title": "TicketRequest",
+    "type": "object"
+   },
+   "TicketResponse": {
+    "properties": {
+     "status": {
+      "const": "created",
+      "title": "Status",
+      "type": "string"
+     },
+     "ticket_id": {
+      "title": "Ticket Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "ticket_id",
+     "status"
+    ],
+    "title": "TicketResponse",
+    "type": "object"
+   },
+   "ValidationError": {
+    "properties": {
+     "ctx": {
+      "title": "Context",
+      "type": "object"
+     },
+     "input": {
+      "title": "Input"
+     },
+     "loc": {
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "title": "Location",
+      "type": "array"
+     },
+     "msg": {
+      "title": "Message",
+      "type": "string"
+     },
+     "type": {
+      "title": "Error Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "title": "ValidationError",
+    "type": "object"
+   }
+  }
+ },
+ "info": {
+  "description": "Заглушка системы технического обслуживания и ремонта для хакатона «ИИкузница».",
+  "title": "НейроДВС Mock ТОиР",
+  "version": "mock-v1"
+ },
+ "openapi": "3.1.0",
+ "paths": {
+  "/health": {
+   "get": {
+    "operationId": "health_health_get",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "Health"
+   }
+  },
+  "/tickets": {
+   "post": {
+    "operationId": "create_ticket_tickets_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/TicketRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TicketResponse"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "404": {
+      "description": "Неизвестный vehicle_id или session_id"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Create Ticket"
+   }
+  }
+ }
+}

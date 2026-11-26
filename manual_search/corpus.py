@@ -8,6 +8,8 @@ from pathlib import Path
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "manuals"
 SHARED_ZMZ = "zmz-40904-40905-rk"
+VERIFIED_FILES = ("yamz-236m2-oil-pressure.json", "zmz-timing-chain.json", "yamz-236m2-valves.json")
+YAMZ_MODEL = re.compile(r"ЯМЗ\s*[-–]\s*(\d{3}(?:[А-Яа-яЁё]*\d*)?)", re.I)
 ZMZ_MODEL = re.compile(r"(?<!\d)(4090[45])(?:\.10(?!\d)|\.1000400-\d+)")
 CONTINUATION = re.compile(r"^(?:продолжение\s+табл|продолжение\s+рис)", re.I)
 TABLE_COLUMNS = re.compile(r"(?:Причина|Наименование|Операция).* {3,}\S", re.I)
@@ -144,6 +146,16 @@ def extract_manual(manual, directory, rules):
         current = []
         previous_section = section
         for line, block, applicable in blocks:
+            if manual["manual_id"].startswith("yamz-"):
+                named_models = {model.upper() for model in YAMZ_MODEL.findall(block)}
+                # Drop blocks explicitly about another engine, including notes in a shared manual.
+                if named_models and not any(
+                    name == model.removeprefix("ЯМЗ-") or (
+                        name.isdecimal() and model.removeprefix("ЯМЗ-").startswith(name)
+                    )
+                    for model in applicable for name in named_models
+                ):
+                    continue
             section = heading(block) or section
             current.append(make_fragment(manual, page, line, section, applicable, block))
         if previous and current and previous_section == current[0]["section"]:
@@ -170,8 +182,14 @@ def build_corpus(pdf_dir):
         extracted, flagged = extract_manual(manual, pdf_dir, rules)
         fragments.extend(extracted)
         issues.extend(flagged)
-    manuals = {manual["manual_id"]: manual for manual in catalog}
-    for filename in ("yamz-236m2-oil-pressure.json", "zmz-timing-chain.json"):
+    fragments.extend(verified_fragments(catalog))
+    return {"fragments": fragments, "extraction_issues": issues}
+
+
+def verified_fragments(catalog=None):
+    manuals = {manual["manual_id"]: manual for manual in (catalog or load_catalog())}
+    fragments = []
+    for filename in VERIFIED_FILES:
         verified = json.loads((DATA_DIR / filename).read_text(encoding="utf-8"))
         for entry in verified:
             manual = manuals[entry["manual_id"]]
@@ -181,7 +199,7 @@ def build_corpus(pdf_dir):
                 "source_file": manual["source_file"],
                 "verified": True,
             })
-    return {"fragments": fragments, "extraction_issues": issues}
+    return fragments
 
 
 def main():
