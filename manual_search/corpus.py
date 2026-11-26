@@ -165,10 +165,22 @@ def build_corpus(pdf_dir):
     rules = json.loads((DATA_DIR / "zmz-applicability.json").read_text(encoding="utf-8"))
     fragments = []
     issues = []
-    for manual in load_catalog():
+    catalog = load_catalog()
+    for manual in catalog:
         extracted, flagged = extract_manual(manual, pdf_dir, rules)
         fragments.extend(extracted)
         issues.extend(flagged)
+    manuals = {manual["manual_id"]: manual for manual in catalog}
+    for filename in ("yamz-236m2-oil-pressure.json", "zmz-timing-chain.json"):
+        verified = json.loads((DATA_DIR / filename).read_text(encoding="utf-8"))
+        for entry in verified:
+            manual = manuals[entry["manual_id"]]
+            fragments.append({
+                **entry,
+                "manual": manual["manual"],
+                "source_file": manual["source_file"],
+                "verified": True,
+            })
     return {"fragments": fragments, "extraction_issues": issues}
 
 
