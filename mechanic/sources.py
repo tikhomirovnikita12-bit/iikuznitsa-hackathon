@@ -103,12 +103,14 @@ def source_page(slug: str, page: int):
     return HTMLResponse(f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Страница PDF {page} · {label}</title><link rel="stylesheet" href="/assets/styles.css">
+<script type="module" src="/assets/source-return.js"></script>
 </head><body class="source-body"><main class="source-main">
   <header class="source-header">
     <p class="source-position">Страница PDF {page} из {manual.pages}</p>
     <h1>{label}</h1>
     <p class="source-filename">{file}</p>
     <nav class="source-links" aria-label="Руководство в PDF">
+      <a class="button secondary" id="source-return" href="/">К проверке</a>
       <a class="button primary" href="/manuals/{slug}.pdf#page={page}">Открыть оригинал PDF</a>
       <a class="button secondary" href="/sources/{slug}/{page}/page.pdf">Открыть только страницу {page}</a>
     </nav>

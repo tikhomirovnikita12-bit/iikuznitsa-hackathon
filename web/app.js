@@ -1,3 +1,5 @@
+import { rememberSourceOrigin, restoreSourceOrigin } from "./source-return.js";
+
 const byId = (id) => document.getElementById(id);
 const ui = Object.fromEntries([
   "mode", "catalog-size", "vehicle", "vehicle-facts", "session",
@@ -377,6 +379,39 @@ function listItems(value) {
   return value.split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
+const draftEditFields = [
+  { key: "conclusion", id: "conclusion", label: "Заключение", rows: 3 },
+  { key: "urgency", id: "urgency", label: "Приоритет", rows: 1 },
+  { key: "operations", id: "operations", label: "Работы", rows: 4 },
+  { key: "spare_parts", id: "parts", label: "Запчасти", rows: 3 },
+];
+
+function draftFieldText(draft, key) {
+  const value = draft[key];
+  return Array.isArray(value) ? value.join("\n") : value ?? "";
+}
+
+function changedDraftFields(edits, saved) {
+  return draftEditFields.filter(({ key }) => {
+    const normalize = Array.isArray(saved[key]) ? (value) => listItems(value).join("\n") : (value) => value.trim();
+    return normalize(draftFieldText(edits, key)) !== normalize(draftFieldText(saved, key));
+  });
+}
+
+function setDraftSaveStatus(status, dirty) {
+  const label = dirty ? "Есть несохранённые правки" : "Сохранено";
+  if (status.textContent !== label) status.textContent = label;
+  status.dataset.dirty = String(dirty);
+}
+
+function draftSaveStatus(dirty) {
+  const status = element("p", "draft-save-status");
+  status.id = "draft-save-status";
+  status.setAttribute("role", "status");
+  setDraftSaveStatus(status, dirty);
+  return status;
+}
+
 function fieldSummary(draft) {
   const summary = element("dl", "ticket-review");
   for (const [label, value] of [
@@ -400,7 +435,7 @@ function fieldSummary(draft) {
   return summary;
 }
 
-function editableDraft(draft, pending, conflict) {
+function editableDraft(draft, pending) {
   const key = draftKey();
   const version = pending?.version ?? draftVersion();
   const edits = pending?.edits ?? draft;
@@ -423,16 +458,13 @@ function editableDraft(draft, pending, conflict) {
   checkbox.type = "checkbox";
   confirm.append(checkbox, document.createTextNode("Подтверждаю выбранный приоритет"));
   const actions = element("div", "ticket-actions");
+  const status = draftSaveStatus(changedDraftFields(edits, draft).length > 0);
   const save = button(view.busy === "save" ? "Сохраняем…" : "Сохранить изменения");
   const submit = button("Подтвердить и отправить", "primary", "submit");
-  save.disabled = Boolean(view.busy) || conflict;
+  save.disabled = Boolean(view.busy);
   submit.disabled = true;
   for (const control of [conclusion, operations, parts, priority, checkbox]) control.disabled = Boolean(view.busy);
-  if (conflict) {
-    for (const control of [conclusion, operations, parts]) control.readOnly = true;
-    priority.disabled = checkbox.disabled = true;
-  }
-  actions.append(submit, save);
+  actions.append(status, submit, save);
   form.append(confirm, actions);
 
   function values(trim) {
@@ -443,28 +475,51 @@ function editableDraft(draft, pending, conflict) {
 
   for (const control of [conclusion, operations, parts, priority]) {
     control.addEventListener("input", () => {
-      view.pendingEdits.set(key, { edits: values(false), version });
+      const edits = values(false);
+      const dirty = changedDraftFields(edits, draft).length > 0;
+      if (dirty) view.pendingEdits.set(key, { edits, version });
+      else view.pendingEdits.delete(key);
+      setDraftSaveStatus(status, dirty);
       checkbox.checked = false;
       submit.disabled = true;
     });
   }
-  checkbox.addEventListener("change", () => { submit.disabled = conflict || !checkbox.checked; });
+  checkbox.addEventListener("change", () => { submit.disabled = !checkbox.checked; });
   save.addEventListener("click", () => {
-    if (!conflict && form.reportValidity()) updateDraft(values(true), version, false);
+    if (form.reportValidity()) updateDraft(values(true), version, false);
   });
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!conflict && checkbox.checked) updateDraft(values(true), version, true);
+    if (checkbox.checked) updateDraft(values(true), version, true);
   });
   return form;
 }
 
-function renderDraftConflict(panel, draft) {
-  const notice = alert("Черновик или его статус изменился. Скопируйте нужные локальные правки перед загрузкой сохранённой версии.", "info");
+function renderDraftConflict(panel, draft, pending) {
+  const changes = changedDraftFields(pending.edits, draft);
+  const description = changes.length
+    ? "Скопируйте нужные локальные правки перед загрузкой сохранённого черновика."
+    : "Загрузите сохранённую версию.";
+  const notice = alert("Черновик или его статус изменился. " + description, "info");
   notice.id = "draft-conflict";
   notice.setAttribute("role", "alert");
-  const saved = element("details", "answer-block");
-  saved.append(element("summary", "", "Что сейчас сохранено"), fieldSummary(draft));
+  const comparison = element("div", "draft-comparison");
+  comparison.id = "draft-comparison";
+  for (const { key, id, label, rows } of changes) {
+    const format = (state) => key === "urgency" ? urgencyNames[state.urgency] || "" : draftFieldText(state, key);
+    const group = element("fieldset", "draft-conflict-field");
+    group.dataset.field = key;
+    const local = textarea(format(pending.edits), rows);
+    local.readOnly = true;
+    local.placeholder = "Пусто";
+    const saved = element("div", "field");
+    saved.append(element("p", "draft-conflict-label", "Сохранённый вариант"),
+      element("p", "draft-conflict-saved", format(draft) || "Пусто"));
+    const versions = element("div", "draft-conflict-versions");
+    versions.append(field(id, "Ваш вариант", local), saved);
+    group.append(element("legend", "", label), versions);
+    comparison.append(group);
+  }
   const load = button("Загрузить сохранённый черновик");
   load.id = "use-saved-draft";
   load.addEventListener("click", () => {
@@ -474,8 +529,10 @@ function renderDraftConflict(panel, draft) {
     (byId("conclusion") || byId("ticket-title"))?.focus();
   });
   const actions = element("div", "ticket-actions");
-  actions.append(load);
-  panel.append(notice, saved, actions);
+  actions.append(draftSaveStatus(changes.length > 0), load);
+  panel.append(notice);
+  if (changes.length) panel.append(comparison);
+  panel.append(actions);
 }
 
 function reconcileForm() {
@@ -511,6 +568,53 @@ function reconcileForm() {
   return form;
 }
 
+function copyThroughSelection(value) {
+  const focused = document.activeElement;
+  const selection = element("textarea", "clipboard-selection");
+  selection.value = value;
+  selection.readOnly = true;
+  selection.tabIndex = -1;
+  document.body.append(selection);
+  try {
+    selection.focus({ preventScroll: true });
+    selection.select();
+    selection.setSelectionRange(0, value.length);
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    selection.remove();
+    focused?.focus({ preventScroll: true });
+  }
+}
+
+function ticketReceipt(ticketId) {
+  const receipt = element("div", "ticket-receipt");
+  const badge = element("strong", "ticket-badge", ticketId);
+  const copy = button("Скопировать номер");
+  copy.id = "copy-ticket-number";
+  const feedback = element("span", "copy-ticket-status");
+  feedback.id = "copy-ticket-status";
+  feedback.setAttribute("role", "status");
+  copy.addEventListener("click", async () => {
+    feedback.textContent = "";
+    let copied = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(ticketId);
+        copied = true;
+      }
+    } catch {
+      // Some browsers require copying a selection after denying clipboard access.
+    }
+    if (!copy.isConnected) return;
+    if (!copied) copied = copyThroughSelection(ticketId);
+    feedback.textContent = copied ? "Номер скопирован" : "Выделите номер и скопируйте вручную.";
+  });
+  receipt.append(badge, copy, feedback);
+  return receipt;
+}
+
 function renderTicket() {
   const panel = ui["ticket-panel"];
   const draft = view.state?.draft;
@@ -525,7 +629,7 @@ function renderTicket() {
   title.tabIndex = -1;
   const header = element("div", "ticket-head");
   header.append(title);
-  if (ticket.ticket_id) header.append(element("strong", "ticket-badge", ticket.ticket_id));
+  if (ticket.ticket_id) header.append(ticketReceipt(ticket.ticket_id));
   panel.replaceChildren(header);
   if (view.state.draft_origin === "fixture") panel.append(element("p", "origin", "Тестовый черновик"));
 
@@ -554,8 +658,8 @@ function renderTicket() {
   const pending = view.pendingEdits.get(draftKey());
   const conflict = Boolean(pending && (!sameDraftVersion(pending.version, draftVersion()) ||
     ["sending", "created", "unknown"].includes(ticket.status)));
-  if (conflict) renderDraftConflict(panel, draft);
-  panel.append(canEdit || conflict ? editableDraft(draft, pending, conflict) : fieldSummary(draft));
+  if (conflict) renderDraftConflict(panel, draft, pending);
+  else panel.append(canEdit ? editableDraft(draft, pending) : fieldSummary(draft));
   if (!conflict && !view.needsTicketCheck && ticket.status === "unknown" && view.state.reconcile_available) {
     panel.append(reconcileForm());
   }
@@ -793,7 +897,11 @@ async function loadCatalog() {
     restoreVehicleInput();
     showSessions(vehicle, vehicle?.sessions.some((item) => item.session_id === sessionId) ? sessionId : "");
     ui.vehicle.disabled = false;
+    const pendingDraft = history.state?.sourceOrigin?.pendingDraft;
+    const key = JSON.stringify({ vehicle_id: vehicleId, session_id: sessionId });
+    if (pendingDraft?.key === key) view.pendingEdits.set(key, pendingDraft.edits);
     await choose(vehicleId, sessionId, true);
+    requestAnimationFrame(restoreSourceOrigin);
   } catch (error) {
     ui["catalog-size"].textContent = "Каталог недоступен";
     setAlert(ui["selection-error"], error.message);
@@ -932,11 +1040,7 @@ async function updateDraft(edits, version, submit) {
     announce(result.ticket.ticket_id ? "Заявка " + result.ticket.ticket_id + " зарегистрирована."
       : result.ticket.message || "Статус заявки обновлён.");
     revealTicket();
-  } else {
-    view.ticketError = null;
-    ui["ticket-panel"].querySelector(".ticket-head").append(element("p", "flag good", "Изменения сохранены"));
-    announce("Изменения сохранены.");
-  }
+  } else announce("Изменения сохранены.");
 }
 
 async function reconcileDraft(ticketId, version) {
@@ -1009,5 +1113,13 @@ ui.question.addEventListener("keydown", (event) => {
 ui["retry-catalog"].addEventListener("click", loadCatalog);
 
 compactLayout.addEventListener("change", updateLayout);
+document.addEventListener("click", (event) => {
+  const key = draftKey();
+  const edits = view.pendingEdits.get(key);
+  rememberSourceOrigin(event, edits && { key, edits });
+});
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) requestAnimationFrame(restoreSourceOrigin);
+});
 updateLayout();
 loadCatalog();

@@ -224,7 +224,10 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
 .ticket-head { display: flex; align-items: baseline; justify-content: space-between; gap: .3rem .8rem; flex-wrap: wrap; }
 .ticket-panel .origin { margin-top: .2rem; font-size: .87rem; color: var(--muted); }
 .ticket-panel .alert { margin-top: .7rem; }
+.ticket-receipt { display: flex; align-items: center; flex-wrap: wrap; gap: .25rem .7rem; min-width: 0; }
 .ticket-badge { font-weight: 730; font-size: 1.2rem; font-variant-numeric: tabular-nums; }
+.copy-ticket-status { color: var(--muted); font-size: .875rem; }
+.clipboard-selection { position: fixed; inset: 0 auto auto 0; opacity: 0; pointer-events: none; }
 .ticket-ids {
   display: flex; flex-wrap: wrap; gap: .3rem 1rem; margin-top: .7rem;
   padding-block: .42rem; border-block: 1px solid var(--line);
@@ -235,6 +238,18 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
 .ticket-form .field-hint { color: var(--muted); font-size: .87rem; margin-top: .72rem; }
 .ticket-form .refs { margin-top: .35rem; }
 .ticket-actions { display: flex; flex-wrap: wrap; gap: .55rem; margin-top: .8rem; }
+.draft-save-status { flex-basis: 100%; color: var(--good); font-size: .9rem; }
+.draft-save-status[data-dirty="true"] { color: var(--warn); font-weight: 650; }
+.draft-comparison { display: grid; gap: .7rem; margin-top: .8rem; }
+.draft-conflict-field { min-inline-size: 0; margin: 0; padding: .55rem .7rem .75rem; border: 1px solid var(--line); }
+.draft-conflict-field legend { padding-inline: .25rem; font-weight: 700; }
+.draft-conflict-versions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
+.draft-conflict-versions .field { margin: 0; }
+.draft-conflict-label { font-size: .92rem; font-weight: 650; }
+.draft-conflict-saved {
+  min-width: 0; padding: .55rem .7rem; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface); white-space: pre-wrap; overflow-wrap: anywhere;
+}
 .priority-confirm { display: flex; gap: .5rem; align-items: center; min-height: 44px; margin-top: .6rem; }
 .priority-confirm input { width: 1.15rem; height: 1.15rem; margin: 0; accent-color: var(--accent); }
 .ticket-review { display: grid; gap: .55rem; margin: .7rem 0 0; }
@@ -280,6 +295,7 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
   .composer-row { grid-template-columns: minmax(0, 1fr); }
   .composer-row button { justify-self: stretch; }
   .ticket-actions > button { width: 100%; }
+  .draft-conflict-versions { grid-template-columns: 1fr; }
   .ref, .suggestions button { min-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }

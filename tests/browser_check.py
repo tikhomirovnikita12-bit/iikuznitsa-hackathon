@@ -165,9 +165,22 @@ def submit(page):
     page.get_by_role("button", name="Подтвердить и отправить").click()
 
 
-def pdf_source(page, path, expected_page, phrase, original=False, in_chat=True):
-    where = page.locator("#messages" if in_chat else "#result")
-    source = where.locator(f'a[href="{path}"]').first
+def copy_ticket_number(page, base, number, *, touch=False):
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=base)
+    button = page.get_by_role("button", name="Скопировать номер", exact=True)
+    if touch:
+        button.tap()
+    else:
+        button.click()
+    expect(page.locator("#copy-ticket-status")).to_have_text("Номер скопирован")
+    assert page.evaluate("navigator.clipboard.readText()") == number
+
+
+def pdf_source(page, path, expected_page, phrase, *, original=False, section="#messages .bubble:not(.diagnosis-message)"):
+    source = page.locator(section).locator(f'a[href="{path}"]').first
+    origin = page.url
+    source.scroll_into_view_if_needed()
+    offset = source.bounding_box()["y"]
     source.click()
     expect(page.locator(".source-position")).to_contain_text(f"Страница PDF {expected_page} из")
     expect(page.locator("img.source-image")).to_be_visible()
@@ -183,8 +196,12 @@ def pdf_source(page, path, expected_page, phrase, original=False, in_chat=True):
     response = page.request.get(urljoin(page.url, partial))
     reader = PdfReader(BytesIO(response.body()))
     assert len(reader.pages) == 1 and phrase in " ".join(reader.pages[0].extract_text().split())
-    page.go_back()
+    page.get_by_role("link", name="К проверке", exact=True).click()
+    page.wait_for_url(origin)
     expect(page.locator("#question")).to_be_enabled()
+    expect(source).to_be_focused()
+    expect(source).to_be_in_viewport()
+    assert abs(source.bounding_box()["y"] - offset) <= 8
 
 
 def desktop_checks(browser, base, out, results):
@@ -238,7 +255,8 @@ def desktop_checks(browser, base, out, results):
     page.get_by_text("Возможные работы", exact=True).click()
     expect(page.get_by_text("Промыть заборник.", exact=False)).to_be_visible()
     pdf_source(page, "/sources/yamz236-re/19", 19, "400-700 кПа", original=True)
-    pdf_source(page, "/sources/yamz236-re/53", 53, "Пониженное давление масла в системе смазки", original=True)
+    pdf_source(page, "/sources/yamz236-re/53", 53, "Пониженное давление масла в системе смазки",
+               original=True, section="#result")
     ask(page, "Можно ли своим ходом перегнать машину до бокса?", "Данных для допуска к перегону")
     expect(page.locator("#messages .bubble:not(.user)").last).to_contain_text("2100 об/мин")
     ask(page, "Манометр показал 90 кПа. Это допустимо?", "уточните обороты")
@@ -247,14 +265,21 @@ def desktop_checks(browser, base, out, results):
 
     draft(page, from_result=True)
     expect(page.locator(".ticket-badge")).to_have_count(0)
+    expect(page.locator("#copy-ticket-number")).to_have_count(0)
     page.locator("#urgency").select_option("medium")
     note = page.locator("#conclusion").input_value() + " Замер запланирован."
     page.locator("#conclusion").fill(note)
+    expect(page.locator("#draft-save-status")).to_have_text("Есть несохранённые правки")
+    pdf_source(page, "/sources/yamz236-re/19", 19, "400-700 кПа", section="#ticket-panel")
+    expect(page.locator("#conclusion")).to_have_value(note)
+    expect(page.locator("#urgency")).to_have_value("medium")
+    expect(page.locator("#draft-save-status")).to_have_text("Есть несохранённые правки")
     page.get_by_role("button", name="Сохранить изменения").click()
-    expect(page.get_by_text("Изменения сохранены", exact=True)).to_be_visible()
+    expect(page.locator("#draft-save-status")).to_have_text("Сохранено")
     page.reload()
     expect(page.locator("#conclusion")).to_have_value(note)
     expect(page.locator("#urgency")).to_have_value("medium")
+    expect(page.locator("#draft-save-status")).to_have_text("Сохранено")
     submit(page)
     ticket = page.locator(".ticket-badge")
     expect(ticket).to_be_visible()
@@ -264,6 +289,7 @@ def desktop_checks(browser, base, out, results):
     page.locator("#result").get_by_role("button", name="Открыть заявку", exact=True).click()
     expect(page.locator("#ticket-title")).to_be_focused()
     assert not page.get_by_role("button", name="Подтвердить и отправить").count()
+    copy_ticket_number(page, base, number)
     query = {"vehicle_id": OIL[0], "session_id": OIL[1]}
     stored = page.request.get(base + "/api/state", params=query).json()
     edits = {key: stored["draft"][key] for key in ("conclusion", "urgency", "operations", "spare_parts")}
@@ -272,7 +298,8 @@ def desktop_checks(browser, base, out, results):
                                "priority_confirmed": True}).json()
     assert resend["ticket"]["ticket_id"] == number
     assert sum(item["tool"] == "mock_toir.tickets" for item in resend["calls"]) == 1
-    results.append({"pair": OIL, "step": "Редактирование, подтверждение, восстановление", "result": number})
+    results.append({"pair": OIL, "step": "Редактирование, подтверждение, восстановление и копирование номера",
+                    "result": number})
 
     page.locator("#session").select_option(NORMAL[1])
     diagnose(page, "Значимых отклонений не обнаружено")
@@ -327,6 +354,14 @@ def desktop_checks(browser, base, out, results):
     page.goto(base + "/?vehicle_id=E549YT198&session_id=S-0003")
     expect(page.locator("#result-title")).to_have_text("Проверьте пару ТС и сессии")
     results.append({"pair": MISMATCH, "step": "Несовпадение топлива и неверная пара из URL", "result": "passed"})
+    viewer = context.new_page()
+    viewer.goto(base + "/sources/yamz236-re/19")
+    direct_return = viewer.get_by_role("link", name="К проверке", exact=True)
+    expect(direct_return).to_have_attribute("href", "/")
+    direct_return.click()
+    viewer.wait_for_url(base + "/")
+    expect(viewer.locator("#vehicle")).to_have_value("")
+    viewer.close()
     assert not errors, errors
     context.close()
 
@@ -361,8 +396,10 @@ def mobile_and_race(playwright, browser, base, directory, out, results):
         pdf_source(page, "/sources/yamz236-re/53", 53, "Пониженное давление масла в системе смазки")
         draft(page, from_result=True)
         submit(page)
-        expect(page.locator(".ticket-badge")).to_be_visible()
-        results.append({"pair": OIL, "step": "390 CSS px, компактный выбор ТС, переход к вопросу, ссылки и заявка",
+        ticket = page.locator(".ticket-badge")
+        expect(ticket).to_be_visible()
+        copy_ticket_number(page, mobile_base, ticket.inner_text(), touch=True)
+        results.append({"pair": OIL, "step": "390 CSS px, выбор ТС, переход к вопросу, ссылки и копирование номера",
                         "result": "passed"})
     mobile.close()
 
@@ -402,20 +439,32 @@ def stale_draft_across_tabs(browser, directory, results):
         local = initial + "\nНесохранённая пометка из первой вкладки."
         saved = initial + "\nЗамер из второй вкладки."
         editor.locator("#operations").fill(local)
+        expect(editor.locator("#draft-save-status")).to_have_text("Есть несохранённые правки")
+        editor.locator("#operations").fill(initial)
+        expect(editor.locator("#draft-save-status")).to_have_text("Сохранено")
+        editor.locator("#operations").fill(local)
         peer.locator("#operations").fill(saved)
         peer.get_by_role("button", name="Сохранить изменения").click()
-        expect(peer.get_by_text("Изменения сохранены", exact=True)).to_be_visible()
+        expect(peer.locator("#draft-save-status")).to_have_text("Сохранено")
 
         editor.locator("#session").select_option(NORMAL[1])
         expect(editor.locator("#ticket-panel")).to_be_hidden()
         editor.locator("#session").select_option(OIL[1])
         expect(editor.locator("#draft-conflict")).to_be_visible()
-        expect(editor.locator("#operations")).to_have_value(local)
-        expect(editor.get_by_role("button", name="Сохранить изменения")).to_be_disabled()
-        expect(editor.get_by_role("button", name="Подтвердить и отправить")).to_be_disabled()
+        comparison = editor.locator("#draft-comparison")
+        expect(comparison.locator("[data-field]")).to_have_count(1)
+        works = comparison.locator('[data-field="operations"]')
+        expect(works).to_contain_text("Ваш вариант")
+        expect(works).to_contain_text("Сохранённый вариант")
+        expect(works.locator("#operations")).to_have_value(local)
+        expect(works.locator("#operations")).not_to_be_editable()
+        expect(works.locator(".draft-conflict-saved")).to_contain_text("Замер из второй вкладки.")
+        expect(editor.get_by_role("button", name="Сохранить изменения")).to_have_count(0)
+        expect(editor.get_by_role("button", name="Подтвердить и отправить")).to_have_count(0)
         editor.locator("#use-saved-draft").click()
         expect(editor.locator("#draft-conflict")).to_be_hidden()
         expect(editor.locator("#operations")).to_have_value(saved)
+        expect(editor.locator("#draft-save-status")).to_have_text("Сохранено")
 
         pair = {"vehicle_id": OIL[0], "session_id": OIL[1]}
         base_version = editor.request.get(base + "/api/state", params=pair).json()
@@ -423,7 +472,7 @@ def stale_draft_across_tabs(browser, directory, results):
         latest = saved + "\nПодтверждён новый план."
         peer.locator("#operations").fill(latest)
         peer.get_by_role("button", name="Сохранить изменения").click()
-        expect(peer.get_by_text("Изменения сохранены", exact=True)).to_be_visible()
+        expect(peer.locator("#draft-save-status")).to_have_text("Сохранено")
 
         deliveries = []
         editor.on("request", lambda req: deliveries.append(req) if req.url.endswith("/api/ticket") else None)
@@ -437,7 +486,8 @@ def stale_draft_across_tabs(browser, directory, results):
         assert submission["revision"] == base_version["draft_revision"]
         expect(editor.locator("#draft-conflict")).to_be_visible()
         expect(editor.locator("#operations")).to_have_value(local)
-        expect(editor.get_by_role("button", name="Подтвердить и отправить")).to_be_disabled()
+        expect(works.locator(".draft-conflict-saved")).to_contain_text("Подтверждён новый план.")
+        expect(editor.get_by_role("button", name="Подтвердить и отправить")).to_have_count(0)
         editor.locator("#use-saved-draft").click()
         expect(editor.locator("#operations")).to_have_value(latest)
         expect(editor.locator(".ticket-badge")).to_have_count(0)
@@ -491,6 +541,7 @@ def failure_checks(browser, directory, results):
             page.reload()
             expect(page.locator("#ticket-panel")).to_contain_text("Результат отправки неизвестен")
             assert not page.get_by_role("button", name="Подтвердить и отправить").count()
+            expect(page.locator("#copy-ticket-number")).to_have_count(0)
             catalog = page.request.get(base + "/api/catalog").json()
             if catalog["backend"] == "team":
                 number, = receipts
@@ -504,6 +555,7 @@ def failure_checks(browser, directory, results):
                 page.reload()
                 expect(page.locator(".ticket-badge")).to_have_text(number)
                 assert not page.get_by_role("button", name="Подтвердить и отправить").count()
+                copy_ticket_number(page, base, number)
             assert calls == [("/diagnose", 200), ("/tickets", 201)], calls
             page.close()
     results.append({"pair": OIL, "step": "Тайм-аут ML, потеря ответа ТОиР и сверка номера без повторной отправки",
@@ -549,7 +601,7 @@ def record(browser, base, folder):
         until(20)
         page.evaluate("window.scrollTo(0, 390)")
         until(24)
-        page.go_back()
+        page.get_by_role("link", name="К проверке", exact=True).click()
         expect(page.locator("#question")).to_be_enabled()
         until(27)
         draft(page, from_result=True)
