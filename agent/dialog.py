@@ -21,7 +21,7 @@ TERM = re.compile(r"(?:а )?(?:что такое|что означает|что 
 GLOSSARY = {
     "картер": "Картер — корпус, в котором работает коленчатый вал. В этом контексте речь о масле в поддоне картера: поддон расположен снизу двигателя и служит резервуаром для масла.",
 }
-PLAN = schema(action={"type": "string", "enum": ["diagnosis", "search", "ticket", "movement", "clarify", "off_topic"]},
+PLAN = schema(action={"type": "string", "enum": ["diagnosis", "search", "ticket", "movement", "clarify", "off_topic", "next_step", "pause", "repair"]},
               query=STRING, question=STRING)
 
 
@@ -105,6 +105,20 @@ class Agent:
                            else "Привет! Могу пояснить результат диагностики или поискать ответ в руководстве.")
                 reply.update(intent="conversation", explanation=message)
                 return reply
+            short_request = re.sub(r"^(?:(?:ну|так|а|ладно|лад|окей|ок|давай)[ ,]+)+", "", wording)
+            short_request = re.sub(r"\bч[её]\b", "что", short_request)
+            previous = next((row[3][0] for row in reversed(history) if len(row) > 3 and row[3]), None)
+            if short_request == "достаточно" and previous and "достаточно масла" in previous["text"]:
+                reply.update(intent="clarify", clarifying_question=
+                             "Вы про уровни масла и охлаждающей жидкости или на этом остановимся?")
+                return reply
+            if short_request in {"достаточно", "хватит", "стоп", "на этом всё", "на этом все"}:
+                reply.update(intent="conversation", explanation="Хорошо, остановимся.")
+                return reply
+            if re.fullmatch(r"ты (?:что )?(?:охуел|ахуел|охренел|издеваешься)|ответь нормально", short_request):
+                reply.update(intent="conversation", explanation=
+                             "Предыдущий ответ запутал диалог. Можем вернуться к открытой проверке.")
+                return reply
             pressure_case = ml["engine_model"] == "ЯМЗ-236М2" and ml["anomaly_type"] == "F02"
             previous_pressure = history[-1][4] if history and len(history[-1]) > 4 else None
             movement = bool(re.search(r"перегна|перегон|своим ходом", question, re.I))
@@ -114,12 +128,11 @@ class Agent:
                                       (values != previous_pressure or oil_pressure.BARE_NUMBER.fullmatch(question.strip())))):
                 return self.pressure_reply(reply, values, trace)
             context = json.dumps([ml, [row[:4] for row in history], question], ensure_ascii=False)
-            short_request = re.sub(r"^(?:(?:ну|так|а|ладно|лад|окей|ок|давай)[ ,]+)+", "", wording)
-            short_request = re.sub(r"\bч[её]\b", "что", short_request)
             next_step = bool(re.fullmatch(
-                r"(?:что (?:мне )?(?:(?:надо|нужно|теперь|дальше) )?"
+                r"(?:(?:(?:сам )?(?:мне )?(?:скажи|подскажи|расскажи) )?"
+                r"что (?:мне )?(?:(?:надо|нужно|теперь|дальше) )?"
                 r"(?:делать|сделать|проверить|посмотреть)(?: (?:надо|нужно|дальше|сначала))?"
-                r"|скажи как делать|с чего начать)", short_request))
+                r"|скажи как делать|с чего начать|(?:подскажи|посоветуй)(?: мне)?|что дальше)", short_request))
             followup = bool(re.fullmatch(
                 r"(?:подскажи |скажи )?как (?:именно |это |мне )*(?:сделать|проверить|делать|выполнить)",
                 short_request))
@@ -138,7 +151,10 @@ class Agent:
                     "off_topic — личная реплика или обсуждение фильмов и знаменитостей, "
                     "даже если упоминается марка машины. "
                     "ticket — оформить заявку; movement — можно ли ехать; diagnosis — показать результат; "
-                    "search — технический вопрос; clarify — вопрос по машине, требующий уточнения. "
+                    "search — конкретный технический вопрос; next_step — просят подсказать, что делать "
+                    "с открытой проверкой, даже если узел в реплике не назван; "
+                    "pause — просят остановиться; repair — недовольны тем, как агент ответил; "
+                    "clarify — вопрос по машине, требующий уточнения. "
                     "query — поисковая фраза; question — уточняющий вопрос. Для off_topic оба поля пустые. "
                     "Текущая реплика: " + json.dumps(question, ensure_ascii=False) +
                     "\nВспомогательный контекст: " + json.dumps([ml, [row[:4] for row in history]], ensure_ascii=False),
@@ -146,7 +162,14 @@ class Agent:
                 action = plan["action"]
             if pressure_case and action == "movement":
                 return self.pressure_reply(reply, values, trace)
-            previous = next((row[3][0] for row in reversed(history) if len(row) > 3 and row[3]), None)
+            if action in {"pause", "repair"}:
+                message = ("Хорошо, остановимся." if action == "pause"
+                           else "Предыдущий ответ запутал диалог. Можем вернуться к открытой проверке.")
+                reply.update(intent="conversation", explanation=message)
+                return reply
+            if action == "next_step":
+                next_step = True
+                action = "search"
             if followup and not previous:
                 reply.update(intent="clarify", clarifying_question="Какую проверку нужно объяснить?")
                 return reply
@@ -167,9 +190,11 @@ class Agent:
                     "Реплика: " + json.dumps(question, ensure_ascii=False),
                     schema(topic={"type": "string", "enum": ["unrelated", "mechanic"]}), trace)
                 # A planner can copy an earlier user question instead of asking for missing detail.
-                echoed_history = action == "clarify" and any(
-                    plan["question"].casefold().strip(" .!?") == row[0].casefold().strip(" .!?")
-                    for row in history
+                clarification = plan["question"].casefold().strip(" .!?")
+                echoed_history = action == "clarify" and (
+                    clarification == wording or any(
+                        clarification == row[0].casefold().strip(" .!?") for row in history
+                    )
                 )
                 if relevance["topic"] == "unrelated" or echoed_history:
                     reply.update(intent="conversation", explanation="Могу помочь с диагностикой или показать, что говорит руководство по этой машине.")

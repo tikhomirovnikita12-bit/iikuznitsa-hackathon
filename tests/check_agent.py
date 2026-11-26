@@ -37,6 +37,16 @@ def main():
             assert response["references"][0]["pdf_page"] == 53
         diagnosis = ask("S-0011", "ЧЕ СЛУЧИЛОСЬ")
         assert diagnosis["intent"] == "diagnosis" and "Низкое давление масла" in diagnosis["verdict"]
+        enough = ask("S-0011", "так ну достаточно")
+        assert enough["intent"] == "clarify" and "уровни масла" in enough["clarifying_question"], enough
+        advice = ask("S-0011", "давай подскажи")
+        assert advice["intent"] == "search" and advice["references"][0]["pdf_page"] == 53, advice
+        complaint = ask("S-0011", "ты че ахуел")
+        assert complaint["intent"] == "conversation" and "запутал диалог" in complaint["explanation"]
+        advice = ask("S-0011", "сам мне расскажи че дальше делать")
+        assert advice["intent"] == "search" and advice["references"][0]["pdf_page"] == 53, advice
+        stop = ask("S-0011", "на этом всё")
+        assert stop["intent"] == "conversation" and "остановимся" in stop["explanation"]
         moved = ask("S-0011", "Можно ли своим ходом перегнать машину на базу?")
         assert moved["clarifying_question"] and "перегон" in moved["verdict"]
         assert any(r["pdf_page"] == 19 for r in moved["references"]), moved
