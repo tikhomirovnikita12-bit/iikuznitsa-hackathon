@@ -1,0 +1,44 @@
+[
+  {
+    "manual_id": "yamz-236-3902150-b-re",
+    "manual": "236-3902150-Б РЭ",
+    "source_file": "ЯМЗ_236_руководство по эксплуатации.pdf",
+    "page_count": 172,
+    "applicable_engine_models": ["ЯМЗ-236М2"]
+  },
+  {
+    "manual_id": "yamz-236-01-01-rk",
+    "manual": "236.01.01 РК",
+    "source_file": "ЯМЗ_236_руководство по РЕМОНТУ.pdf",
+    "page_count": 287,
+    "applicable_engine_models": ["ЯМЗ-236М2"]
+  },
+  {
+    "manual_id": "yamz-536-3902150-re",
+    "manual": "536.3902150 РЭ",
+    "source_file": "yamz-536_re_2016.pdf",
+    "page_count": 285,
+    "applicable_engine_models": ["ЯМЗ-536"]
+  },
+  {
+    "manual_id": "yamz-536-01-02-rk",
+    "manual": "536.01.02 РК",
+    "source_file": "yamz-536_rk_2013.pdf",
+    "page_count": 603,
+    "applicable_engine_models": ["ЯМЗ-536"]
+  },
+  {
+    "manual_id": "zmz-5234-rk",
+    "manual": "Двигатели ЗМЗ-5234.10 со сцеплением. Руководство по ремонту",
+    "source_file": "zmz-5234_rk_2025.pdf",
+    "page_count": 158,
+    "applicable_engine_models": ["ЗМЗ-5234.10"]
+  },
+  {
+    "manual_id": "zmz-40904-40905-rk",
+    "manual": "Руководство по эксплуатации, техническому обслуживанию и ремонту двигателей ЗМЗ-40904.10 и ЗМЗ-40905.10",
+    "source_file": "zmz-40904-40905_rk_2025.pdf",
+    "page_count": 238,
+    "applicable_engine_models": ["ЗМЗ-40904.10", "ЗМЗ-40905.10"]
+  }
+]
