@@ -61,6 +61,11 @@ class Agent:
                 "clarify — неясен узел и контекст его не определяет. query — короткий русский поисковый запрос "
                 "по узлу и признакам; question — уточняющий вопрос. Контекст, история и вопрос: " + context, PLAN, trace)
             action = plan["action"]
+            generic_check = any(phrase in question.casefold() for phrase in
+                                ("что проверить", "с чего начать", "что посмотреть", "что делать дальше"))
+            if ml["status"] == "normal" and generic_check and len(question.split()) <= 5:
+                reply["clarifying_question"] = "По этой записи отклонений нет. Какой узел или симптом вас интересует?"
+                return reply
             if action == "clarify":
                 reply["clarifying_question"] = plan["question"] or "Какой узел и режим работы вас интересуют?"
                 return reply
@@ -70,9 +75,20 @@ class Agent:
                 reply["clarifying_question"] = "Для заявки нужна проверка с обнаруженным отклонением."
                 return reply
             query = plan["query"] or question
+            # Preserve the mechanic's terminology for specific manual questions.
+            if action == "search" and len(question.split()) >= 5:
+                query = question
+            if ml["anomaly_type"] == "F02":
+                if action == "movement" or "кпа" in question.lower():
+                    query = "При каких условиях проверять давление масла?"
+                    reply["clarifying_question"] = ("Укажите фактическое давление, обороты, прогрев "
+                        "и применимость допуска после длительной эксплуатации.")
+                elif action in {"ticket", "diagnosis"} or "сначала" in question.lower():
+                    query = "Какие причины пониженного давления указаны в руководстве?"
+
             if action == "movement":
                 reply["verdict"] = "Возможность перегона по этой записи не подтверждена."
-                reply["clarifying_question"] = "Какие показания приборов получены и при каком режиме двигателя?"
+                reply["clarifying_question"] = reply["clarifying_question"] or "Какие показания приборов получены и при каком режиме двигателя?"
             for attempt in range(2):
                 hits = self.manuals.find(query, ml)
                 trace["tools"].append(dict(name="search", query=query,
@@ -104,24 +120,26 @@ class Agent:
                 stream.write(json.dumps(trace, ensure_ascii=False) + "\n")
 
     def select(self, reply, action, question, hits, trace):
-        sources = {h["fragment_id"]: h for h in hits}
-        item = schema(fragment_id={"type": "string", "enum": list(sources)}, quote=STRING,
-                      field={"type": "string", "enum": ["checks", "risk", "possible_causes"]})
-        answer = self.provider.ask("Выбери только выдержки, отвечающие на вопрос. quote — дословная "
-            "полная цитата со всеми условиями и единицами. Для заявки нужна проверка в checks. "
-            "Для движения ищи применимые ограничения и проверки. Если данных нет, верни пустой список. "
-            "Код ML означает предположение. Вопрос и задача: " + question + " " + action +
-            "\n" + json.dumps({k:v["text"][:2500] for k,v in sources.items()}, ensure_ascii=False),
-            schema(items={"type":"array","items":item,"maxItems":4}), trace)
-        for selected in answer["items"]:
-            fid = selected["fragment_id"]
-            source = sources.get(fid)
-            quote = selected["quote"].strip()
-            if not source or not quote or quote not in source["text"]:
+        # The provider selects original passages. Only server-owned text reaches the UI.
+        options = {}
+        for hit in hits:
+            lines = hit["text"].splitlines() if hit.get("verified") else [hit["text"]]
+            for i, line in enumerate(lines[:10]):
+                if line.strip():
+                    options[f"{hit['fragment_id']}:{i}"] = line
+        item = schema(source={"type":"string", "enum":list(options)},
+                      field={"type":"string","enum":["checks","risk","possible_causes"]})
+        answer = self.provider.ask("Выбери до трёх применимых фрагментов. Для 'сначала' или заявки "
+            "выбери начальную проверку в checks. Для условий измерения выбери полный норматив. "
+            "Если данные нерелевантны, верни пустой массив. Вопрос: " + question + " " + action +
+            "\n" + json.dumps({k:v[:800] for k,v in options.items()}, ensure_ascii=False),
+            schema(items={"type":"array","items":item,"maxItems":3}), trace)
+        for selected in answer["items"][:3]:
+            key = selected["source"]
+            if key not in options:
                 continue
-            # Keep the complete source paragraph, including conditions around a selected number.
-            passage = next((p for p in source["text"].splitlines() if quote in p), source["text"])
+            fid = key.rsplit(":", 1)[0]
             ref = self.manuals.reference(fid, reply["ml_observations"]["engine_model"])
             if ref not in reply["references"]:
                 reply["references"].append(ref)
-            reply[selected["field"]].append(dict(text=passage, fragment_id=fid))
+            reply[selected["field"]].append(dict(text=options[key], fragment_id=fid))
