@@ -1,0 +1,49 @@
+# Агент механика
+
+Команды выполняются из корня репозитория. Нужны Python 3.10+, Poppler, Ollama и папка с исходными шестью PDF и ZIP организаторов. По умолчанию это соседняя папка `../007_хакатон_ИИ`. Для другого расположения задайте `MATERIALS_DIR`.
+
+```bash
+export MATERIALS_DIR="../007_хакатон_ИИ"
+mkdir -p artifacts
+unzip -qo "$MATERIALS_DIR"/*mock*.zip -d artifacts
+python3 -m venv artifacts/venv
+source artifacts/venv/bin/activate
+pip install Flask -r artifacts/neuro*/requirements.txt
+python -m manual_search.corpus "$MATERIALS_DIR" artifacts/manual-corpus.json
+ollama pull gemma2:2b
+```
+
+Запустите Ollama и в отдельных терминалах с активированным окружением запустите сервисы.
+
+```bash
+uvicorn mock_ml.app:app --app-dir artifacts/neurodvs_hackathon_mock_2026-11-16 --port 8001
+uvicorn mock_toir.app:app --app-dir artifacts/neurodvs_hackathon_mock_2026-11-16 --port 8002
+python -m agent.server
+```
+
+Откройте http://127.0.0.1:8080. Адреса сервисов задают переменные окружения `MOCK_ML_URL`, `MOCK_TOIR_URL`, `OLLAMA_HOST_URL`. Модель задаёт `AGENT_MODEL`. Для автономного чтения диагностики из синтетической карточки есть `AGENT_FIXTURE_MODE=1`.
+
+При запуске с другими адресами скопируйте `agent/.env.example` в `artifacts/agent.env`, измените значения и загрузите их в терминале перед запуском бэкенда.
+
+```bash
+set -a
+source artifacts/agent.env
+set +a
+```
+
+## Контракт для команды
+
+- `GET /api/fleet` отдаёт пары ТС и проверок.
+- `POST /api/chat` принимает JSON с `vehicle_id`, `session_id`, `question`. Браузер сохраняет cookie. История последних шести реплик и черновики хранятся в памяти процесса отдельно для каждого клиента и случая.
+- Ответ содержит `verdict`, `ml_observations` с исходными показателями, `possible_causes`, `risk`, `checks`, `references`, `clarifying_question` и `ticket_draft`. Технический пункт содержит текст и `fragment_id`. Название, PDF-страница и ссылка приходят в `references`.
+- При наличии черновика фронт показывает форму. После подтверждения отправляет `vehicle_id`, `session_id` и `draft_id` на `POST /api/confirm`. Бэкенд отправляет сохранённый проект в ТОиР и возвращает номер. Повторное подтверждение возвращает 409. Если соединение с ТОиР оборвалось, исход отправки следует уточнить перед созданием нового проекта.
+- Приоритет черновика по умолчанию medium. Список запчастей пуст до установления причины.
+
+## Проверка и стоимость
+
+```bash
+PYTHONPATH=. python tests/check_agent.py
+python -m agent.benchmark > artifacts/benchmark.json
+```
+
+Журнал приложения находится в `artifacts/agent-turns.jsonl`. Каждая строка содержит контекст, вопрос, инструменты и найденные страницы, длительность всей реплики, модель, секунды и счётчики Ollama по каждому обращению. Бенчмарк выполняет три отдельных повтора основного вопроса и один диалог из трёх реплик. Стоимость по тарифу за миллион токенов равна `(input_tokens * input_rate + output_tokens * output_rate) / 1_000_000`. У локального прогона нет оплаты API по токенам.
