@@ -28,6 +28,15 @@ def main():
             off_topic = ask("S-0011", message)
             assert off_topic["intent"] == "conversation", off_topic
             assert not off_topic["references"] and not off_topic["checks"]
+        for message in ("как считаешь пол уокер заслужил?", "у пол уокера митсубиши эклипс"):
+            response = ask("S-0011", message)
+            assert response["intent"] == "conversation" and not response["references"], response
+        for question in ("лад давай че надо сделать", "так че сделать"):
+            response = ask("S-0011", question)
+            assert response["intent"] == "search" and response["checks"], response
+            assert response["references"][0]["pdf_page"] == 53
+        diagnosis = ask("S-0011", "ЧЕ СЛУЧИЛОСЬ")
+        assert diagnosis["intent"] == "diagnosis" and "Низкое давление масла" in diagnosis["verdict"]
         moved = ask("S-0011", "Можно ли своим ходом перегнать машину на базу?")
         assert moved["clarifying_question"] and "перегон" in moved["verdict"]
         assert any(r["pdf_page"] == 19 for r in moved["references"]), moved

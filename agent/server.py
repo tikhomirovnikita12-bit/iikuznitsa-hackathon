@@ -57,7 +57,9 @@ def create_app(agent=None):
             history = list(histories[key])
         reply = agent.turn(*key[1:], q, history)
         with lock:
-            histories[key].append([q, reply["verdict"], reply["clarifying_question"], reply["checks"][:1], reply.get("pressure_measurement")])
+            if reply.get("intent") != "conversation":
+                histories[key].append([q, reply["verdict"], reply["clarifying_question"],
+                                       reply["checks"][:1], reply.get("pressure_measurement")])
             if reply["ticket_draft"]:
                 token = secrets.token_urlsafe(24)
                 drafts[key] = (token, reply["ticket_draft"])

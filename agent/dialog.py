@@ -114,38 +114,42 @@ class Agent:
                                       (values != previous_pressure or oil_pressure.BARE_NUMBER.fullmatch(question.strip())))):
                 return self.pressure_reply(reply, values, trace)
             context = json.dumps([ml, [row[:4] for row in history], question], ensure_ascii=False)
-            plan = self.provider.ask(
-                "Классифицируй только новую реплику. Контекст нужен для ссылок вроде «а что проверить сначала?». "
-                "Само наличие отклонения в карточке не является просьбой о диагностике. "
-                "off_topic — личное сообщение, шутка или вопрос вне задач механика. "
-                "Например, «я сегодня устал» — off_topic, «а почему так?» при обсуждении поломки — search. "
-                "ticket — оформить заявку; movement — можно ли ехать; diagnosis — показать результат; "
-                "search — технический вопрос; clarify — запрос по машине, в котором неясен узел или условия. "
-                "query — поисковая фраза; question — уточняющий вопрос. Для off_topic оба поля пустые. "
-                "Текущая реплика: " + json.dumps(question, ensure_ascii=False) +
-                "\nВспомогательный контекст: " + json.dumps([ml, [row[:4] for row in history]], ensure_ascii=False),
-                PLAN, trace)
-            action = plan["action"]
+            short_request = re.sub(r"^(?:(?:ну|так|а|ладно|лад|окей|ок|давай)[ ,]+)+", "", wording)
+            short_request = re.sub(r"\bч[её]\b", "что", short_request)
+            next_step = bool(re.fullmatch(
+                r"(?:что (?:мне )?(?:(?:надо|нужно|теперь|дальше) )?"
+                r"(?:делать|сделать|проверить|посмотреть)(?: (?:надо|нужно|дальше|сначала))?"
+                r"|скажи как делать|с чего начать)", short_request))
+            followup = bool(re.fullmatch(
+                r"(?:подскажи |скажи )?как (?:именно |это |мне )*(?:сделать|проверить|делать|выполнить)",
+                short_request))
+            diagnosis_request = bool(re.fullmatch(
+                r"покажи (?:результат диагностики|диагностику)|что (?:случилось|произошло|не так)(?: с машиной)?",
+                short_request))
+            ticket_request = bool(re.fullmatch(
+                r"(?:создай|создать|подготовь|оформи) заявку(?: на дефектовку)?", short_request))
+            if diagnosis_request or next_step or followup or ticket_request:
+                action = "diagnosis" if diagnosis_request else "ticket" if ticket_request else "search"
+                plan = {"query": ml["anomaly_title"] or "", "question": ""}
+            else:
+                plan = self.provider.ask(
+                    "Классифицируй новую реплику в чате механика. Контекст помогает понять короткие "
+                    "вопросы вроде «что дальше?», но сам не является запросом. "
+                    "off_topic — личная реплика или обсуждение фильмов и знаменитостей, "
+                    "даже если упоминается марка машины. "
+                    "ticket — оформить заявку; movement — можно ли ехать; diagnosis — показать результат; "
+                    "search — технический вопрос; clarify — вопрос по машине, требующий уточнения. "
+                    "query — поисковая фраза; question — уточняющий вопрос. Для off_topic оба поля пустые. "
+                    "Текущая реплика: " + json.dumps(question, ensure_ascii=False) +
+                    "\nВспомогательный контекст: " + json.dumps([ml, [row[:4] for row in history]], ensure_ascii=False),
+                    PLAN, trace)
+                action = plan["action"]
             if pressure_case and action == "movement":
                 return self.pressure_reply(reply, values, trace)
-            # Exact UI commands are stable even when a small model misreads the history.
-            if re.fullmatch(r"(?:создай|создать|подготовь|оформи) заявку(?: на дефектовку)?",
-                            question.strip(" .!?").casefold()):
-                action = "ticket"
-            next_step = wording in {"а что мне делать", "что мне делать", "че сделать надо",
-                                    "что делать", "что мне сделать", "что сделать", "что нужно сделать", "скажи как делать", "что проверить сначала",
-                                    "а что проверить сначала", "что делать дальше", "с чего начать"}
-            followup = bool(re.fullmatch(
-                r"(?:а )?(?:подскажи |скажи )?как (?:именно |это |мне )*(?:сделать|проверить|делать|выполнить)",
-                wording))
             previous = next((row[3][0] for row in reversed(history) if len(row) > 3 and row[3]), None)
             if followup and not previous:
                 reply.update(intent="clarify", clarifying_question="Какую проверку нужно объяснить?")
                 return reply
-            if next_step or followup:
-                action = "search"
-            if wording in {"покажи результат диагностики", "покажи диагностику"}:
-                action = "diagnosis"
             reply["intent"] = action
             generic_check = any(phrase in question.casefold() for phrase in
                                 ("что проверить", "с чего начать", "что посмотреть", "что делать дальше"))
@@ -154,15 +158,20 @@ class Agent:
                 return reply
             if action in {"off_topic", "search", "clarify"} and not (next_step or followup):
                 relevance = self.provider.ask(
-                    "Determine if the new message belongs in a vehicle mechanic chat. "
-                    "Return relevant=true for a vehicle question, symptom, or short follow-up that could "
-                    "refer to a prior answer. Return relevant=false for unrelated questions, personal "
-                    "statements, and social chatter. Do not answer the message. "
-                    "Examples of false: «я сегодня устал», «какой фильм посмотреть?». "
-                    "Examples of true: «что проверить?», «почему?», «двигатель стучит». "
-                    "New message: " + json.dumps(question, ensure_ascii=False),
-                    schema(relevant={"type": "boolean"}), trace)
-                if not relevance["relevant"]:
+                    "Определи цель реплики. unrelated — личная реплика, мнение, разговор о кино "
+                    "или о том, кому принадлежит автомобиль, даже если названа марка. "
+                    "mechanic — вопрос о проверке, ремонте, эксплуатации, описание неисправности "
+                    "или краткое уточнение вроде «почему?». Если сообщение просто называет владельца "
+                    "и модель его машины и не описывает проблему, это unrelated. "
+                    "«У Киану Ривза Ford Mustang» → unrelated. «У Джона Траволты хонда цивик» → unrelated. «Ford Mustang стучит» → mechanic. "
+                    "Реплика: " + json.dumps(question, ensure_ascii=False),
+                    schema(topic={"type": "string", "enum": ["unrelated", "mechanic"]}), trace)
+                # A planner can copy an earlier user question instead of asking for missing detail.
+                echoed_history = action == "clarify" and any(
+                    plan["question"].casefold().strip(" .!?") == row[0].casefold().strip(" .!?")
+                    for row in history
+                )
+                if relevance["topic"] == "unrelated" or echoed_history:
                     reply.update(intent="conversation", explanation="Могу помочь с диагностикой или показать, что говорит руководство по этой машине.")
                     return reply
                 if action == "off_topic":
@@ -177,7 +186,7 @@ class Agent:
                 return reply
             query = plan["query"] or question
             # Preserve the mechanic's terminology for specific manual questions.
-            if action == "search" and len(question.split()) >= 5:
+            if action == "search" and len(question.split()) >= 5 and not next_step:
                 query = question
             first_coolant_check = ml["anomaly_type"] == "F03" and (next_step or action == "diagnosis")
             if first_coolant_check:
@@ -187,7 +196,7 @@ class Agent:
                     query = "При каких условиях проверять давление масла?"
                     reply["clarifying_question"] = ("Укажите фактическое давление, обороты, прогрев "
                         "и применимость допуска после длительной эксплуатации.")
-                elif action in {"ticket", "diagnosis"} or "сначала" in question.lower():
+                elif action in {"ticket", "diagnosis"} or next_step:
                     query = "Какие причины пониженного давления указаны в руководстве?"
 
             if followup:
@@ -203,7 +212,11 @@ class Agent:
                 trace["tools"].append(dict(name="search", query=query,
                     pages=[(h["manual"], h["pdf_page"]) for h in hits]))
                 if hits:
-                    self.select(reply, action, question + " " + previous["text"] if followup else question, hits, trace, first_coolant_check, next_step, previous if followup else None)
+                    selection_question = "Что проверить сначала?" if next_step else question
+                    if followup:
+                        selection_question += " " + previous["text"]
+                    self.select(reply, action, selection_question, hits, trace,
+                                first_coolant_check, next_step, previous if followup else None)
                 if reply["references"]:
                     break
                 if attempt == 0:
