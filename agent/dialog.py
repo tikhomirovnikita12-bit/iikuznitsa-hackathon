@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from .backend import post
 from .tools.diagnosis import diagnose
+from .tools import oil_pressure
 from .tools.ticket import prepare
 
 
@@ -76,15 +77,25 @@ class Agent:
                 reply["clarifying_question"] = (f"ML указала «{ml['anomaly_title']}», а в карточке "
                     f"{ml['engine_model']} ({ml['fuel']}). Подтвердите двигатель и выбранную запись.")
                 return reply
-            context = json.dumps([ml, history, question], ensure_ascii=False)
+            pressure_case = ml["engine_model"] == "ЯМЗ-236М2" and ml["anomaly_type"] == "F02"
+            previous_pressure = history[-1][4] if history and len(history[-1]) > 4 else None
+            movement = bool(re.search(r"перегна|перегон|своим ходом", question, re.I))
+            values = oil_pressure.readings(question, previous_pressure or {}) if pressure_case else {}
+            if pressure_case and (movement or oil_pressure.PRESSURE.search(question)
+                                  or (previous_pressure is not None and values != previous_pressure)):
+                return self.pressure_reply(reply, values, trace)
+            context = json.dumps([ml, [row[:4] for row in history], question], ensure_ascii=False)
             plan = self.provider.ask("Выбери действие по ПОСЛЕДНЕМУ вопросу механика. "
                 "ticket — просят оформить заявку; movement — можно ли ехать или перегнать; "
                 "diagnosis — показать результат; search — технический вопрос, включая что проверить сначала; "
                 "clarify — неясен узел и контекст его не определяет. query — короткий русский поисковый запрос "
                 "по узлу и признакам; question — уточняющий вопрос. Контекст, история и вопрос: " + context, PLAN, trace)
             action = plan["action"]
+            if pressure_case and action == "movement":
+                return self.pressure_reply(reply, values, trace)
             # Exact UI commands are stable even when a small model misreads the history.
-            if question.strip(" .!?").casefold() in {"создай заявку", "создать заявку"}:
+            if re.fullmatch(r"(?:создай|создать|подготовь|оформи) заявку(?: на дефектовку)?",
+                            question.strip(" .!?").casefold()):
                 action = "ticket"
             wording = question.casefold().strip(" .!?")
             next_step = wording in {"а что мне делать", "что мне делать", "че сделать надо",
@@ -167,6 +178,23 @@ class Agent:
             self.log.parent.mkdir(parents=True, exist_ok=True)
             with self.log.open("a") as stream:
                 stream.write(json.dumps(trace, ensure_ascii=False) + "\n")
+
+    def pressure_reply(self, reply, values, trace):
+        ml = reply["ml_observations"]
+        hits = self.manuals.find(oil_pressure.QUERY, ml)
+        trace["tools"].append(dict(name="search", query=oil_pressure.QUERY,
+            pages=[(hit["manual"], hit["pdf_page"]) for hit in hits]))
+        reply.update(intent="movement", pressure_measurement=values,
+                     verdict="Возможность перегона по этим данным не подтверждена.")
+        source = next((hit for hit in hits if hit["fragment_id"] == oil_pressure.SOURCE), None)
+        if source is None:
+            reply["clarifying_question"] = "Не удалось найти применимый норматив в руководстве."
+            return reply
+        ref = self.manuals.reference(source["fragment_id"], ml["engine_model"])
+        reply["references"].append(ref)
+        result, reply["clarifying_question"] = oil_pressure.compare(values)
+        reply["checks"].append(dict(text=result or source["text"], fragment_id=ref["fragment_id"]))
+        return reply
 
     def select(self, reply, action, question, hits, trace, coolant=False, next_step=False, previous=None):
         # The provider selects original passages. Only server-owned text reaches the UI.

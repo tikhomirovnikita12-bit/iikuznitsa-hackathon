@@ -24,6 +24,16 @@ def main():
         moved = ask("S-0011", "Можно ли своим ходом перегнать машину на базу?")
         assert moved["clarifying_question"] and "перегон" in moved["verdict"]
         assert any(r["pdf_page"] == 19 for r in moved["references"]), moved
+        partial = ask("S-0011", "350 кПа")
+        assert "прогретом" in partial["clarifying_question"]
+        low = ask("S-0011", "Двигатель прогрет, 2100 об/мин, без допуска после длительной эксплуатации")
+        assert "350 кПа — ниже" in low["checks"][0]["text"], low
+        assert low["references"][0]["pdf_page"] == 19
+        within = ask("S-0011", "Перемерил: 450 кПа")
+        assert "450 кПа соответствует" in within["checks"][0]["text"], within
+        assert "не подтверждена" in within["verdict"] and not within["clarifying_question"]
+        cold = ask("S-0011", "На холодном двигателе 450 кПа")
+        assert "прогретом" in cold["clarifying_question"]
         switched = ask("S-0010", "А что проверить сначала?")
         assert switched["ml_observations"]["session_id"] == "S-0010"
         assert switched["ml_observations"]["status"] == "normal" and not switched["checks"]
