@@ -1,16 +1,18 @@
 """Prepare the customer's local mocks, manuals, index, and page previews."""
 
 import argparse
+import hashlib
 import json
+import os
 import shutil
 import subprocess
 from io import BytesIO
 from pathlib import Path, PurePosixPath
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 from manual_search.corpus import build_corpus
 
-from .config import CORPUS, MATERIALS, MOCKS, PREVIEWS
+from .config import CORPUS, MATERIALS, MOCKS, PREVIEWS, ROOT
 from .sources import BY_SLUG, MANUALS
 
 
@@ -21,6 +23,53 @@ MOCK_FILES = (
     "mock_toir/__init__.py", "mock_toir/app.py", "tests/test_mocks.py",
 )
 PREVIEW_PAGES = {"yamz236-re": (19, 53), "zmz409": (107,), "zmz5234": (20, 21, 56)}
+ARCHIVE_NAME = "007_хакатон_ИИ.zip"
+
+
+class PreparationError(Exception):
+    """An expected setup problem with instructions for the person running the app."""
+
+
+def digest(path: Path) -> str:
+    result = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            result.update(block)
+    return result.hexdigest()
+
+
+def atomic_json(path: Path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".part")
+    try:
+        temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def discover_archive(explicit: Path | None = None) -> Path | None:
+    configured = explicit or os.environ.get("CUSTOMER_ARCHIVE_PATH")
+    location = Path(configured).expanduser() if configured else ROOT
+    if not location.is_absolute():
+        location = ROOT / location
+    if location.is_file():
+        return location
+    if not location.is_dir():
+        raise PreparationError(
+            f"Не найден архив или каталог: {location}\n"
+            "Как исправить: проверьте CUSTOMER_ARCHIVE_PATH или передайте python run.py --archive ПУТЬ_К_ZIP."
+        )
+    preferred = location / ARCHIVE_NAME
+    if preferred.is_file():
+        return preferred
+    archives = sorted(path for path in location.iterdir() if path.is_file() and path.suffix.lower() == ".zip")
+    if len(archives) > 1:
+        raise PreparationError(
+            f"В {location} несколько ZIP-архивов: {', '.join(path.name for path in archives)}.\n"
+            f"Как исправить: назовите архив заказчика {ARCHIVE_NAME} или укажите python run.py --archive ПУТЬ_К_ZIP."
+        )
+    return archives[0] if archives else None
 
 
 def names(member):
@@ -49,8 +98,6 @@ def find(archive: ZipFile, path: str, basename=False):
 
 
 def extract(archive, member, destination: Path):
-    if destination.exists():
-        return
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(destination.name + ".part")
     try:
@@ -64,34 +111,133 @@ def extract(archive, member, destination: Path):
 def unpack(path: Path):
     with ZipFile(path) as archive:
         with ZipFile(BytesIO(archive.read(find(archive, CUSTOMER_ARCHIVE, basename=True)))) as mocks:
-            for filename in MOCK_FILES:
-                extract(mocks, find(mocks, filename), MOCKS / filename)
-        for manual in MANUALS:
-            extract(archive, find(archive, manual.filename, basename=True), MATERIALS / manual.filename)
+            # Resolve the complete allowlist before replacing any prepared files.
+            mock_members = [(find(mocks, name), MOCKS / name) for name in MOCK_FILES]
+            manual_members = [
+                (find(archive, manual.filename, basename=True), MATERIALS / manual.filename)
+                for manual in MANUALS
+            ]
+            for member, destination in mock_members:
+                extract(mocks, member, destination)
+            for member, destination in manual_members:
+                extract(archive, member, destination)
+
+
+def require_poppler():
+    missing = [name for name in ("pdftotext", "pdftoppm") if not shutil.which(name)]
+    if missing:
+        raise PreparationError(
+            f"Не найдены утилиты Poppler в PATH: {', '.join(missing)}.\n"
+            "Как исправить: macOS — brew install poppler; Ubuntu/Debian — sudo apt install poppler-utils.\n"
+            "Windows — установите Poppler, добавьте папку с pdftotext.exe и pdftoppm.exe в PATH "
+            "и откройте новый терминал. Или используйте docker compose up --build: Poppler уже включён в образ."
+        )
+
+
+def ensure_ready(archive: Path | None = None, *, force=False):
+    """Prepare missing or changed materials; preserve SQLite and reuse a compatible index."""
+    try:
+        _ensure_ready(archive, force=force)
+    except PreparationError:
+        raise
+    except (BadZipFile, EOFError, RuntimeError, ValueError) as error:
+        raise PreparationError(
+            f"Не удалось подготовить материалы: {error}\n"
+            f"Как исправить: используйте полный внешний ZIP заказчика ({ARCHIVE_NAME}), "
+            "содержащий шесть PDF и вложенный архив заглушек. Повторно скачайте повреждённый ZIP.\n"
+            "Для другой версии PDF проверьте каталог data/manuals/catalog.json и разметку применимости. "
+            "После исправления повторите python run.py."
+        ) from error
+    except subprocess.CalledProcessError as error:
+        details = error.stderr or ""
+        if isinstance(details, bytes):
+            details = details.decode("utf-8", errors="replace")
+        raise PreparationError(
+            f"Poppler не смог обработать PDF (код {error.returncode}). {str(details).strip()[:800]}\n"
+            "Как исправить: проверьте целостность PDF и версию руководства, повторно распакуйте архив "
+            "командой python -m mechanic.prepare --rebuild. Прежний индекс и SQLite сохранены."
+        ) from error
+    except OSError as error:
+        raise PreparationError(
+            f"Ошибка доступа к материалам: {error}\n"
+            "Как исправить: проверьте свободное место и права записи в artifacts и каталог индекса. "
+            "Для Docker разрешите доступ к папке проекта в настройках Docker Desktop. "
+            "Исправьте причину и повторите запуск; удалять SQLite не нужно."
+        ) from error
+
+
+def _ensure_ready(archive: Path | None, *, force):
+    state_path = CORPUS.with_suffix(".state.json")
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            state = {}
+    except (OSError, ValueError):
+        state = {}
+
+    archive = discover_archive(archive)
+    signature = {"sha256": digest(archive)} if archive else None
+    required = [MATERIALS / manual.filename for manual in MANUALS]
+    required.extend(MOCKS / name for name in MOCK_FILES)
+    missing = [path for path in required if not path.is_file()]
+    if archive and (force or missing or signature != state.get("archive")):
+        print(f"[Подготовка] Распаковка {archive.name}…", flush=True)
+        unpack(archive)
+        missing = [path for path in required if not path.is_file()]
+    if missing:
+        raise PreparationError(
+            "Не хватает материалов заказчика:\n" + "\n".join(f"  • {path}" for path in missing[:8]) + "\n"
+            f"Как исправить: поместите полный {ARCHIVE_NAME} в корень проекта и запустите python run.py.\n"
+            "Распаковывать архив вручную не нужно. Другой путь: python run.py --archive ПУТЬ_К_ZIP."
+        )
+
+    # A content fingerprint also invalidates the cache after changes to parsing or curated data.
+    inputs = [*required, Path(__file__), ROOT / "manual_search" / "corpus.py"]
+    inputs.extend(sorted((ROOT / "data" / "manuals").glob("*.json")))
+    fingerprint = hashlib.sha256("\n".join(digest(path) for path in inputs).encode()).hexdigest()
+    cached = (not force and state.get("fingerprint") == fingerprint and CORPUS.is_file()
+              and state.get("index_sha256") == digest(CORPUS))
+    previews = [(slug, page, PREVIEWS / f"{slug}-{page}.png")
+                for slug, pages in PREVIEW_PAGES.items() for page in pages]
+    needed_previews = [item for item in previews if force or not cached or not item[2].is_file()]
+    if not cached or needed_previews:
+        require_poppler()
+    if cached:
+        print("[Подготовка] Совместимый индекс найден; повторная сборка не нужна.", flush=True)
+    else:
+        print(f"[Подготовка] Индексация {len(MANUALS)} PDF. Дождитесь завершения…", flush=True)
+        index = build_corpus(MATERIALS)
+        if not isinstance(index.get("fragments"), list) or not index["fragments"]:
+            raise PreparationError("Сборка вернула пустой индекс. Проверьте PDF заказчика и повторите подготовку.")
+
+    PREVIEWS.mkdir(parents=True, exist_ok=True)
+    for slug, page, destination in needed_previews:
+        source = MATERIALS / BY_SLUG[slug].filename
+        temporary = destination.with_name(destination.stem + ".part")
+        try:
+            subprocess.run(["pdftoppm", "-f", str(page), "-l", str(page), "-scale-to", "1350",
+                            "-singlefile", "-png", str(source), str(temporary)],
+                           check=True, capture_output=True)
+            temporary.with_suffix(".part.png").replace(destination)
+        finally:
+            temporary.with_suffix(".part.png").unlink(missing_ok=True)
+    if not cached:
+        atomic_json(CORPUS, index)
+        print(f"[Подготовка] Индекс сохранён: {len(index['fragments'])} фрагментов; "
+              f"страниц с проблемным текстовым слоем: {len(index.get('extraction_issues', []))}.", flush=True)
+    atomic_json(state_path, {"fingerprint": fingerprint, "index_sha256": digest(CORPUS), "archive": signature})
+    print("[Подготовка] Руководства, поиск и заглушки готовы. SQLite сохранены.", flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Подготовка локальных материалов «Цифрового механика»")
     parser.add_argument("archive", type=Path, nargs="?", help="Путь к внешнему ZIP заказчика")
+    parser.add_argument("--rebuild", action="store_true", help="Пересобрать индекс и изображения, сохранив SQLite")
     args = parser.parse_args()
-    if not shutil.which("pdftotext") or not shutil.which("pdftoppm"):
-        parser.error("Нужны утилиты pdftotext и pdftoppm из Poppler в PATH.")
-    if args.archive:
-        unpack(args.archive)
-    missing = [manual.filename for manual in MANUALS if not (MATERIALS / manual.filename).is_file()]
-    if missing:
-        parser.error("Не найдены руководства в " + str(MATERIALS) + ". Укажите ZIP заказчика.")
-
-    index = build_corpus(MATERIALS)
-    CORPUS.parent.mkdir(parents=True, exist_ok=True)
-    CORPUS.write_text(json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    PREVIEWS.mkdir(parents=True, exist_ok=True)
-    for slug, pages in PREVIEW_PAGES.items():
-        source = MATERIALS / BY_SLUG[slug].filename
-        for page in pages:
-            subprocess.run(["pdftoppm", "-f", str(page), "-l", str(page), "-scale-to", "1350",
-                            "-singlefile", "-png", str(source), str(PREVIEWS / f"{slug}-{page}")], check=True)
-    print(f"Материалы готовы. В индексе {len(index['fragments'])} фрагментов.")
+    try:
+        ensure_ready(args.archive, force=args.rebuild)
+    except PreparationError as error:
+        parser.exit(1, f"\nПодготовка остановлена.\n{error}\n")
 
 
 if __name__ == "__main__":

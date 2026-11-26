@@ -1,0 +1,29 @@
+services:
+  mechanic:
+    build: .
+    init: true
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:8000"
+    environment:
+      CUSTOMER_ARCHIVE_PATH: /input
+      CASE_AGENT: ${CASE_AGENT:-0}
+      AGENT_MODEL: ${AGENT_MODEL:-gemma2:2b}
+      OLLAMA_HOST_URL: ${OLLAMA_HOST_URL:-http://host.docker.internal:11434}
+      CUSTOMER_DIR: ${CUSTOMER_DIR:-artifacts/customer}
+      MANUALS_DIR: ${MANUALS_DIR:-artifacts/manuals}
+      TEAM_MANUALS_INDEX: ${TEAM_MANUALS_INDEX:-artifacts/manual-corpus.json}
+      MECHANIC_DB: ${MECHANIC_DB:-artifacts/mechanic-assistant.sqlite3}
+      TEAM_DB_PATH: ${TEAM_DB_PATH:-artifacts/mechanic.sqlite3}
+      MOCK_ML_URL: ${MOCK_ML_URL:-http://127.0.0.1:8001}
+      MOCK_TOIR_URL: ${MOCK_TOIR_URL:-http://127.0.0.1:8002}
+      MOCK_API_TIMEOUT: ${MOCK_API_TIMEOUT:-5}
+      LOW_CONFIDENCE_THRESHOLD: ${LOW_CONFIDENCE_THRESHOLD:-0.60}
+      TEAM_API_URL: ${TEAM_API_URL:-}
+      TEAM_AGENT_URL: ${TEAM_AGENT_URL:-}
+      TEAM_API_TIMEOUT: ${TEAM_API_TIMEOUT:-20}
+    volumes:
+      - .:/input:ro
+      - ./artifacts:/app/artifacts
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    stop_grace_period: 30s
