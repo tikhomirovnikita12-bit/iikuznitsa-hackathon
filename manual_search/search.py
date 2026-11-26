@@ -40,11 +40,17 @@ class ManualSearch:
         self.fragments = {entry["fragment_id"]: entry for entry in corpus["fragments"]}
         self.by_model = defaultdict(list)
         self.frequencies = defaultdict(Counter)
-        self.terms = json.loads((DATA_DIR / "search-terms.json").read_text(encoding="utf-8"))
+        terms = json.loads((DATA_DIR / "search-terms.json").read_text(encoding="utf-8"))
+        self.fault_terms = terms["fault_terms"]
+        self.synonyms = [
+            [set(tokens(normalized_words(phrase))) for phrase in group]
+            for group in terms["synonyms"]
+        ]
         for fragment_id, entry in self.fragments.items():
             section = tokens(normalized_words(entry["section"]))
             body = tokens(normalized_words(entry["text"]))
-            counts = Counter(section + body)
+            tags = tokens(normalized_words(" ".join(entry.get("search_terms", ()))))
+            counts = Counter(section + body + tags)
             for model in entry["applicable_engine_models"]:
                 self.by_model[model].append((fragment_id, counts))
                 self.frequencies[model].update(counts.keys())
@@ -57,13 +63,14 @@ class ManualSearch:
         if not query or limit < 1:
             return []
 
-        aliases = set()
-        for group in self.terms["synonyms"]:
-            group_terms = [set(tokens(normalized_words(phrase))) for phrase in group]
-            if any(phrase <= query for phrase in group_terms):
-                aliases.update(set.union(*group_terms) - query)
-
-        context = self.terms["fault_terms"].get(anomaly_type, ())
+        alternatives = [
+            phrase
+            for group in self.synonyms
+            if any(phrase <= query for phrase in group)
+            for phrase in group
+        ]
+        aliases = set().union(*alternatives) - query
+        context = self.fault_terms.get(anomaly_type, ())
         context_terms = set(tokens(normalized_words(" ".join(context)))) - COMMON_WORDS - query
         rows = self.by_model.get(engine_model, ())
         frequency = self.frequencies.get(engine_model, {})
@@ -71,21 +78,16 @@ class ManualSearch:
         for fragment_id, counts in rows:
             matches = (query | aliases) & counts.keys()
             direct = query & counts.keys()
-            if not matches or (not direct and not any(
-                set(tokens(normalized_words(phrase))) <= counts.keys()
-                for group in self.terms["synonyms"]
-                if any(
-                    set(tokens(normalized_words(phrase))) <= query for phrase in group
-                )
-                for phrase in group
-            )):
+            if not matches:
+                continue
+            if not direct and not any(phrase <= counts.keys() for phrase in alternatives):
                 continue
             entry = self.fragments[fragment_id]
             coverage = min(1.0, (len(direct) + 0.6 * len(matches - direct)) / len(query))
             if coverage < 0.4:
                 continue
 
-            weights = sum(math.log1p(len(rows) / frequency[word]) for word in matches)
+            weights = sum(min(math.log1p(len(rows) / frequency[word]), 5.0) for word in matches)
             context_bonus = min(len(context_terms & counts.keys()), 4) * 0.25
             section_words = set(tokens(normalized_words(entry["section"])))
             section_bonus = 0.5 * len(query & section_words)
@@ -93,7 +95,9 @@ class ManualSearch:
                 normalized_words(entry["text"])
             ) else 0
             verified_bonus = 3.0 if entry.get("verified") and coverage >= 0.6 else 0
-            score = weights * coverage + context_bonus + section_bonus + exact_bonus + verified_bonus
+            score = (
+                weights * coverage + context_bonus + section_bonus + exact_bonus + verified_bonus
+            )
             results.append((score, entry))
 
         results.sort(key=lambda row: (-row[0], row[1]["fragment_id"]))
