@@ -24,6 +24,10 @@ def main():
         term = ask("S-0011", "что такое картер")
         assert term["intent"] == "explain" and "коленчатый вал" in term["explanation"]
         assert not term["references"] and not term["checks"]
+        for message in ("я сегодня устал", "Какой фильм посмотреть вечером?"):
+            off_topic = ask("S-0011", message)
+            assert off_topic["intent"] == "conversation", off_topic
+            assert not off_topic["references"] and not off_topic["checks"]
         moved = ask("S-0011", "Можно ли своим ходом перегнать машину на базу?")
         assert moved["clarifying_question"] and "перегон" in moved["verdict"]
         assert any(r["pdf_page"] == 19 for r in moved["references"]), moved

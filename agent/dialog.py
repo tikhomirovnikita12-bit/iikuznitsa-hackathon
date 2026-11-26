@@ -21,7 +21,7 @@ TERM = re.compile(r"(?:а )?(?:что такое|что означает|что 
 GLOSSARY = {
     "картер": "Картер — корпус, в котором работает коленчатый вал. В этом контексте речь о масле в поддоне картера: поддон расположен снизу двигателя и служит резервуаром для масла.",
 }
-PLAN = schema(action={"type": "string", "enum": ["diagnosis", "search", "ticket", "movement", "clarify"]},
+PLAN = schema(action={"type": "string", "enum": ["diagnosis", "search", "ticket", "movement", "clarify", "off_topic"]},
               query=STRING, question=STRING)
 
 
@@ -114,11 +114,17 @@ class Agent:
                                       (values != previous_pressure or oil_pressure.BARE_NUMBER.fullmatch(question.strip())))):
                 return self.pressure_reply(reply, values, trace)
             context = json.dumps([ml, [row[:4] for row in history], question], ensure_ascii=False)
-            plan = self.provider.ask("Выбери действие по ПОСЛЕДНЕМУ вопросу механика. "
-                "ticket — просят оформить заявку; movement — можно ли ехать или перегнать; "
-                "diagnosis — показать результат; search — технический вопрос, включая что проверить сначала; "
-                "clarify — неясен узел и контекст его не определяет. query — короткий русский поисковый запрос "
-                "по узлу и признакам; question — уточняющий вопрос. Контекст, история и вопрос: " + context, PLAN, trace)
+            plan = self.provider.ask(
+                "Классифицируй только новую реплику. Контекст нужен для ссылок вроде «а что проверить сначала?». "
+                "Само наличие отклонения в карточке не является просьбой о диагностике. "
+                "off_topic — личное сообщение, шутка или вопрос вне задач механика. "
+                "Например, «я сегодня устал» — off_topic, «а почему так?» при обсуждении поломки — search. "
+                "ticket — оформить заявку; movement — можно ли ехать; diagnosis — показать результат; "
+                "search — технический вопрос; clarify — запрос по машине, в котором неясен узел или условия. "
+                "query — поисковая фраза; question — уточняющий вопрос. Для off_topic оба поля пустые. "
+                "Текущая реплика: " + json.dumps(question, ensure_ascii=False) +
+                "\nВспомогательный контекст: " + json.dumps([ml, [row[:4] for row in history]], ensure_ascii=False),
+                PLAN, trace)
             action = plan["action"]
             if pressure_case and action == "movement":
                 return self.pressure_reply(reply, values, trace)
@@ -146,6 +152,21 @@ class Agent:
             if ml["status"] == "normal" and (generic_check or next_step) and len(question.split()) <= 5:
                 reply["clarifying_question"] = "По этой записи отклонений нет. Какой узел или симптом вас интересует?"
                 return reply
+            if action in {"off_topic", "search", "clarify"} and not (next_step or followup):
+                relevance = self.provider.ask(
+                    "Determine if the new message belongs in a vehicle mechanic chat. "
+                    "Return relevant=true for a vehicle question, symptom, or short follow-up that could "
+                    "refer to a prior answer. Return relevant=false for unrelated questions, personal "
+                    "statements, and social chatter. Do not answer the message. "
+                    "Examples of false: «я сегодня устал», «какой фильм посмотреть?». "
+                    "Examples of true: «что проверить?», «почему?», «двигатель стучит». "
+                    "New message: " + json.dumps(question, ensure_ascii=False),
+                    schema(relevant={"type": "boolean"}), trace)
+                if not relevance["relevant"]:
+                    reply.update(intent="conversation", explanation="Могу помочь с диагностикой или показать, что говорит руководство по этой машине.")
+                    return reply
+                if action == "off_topic":
+                    action = reply["intent"] = "search"
             if action == "clarify":
                 reply["clarifying_question"] = plan["question"] or "Какой узел и режим работы вас интересуют?"
                 return reply
