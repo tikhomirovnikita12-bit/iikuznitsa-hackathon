@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .backend import post
-from .tools.diagnosis import diagnose
+from .tools.diagnosis import describe, diagnose
 from .tools import fluid_check, oil_pressure
 from .tools.ticket import prepare
 
@@ -46,6 +46,13 @@ def passages(hit):
     return [sent for sent in re.split(r"(?<=[.!?])\s+(?=[А-ЯЁ])", clean) if 16 <= len(sent) <= 350]
 
 
+def history_entry(question, reply):
+    if reply.get("intent") != "conversation":
+        return [question, reply["verdict"], reply["clarifying_question"], reply["checks"][:1],
+                reply.get("pressure_measurement"), reply.get("fluid_check")]
+    return None
+
+
 class Ollama:
     def ask(self, prompt, format_, trace):
         model = os.getenv("AGENT_MODEL", "gemma2:2b")
@@ -66,13 +73,13 @@ class Agent:
         self.provider = provider or Ollama()
         self.log = Path(log)
 
-    def turn(self, vehicle_id, session_id, question, history=()):
+    def turn(self, vehicle_id, session_id, question, history=(), *, diagnosis=None):
         start = time.monotonic()
         trace = dict(id=uuid4().hex, vehicle_id=vehicle_id, session_id=session_id,
                      question=question, tools=[], calls=[])
         try:
             trace["tools"].append({"name": "diagnose"})
-            reply = diagnose(self.backend, vehicle_id, session_id)
+            reply = describe(diagnosis) if diagnosis is not None else diagnose(self.backend, vehicle_id, session_id)
             ml = reply["ml_observations"]
             if ml["status"] == "check_failed":
                 return reply
@@ -280,7 +287,7 @@ class Agent:
         finally:
             trace["seconds"] = time.monotonic() - start
             self.log.parent.mkdir(parents=True, exist_ok=True)
-            with self.log.open("a") as stream:
+            with self.log.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(trace, ensure_ascii=False) + "\n")
 
     def fluid_reply(self, reply, state, trace):

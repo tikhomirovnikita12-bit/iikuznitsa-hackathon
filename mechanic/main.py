@@ -4,6 +4,7 @@ import re
 from contextlib import asynccontextmanager, contextmanager
 from time import perf_counter, time
 from typing import Annotated
+from urllib.error import URLError
 from uuid import uuid4
 
 import httpx
@@ -14,7 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from . import demo_agent, sources
-from .config import DEFAULT_ML, DEFAULT_TOIR, MOCKS, ROOT, WEB, endpoint
+from .case_agent import CaseAgent
+from .config import CORPUS, DEFAULT_ML, DEFAULT_TOIR, MOCKS, ROOT, WEB, endpoint
 from .contracts import (
     Brief, ChatRequest, Diagnosis, DraftFields, DraftUpdate, Identifier, Pair, Reply, TicketReceipt,
     TicketReconciliation, TicketRequest, TicketSubmit, ToolCall,
@@ -61,6 +63,11 @@ store = None if TEAM_API_URL else Store(
 )
 retrieval = None if TEAM_API_URL else load_retrieval(checkout)
 team = TeamWorkflow(checkout, CATALOG_PATH, ML_URL, TOIR_URL, MOCK_TIMEOUT) if checkout else None
+case_agent = None
+if os.environ.get("CASE_AGENT") == "1" and not (TEAM_API_URL or TEAM_AGENT_URL):
+    if not CORPUS.is_file():
+        raise ValueError("Сначала подготовьте индекс командой python -m mechanic.prepare.")
+    case_agent = CaseAgent(CORPUS, db_path.parent / "agent-turns.jsonl")
 
 
 @asynccontextmanager
@@ -169,7 +176,7 @@ def catalog():
         "vehicles": team.catalog({v["vehicle_id"]: v for v in CATALOG}) if team else CATALOG,
         "manuals": sources.catalog(),
         "fault_types": FAULTS,
-        "mode": "hybrid" if TEAM_AGENT_URL else "demo",
+        "mode": "hybrid" if TEAM_AGENT_URL or case_agent else "demo",
         "manual_search": "team" if retrieval else "fixture",
         "backend": "team" if team else "local",
         "confidence_threshold": LOW_CONFIDENCE,
@@ -398,11 +405,13 @@ def diagnose(pair: Pair):
         if requested < state.get("diagnosis_requested", 0):
             return
         saved_diagnosis = state["diagnosis"]
-        if (saved_diagnosis and state["ticket"]["status"] in ("idle", "draft", "error") and
-            (saved_diagnosis["status"], saved_diagnosis["anomaly_type"]) !=
-            (diagnosis.status, diagnosis.anomaly_type)):
-            state.update(draft=None, draft_id=None, draft_revision=None, draft_origin=None,
-                         messages=[], ticket=empty_state()["ticket"])
+        if saved_diagnosis and (saved_diagnosis["status"], saved_diagnosis["anomaly_type"]) != (
+            diagnosis.status, diagnosis.anomaly_type
+        ):
+            state["agent_history"] = []
+            if state["ticket"]["status"] in ("idle", "draft", "error"):
+                state.update(draft=None, draft_id=None, draft_revision=None, draft_origin=None,
+                             messages=[], ticket=empty_state()["ticket"])
         state.update(diagnosis=diagnosis.model_dump(), brief=brief, brief_error=brief_error,
                      diagnosis_requested=requested)
         state["messages"] = chat_history(state)
@@ -413,29 +422,40 @@ def diagnose(pair: Pair):
 def response_to_chat(vehicle, diagnosis, state, question):
     draft_requested = demo_agent.wants_draft(question)
     if draft_requested and diagnosis.status != "anomaly":
-        return Reply(summary="Черновик дефектовки доступен для результата с отклонением."), None, "fixture", []
+        return Reply(summary="Черновик дефектовки доступен для результата с отклонением."), None, "fixture", [], None
     if draft_requested and state["draft"]:
-        return Reply(summary="Черновик уже открыт. Проверьте поля и подтвердите приоритет."), None, "fixture", []
+        return Reply(summary="Черновик уже открыт. Проверьте поля и подтвердите приоритет."), None, "fixture", [], None
 
     mismatch = demo_agent.case_for(vehicle, diagnosis) == "mismatch"
+    if case_agent and diagnosis.status != "check_failed" and not mismatch:
+        try:
+            reply, proposal, entry = case_agent.chat(vehicle, diagnosis, question, state["agent_history"])
+        except TimeoutError as error:
+            raise ApiError(504, "agent_timeout", "Агент не ответил вовремя. Повторите запрос.") from error
+        except URLError as error:
+            raise ApiError(503, "agent_unavailable", "Ollama или выбранная модель недоступны.") from error
+        except (KeyError, TypeError, ValueError) as error:
+            raise ApiError(502, "agent_invalid_response", "Агент вернул некорректный ответ.") from error
+        return reply, proposal, "team", [], entry
+
     if TEAM_AGENT_URL and diagnosis.status != "check_failed" and not mismatch:
         body, calls = agent_call("chat", vehicle, diagnosis, state, question)
         reply = Reply.model_validate(body.get("reply"))
         proposal = DraftFields.model_validate(body["draft"]) if body.get("draft") is not None else None
         if proposal is not None and diagnosis.status != "anomaly":
             raise ApiError(502, "agent_invalid_draft", "Черновик возможен только для результата с отклонением.")
-        return reply, proposal, "team", calls
+        return reply, proposal, "team", calls, None
 
     if draft_requested:
         proposal = demo_agent.draft(vehicle, diagnosis)
         if proposal:
-            return Reply(summary="Черновик подготовлен. Проверьте поля и подтвердите приоритет."), proposal, "fixture", []
+            return Reply(summary="Черновик подготовлен. Проверьте поля и подтвердите приоритет."), proposal, "fixture", [], None
         message = demo_agent.mismatch(vehicle) if mismatch else (
             "Для черновика нужна подтверждённая страница по этому двигателю. "
             "Уточните узел и результаты проверки перед дефектовкой."
         )
-        return Reply(summary=message), None, "fixture", []
-    return demo_agent.answer(vehicle, diagnosis, question), None, "fixture", []
+        return Reply(summary=message), None, "fixture", [], None
+    return demo_agent.answer(vehicle, diagnosis, question), None, "fixture", [], None
 
 
 def draft_available(vehicle: dict, state: dict) -> bool:
@@ -444,6 +464,8 @@ def draft_available(vehicle: dict, state: dict) -> bool:
     diagnosis = Diagnosis.model_validate(state["diagnosis"])
     if diagnosis.status != "anomaly" or demo_agent.case_for(vehicle, diagnosis) == "mismatch":
         return False
+    if case_agent:
+        return True
     if TEAM_AGENT_URL:
         return bool(state["brief"] and state["brief"].get("references"))
     proposal = demo_agent.draft(vehicle, diagnosis)
@@ -480,9 +502,9 @@ def prepare_draft(pair: Pair):
 
     diagnosis = Diagnosis.model_validate(snapshot["diagnosis"])
     started = perf_counter()
-    tool = "agent.chat" if TEAM_AGENT_URL else "agent.fixture"
+    tool = "agent.chat" if TEAM_AGENT_URL or case_agent else "agent.fixture"
     try:
-        reply, draft, origin, calls = response_to_chat(vehicle, diagnosis, snapshot, "Подготовь заявку")
+        reply, draft, origin, calls, _entry = response_to_chat(vehicle, diagnosis, snapshot, "Подготовь заявку")
         if draft is None:
             raise ApiError(422, "draft_unavailable", reply.summary)
         verify_references(draft.references, vehicle, required=True)
@@ -515,12 +537,12 @@ def chat(request: ChatRequest):
         raise ApiError(409, "diagnosis_needed", "Сначала получите результат диагностики этой сессии.")
     diagnosis = Diagnosis.model_validate(snapshot["diagnosis"])
     started = perf_counter()
-    tool = "agent.chat" if TEAM_AGENT_URL else "agent.fixture"
+    tool = "agent.chat" if TEAM_AGENT_URL or case_agent else "agent.fixture"
     try:
-        reply, draft, origin, calls = response_to_chat(vehicle, diagnosis, snapshot, request.message)
+        reply, draft, origin, calls, agent_entry = response_to_chat(vehicle, diagnosis, snapshot, request.message)
         tool = "agent.chat" if origin == "team" else "agent.fixture"
         for section in reply.sections:
-            verify_references(section.references, vehicle, section.kind in ("causes", "checks", "work"))
+            verify_references(section.references, vehicle, section.kind in ("causes", "checks", "work", "risk"))
         if draft is not None:
             verify_references(draft.references, vehicle, required=True)
         if origin == "fixture":
@@ -541,6 +563,8 @@ def chat(request: ChatRequest):
             {"role": "user", "text": request.message},
             {"role": "assistant", "origin": origin, **reply.model_dump()},
         ])
+        if agent_entry is not None:
+            state["agent_history"] = [*state["agent_history"][-5:], agent_entry]
         state["messages"] = chat_history(state)
         record_call(state, audit(tool, started))
         for call in calls:

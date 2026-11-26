@@ -22,7 +22,7 @@ const plateLetters = { а: "a", в: "b", е: "e", к: "k", м: "m", н: "h", о:
   р: "p", с: "c", т: "t", у: "y", х: "x" };
 const sectionNames = {
   signs: "Признаки", causes: "Возможные причины", checks: "Проверки",
-  work: "Возможные работы", clarify: "Что уточнить",
+  work: "Возможные работы", clarify: "Что уточнить", risk: "Риски",
 };
 const urgencyNames = { low: "Низкий", medium: "Средний", high: "Высокий" };
 const riskLabels = {

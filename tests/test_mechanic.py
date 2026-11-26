@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import json
 from threading import Event
 
 import httpx
@@ -6,8 +7,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mechanic import main
+from mechanic.case_agent import CaseAgent
 from mechanic.config import MOCKS
 from mechanic.state import Store
+from manual_search.corpus import verified_fragments
 
 
 OIL = {"vehicle_id": "E549YT198", "session_id": "S-0011"}
@@ -125,6 +128,51 @@ def test_mock_payload_receipt_and_concurrent_duplicate(stand, monkeypatch):
     assert all(set(ref) == {"manual", "pdf_page"} for ref in calls[0]["references"])
     assert state(client)["ticket"] == ticket
     assert client.post("/api/ticket", json=request).json()["ticket"] == ticket
+    assert len(calls) == 1
+
+
+def test_case_agent_preserves_measurements_and_requires_confirmation(stand, monkeypatch, tmp_path):
+    client, calls = stand
+    corpus = tmp_path / "corpus.json"
+    corpus.write_text(json.dumps({"fragments": verified_fragments()}), encoding="utf-8")
+    agent = CaseAgent(corpus, tmp_path / "turns.jsonl")
+
+    class SelectPassage:
+        def ask(self, _prompt, response_schema, _trace):
+            sources = response_schema["properties"]["items"]["items"]["properties"]["source"]["enum"]
+            source = next(item for item in sources if "-p053-" in item)
+            return {"items": [{"field": "checks", "source": source}]}
+
+    monkeypatch.setattr(agent.agent, "provider", SelectPassage())
+    monkeypatch.setattr(main, "case_agent", agent)
+    assert client.get("/api/catalog").json()["mode"] == "hybrid"
+    diagnose(client)
+
+    def ask(message):
+        response = client.post("/api/chat", json={**OIL, "message": message})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    first = ask("Можно ли перегнать машину?")
+    assert first["messages"][-1]["origin"] == "team"
+    assert first["messages"][-1]["sections"][0]["references"][0]["pdf_page"] == 19
+    measurement = ask("350")
+    assert "350" in measurement["messages"][-1]["sections"][0]["items"][0]
+    assert state(client)["messages"] == measurement["messages"]
+    assert "agent_history" not in state(client)
+    ask("да, кПа")
+    result = ask("Двигатель прогрет, 2100 об/мин, без допуска после длительной эксплуатации")
+    assert "350 кПа — ниже" in result["messages"][-1]["sections"][0]["items"][0]
+
+    result = ask("Подготовь заявку на дефектовку")
+    draft = result["draft"]
+    assert draft["references"][0]["pdf_page"] == 53
+    assert not calls
+    payload = {**OIL, "draft_id": result["draft_id"], "revision": result["draft_revision"],
+               "edits": {key: draft[key] for key in ("conclusion", "operations", "urgency", "spare_parts")},
+               "priority_confirmed": True}
+    receipt = client.post("/api/ticket", json=payload)
+    assert receipt.json()["ticket"]["ticket_id"].startswith("TKT-")
     assert len(calls) == 1
 
 

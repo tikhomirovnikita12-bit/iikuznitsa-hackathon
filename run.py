@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import subprocess
 import sys
 from time import monotonic, sleep
@@ -45,7 +46,10 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--no-mocks", action="store_true", help="Использовать уже запущенные сервисы")
+    parser.add_argument("--agent", action="store_true", help="Подключить агента к общему экрану через Ollama")
     args = parser.parse_args()
+    if args.agent:
+        os.environ["CASE_AGENT"] = "1"
     processes = []
     configs = (
         ("MOCK_ML_URL", DEFAULT_ML, "mock_ml.app:app", "mock-ml"),

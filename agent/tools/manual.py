@@ -5,7 +5,7 @@ from manual_search.search import ManualSearch
 
 class Manuals:
     def __init__(self, index="artifacts/manual-corpus.json"):
-        self.searcher = ManualSearch(json.loads(Path(index).read_text()))
+        self.searcher = ManualSearch(json.loads(Path(index).read_text(encoding="utf-8")))
         self.files = {e["manual_id"]: e["source_file"] for e in self.searcher.fragments.values()}
         self.urls = {key: "/manuals/" + key for key in self.files}
 

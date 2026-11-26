@@ -11,7 +11,7 @@ Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max
 Risk = Literal["low", "medium", "high", "unassessed"]
 Urgency = Literal["low", "medium", "high"]
 Origin = Literal["fixture", "team"]
-SectionKind = Literal["signs", "causes", "checks", "work", "clarify"]
+SectionKind = Literal["signs", "causes", "checks", "work", "clarify", "risk"]
 
 
 class Pair(BaseModel):

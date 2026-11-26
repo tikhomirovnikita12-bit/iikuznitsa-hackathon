@@ -5,7 +5,7 @@ from threading import Lock
 from flask import Flask, abort, jsonify, request, send_file, session
 from werkzeug.exceptions import HTTPException
 from .backend import Backend
-from .dialog import Agent
+from .dialog import Agent, history_entry
 from .tools.manual import Manuals
 
 
@@ -57,9 +57,8 @@ def create_app(agent=None):
             history = list(histories[key])
         reply = agent.turn(*key[1:], q, history)
         with lock:
-            if reply.get("intent") != "conversation":
-                histories[key].append([q, reply["verdict"], reply["clarifying_question"],
-                                       reply["checks"][:1], reply.get("pressure_measurement"), reply.get("fluid_check")])
+            if entry := history_entry(q, reply):
+                histories[key].append(entry)
             if reply["ticket_draft"]:
                 token = secrets.token_urlsafe(24)
                 drafts[key] = (token, reply["ticket_draft"])
