@@ -22,6 +22,27 @@ def check(index):
             assert previous["manual_id"] == item["manual_id"]
             assert previous["pdf_page"] == item["pdf_page"] - 1
 
+    file_url = {"yamz-236-3902150-b-re": "/manuals/yamz.pdf"}
+    for page in (19, 53):
+        entry = next(
+            fragment for fragment in fragments
+            if fragment.get("verified")
+            and fragment["manual_id"] == "yamz-236-3902150-b-re"
+            and fragment["pdf_page"] == page
+        )
+        source = search.resolve_source(entry["fragment_id"], "ЯМЗ-236М2", file_url)
+        assert source["manual"] == "236-3902150-Б РЭ"
+        assert source["pdf_page"] == page
+        assert source["url"] == f"/manuals/yamz.pdf#page={page}"
+
+    dmrv = search.search("Где расположен датчик массового расхода воздуха?", "ЗМЗ-40904.10")[0]
+    try:
+        search.resolve_source(dmrv["fragment_id"], "ЗМЗ-40905.10")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("A 40904.10 DMRV reference leaked to 40905.10")
+
     cases = json.loads(Path(__file__).with_name("manual-search-cases.json").read_text(encoding="utf-8"))
     failures = []
     for case in cases:
