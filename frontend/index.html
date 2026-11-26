@@ -103,8 +103,8 @@
               <div id="chat-feed" class="chat-feed" role="log" aria-live="polite" aria-label="Диалог"></div>
               <div id="chat-suggestions" class="chat-suggestions"></div>
               <form id="chat-form" class="chat-form">
-                <label class="sr-only" for="chat-input">Вопрос механику</label>
-                <textarea id="chat-input" rows="1" maxlength="2000" placeholder="Задайте вопрос о двигателе" disabled></textarea>
+                <label class="sr-only" for="chat-input">Сообщение помощнику</label>
+                <textarea id="chat-input" rows="1" maxlength="2000" placeholder="Спросите о двигателе или запустите проверку" disabled></textarea>
                 <button id="chat-submit" class="button chat-submit" type="submit" aria-label="Отправить вопрос" disabled><svg class="icon"><use href="#i-send"/></svg></button>
               </form>
             </section>
@@ -139,6 +139,7 @@
       <div class="draft-scroll">
         <p class="dialog-caption" id="draft-context"></p>
         <p class="notice notice-error" id="draft-error" role="alert" hidden></p>
+        <button class="button button-light" id="draft-fill" type="button" hidden>Дополнить по руководству</button>
         <label class="field"><span>Заключение</span><textarea id="draft-conclusion" rows="3"></textarea></label>
         <label class="field"><span>Работы</span><textarea id="draft-operations" rows="4" placeholder="Одна операция на строку"></textarea></label>
         <label class="field"><span>Запчасти</span><textarea id="draft-parts" rows="2" placeholder="Если известны, по одной на строку"></textarea></label>
@@ -148,6 +149,21 @@
       <div class="dialog-actions">
         <button type="button" class="button button-light" id="draft-save">Сохранить черновик</button>
         <button type="submit" class="button button-primary" id="draft-send">Подтвердить и отправить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="reconcile-dialog" aria-labelledby="reconcile-title">
+    <div class="dialog-head"><h2 id="reconcile-title">Сверка с ТОиР</h2><button class="icon-button close-dialog" aria-label="Закрыть"><svg class="icon"><use href="#i-close"/></svg></button></div>
+    <form id="reconcile-form">
+      <div class="draft-scroll">
+        <p class="dialog-caption" id="reconcile-context"></p>
+        <p class="notice notice-error" id="reconcile-error" role="alert" hidden></p>
+        <label class="field"><span>Номер заявки в ТОиР</span><input id="reconcile-number" type="text" placeholder="TKT-0001" pattern="TKT-[0-9]{4,}" maxlength="40" autocomplete="off" required></label>
+        <label class="verify-ticket"><input id="reconcile-verified" type="checkbox" required><span>Номер в ТОиР относится к указанному ТС, сессии и отклонению.</span></label>
+      </div>
+      <div class="dialog-actions">
+        <button type="submit" class="button button-primary" id="reconcile-submit">Сохранить номер</button>
       </div>
     </form>
   </dialog>

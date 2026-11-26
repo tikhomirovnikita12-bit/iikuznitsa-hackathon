@@ -201,6 +201,8 @@ button.dialog-row:hover, a.dialog-row:hover { background: #ebf2e9; }
 .draft-scroll { padding: 6px 18px 18px; display: grid; gap: 11px; }
 .draft-scroll .dialog-caption { margin: 4px 0 0; }
 .draft-scroll .notice { margin-bottom: 0; }
+.verify-ticket { display: flex; align-items: flex-start; gap: 8px; font-size: .9rem; }
+.verify-ticket input { margin-top: .2em; accent-color: var(--accent); }
 .dialog-actions { padding: 12px 18px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; position: sticky; bottom: 0; background: #fff; z-index: 2; }
 .reference-group { display: grid; gap: 6px; }
 .reference-group > .button { justify-self: start; }

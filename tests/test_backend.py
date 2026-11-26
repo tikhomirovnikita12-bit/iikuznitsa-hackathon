@@ -2,6 +2,7 @@
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -49,11 +50,12 @@ class BackendTests(unittest.TestCase):
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
 
-    def api(self):
+    def api(self, settings=None, *, ollama_transport=None):
         return TestClient(create_app(
-            self.settings,
+            settings or self.settings,
             ml_transport=httpx.MockTransport(self.ml_request),
             toir_transport=httpx.MockTransport(self.toir_request),
+            ollama_transport=ollama_transport,
         ))
 
     def ml_request(self, request):
@@ -217,8 +219,13 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(failed["operations"], original["operations"])
         self.assertEqual(failed, self.client.get(path).json())
 
+        receipt = None
+
         def accepted_but_timed_out(request):
-            self.assertEqual(relay(self.toir, request).status_code, 201)
+            nonlocal receipt
+            accepted = relay(self.toir, request)
+            self.assertEqual(accepted.status_code, 201)
+            receipt = accepted.json()["ticket_id"]
             raise httpx.ReadTimeout("test lost receipt", request=request)
 
         self.toir_override = accepted_but_timed_out
@@ -231,6 +238,53 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(reopened.get(path).json(), unknown)
         self.assertEqual(self.confirm(path).status_code, 409)
         self.assertEqual(len(self.toir_requests), 2)
+
+        verified = {"revision": 1, "ticket_id": receipt, "verified": True}
+        reconcile = path + "/reconcile"
+        self.assertEqual(self.client.post(reconcile, json={**verified, "ticket_id": "123"}).status_code, 422)
+        self.assertEqual(self.client.post(reconcile, json={**verified, "verified": False}).status_code, 422)
+        self.assertEqual(self.client.post(reconcile, json={**verified, "revision": 2}).status_code, 409)
+        sent = self.client.post(reconcile, json=verified).json()
+        self.assertEqual((sent["state"], sent["ticket_id"], sent["revision"]), ("sent", receipt, 2))
+        self.assertIsNone(sent["delivery_error"])
+        self.assertEqual(self.client.post(reconcile, json=verified).json(), sent)
+        self.assertEqual(self.client.post(reconcile, json={**verified, "ticket_id": "TKT-9999"}).status_code, 409)
+        self.assertEqual(self.confirm(path).json(), sent)
+        self.assertEqual(len(self.toir_requests), 2)
+        with self.api() as reopened:
+            self.assertEqual(reopened.get(path).json(), sent)
+
+    def test_customer_anomalies_have_sourced_work_even_without_extracted_index(self):
+        settings = replace(self.settings, corpus=self.settings.database.parent / "no-index.json")
+        vehicles = json.loads(settings.vehicles.read_text(encoding="utf-8"))["vehicles"]
+        statuses = {"normal": 0, "anomaly": 0, "check_failed": 0}
+        with self.api(settings) as api:
+            for vehicle in vehicles:
+                for session in vehicle["sessions"]:
+                    pair = {"vehicle_id": vehicle["vehicle_id"], "session_id": session["session_id"]}
+                    with self.subTest(**pair):
+                        response = api.post("/api/diagnose", json=pair)
+                        self.assertEqual(response.status_code, 200, response.text)
+                        result = response.json()
+                        status = result["diagnosis"]["status"]
+                        self.assertEqual(status, session["status"])
+                        statuses[status] += 1
+                        if status != "anomaly":
+                            continue
+                        response = api.post("/api/drafts", json=pair)
+                        self.assertEqual(response.status_code, 200, response.text)
+                        draft = response.json()
+                        self.assertTrue(draft["operations"])
+                        self.assertTrue(draft["references"])
+                        self.assertEqual(draft["operations"], result["assessment"]["checks"])
+                        reference = draft["references"][0]
+                        check_reference = api.patch(f"/api/drafts/{draft['draft_id']}", json={
+                            "revision": 1, "references": [reference],
+                        })
+                        self.assertEqual(check_reference.status_code, 200, check_reference.text)
+        self.assertEqual(sum(statuses.values()), 195)
+        self.assertEqual(statuses["anomaly"], 69)
+        self.assertEqual(self.toir_requests, [])
 
     def test_latest_diagnosis_must_still_match_draft(self):
         path, _ = self.draft()
@@ -261,3 +315,60 @@ class BackendTests(unittest.TestCase):
                 file_response = self.client.get(source["url"].split("#")[0], headers={"Range": "bytes=0-4"})
                 self.assertEqual(file_response.status_code, 206)
                 self.assertEqual(file_response.content, b"%PDF-")
+
+    def test_chat_follows_topic_and_ignores_history_for_a_new_question(self):
+        initial_question = "При каких условиях проверять давление масла?"
+        reply = self.client.post("/api/chat", json={
+            **ANOMALY, "question": "Получи результат диагностики",
+        }).json()
+        self.assertEqual(reply["diagnostic_result"]["diagnosis"]["status"], "anomaly")
+
+        reply = self.client.post("/api/chat", json={**ANOMALY, "question": initial_question}).json()
+        history = [{"question": initial_question, "answer": reply["answer"]}]
+        reply = self.client.post("/api/chat", json={
+            **ANOMALY, "question": "А на холостых?", "history": history,
+        }).json()
+        self.assertEqual(reply["evidence"][0]["source"]["pdf_page"], 19)
+        self.assertIn("холостом ходу", reply["answer"])
+        reply = self.client.post("/api/chat", json={
+            **ANOMALY, "question": "Какие причины пониженного давления указаны в руководстве?", "history": history,
+        }).json()
+        self.assertEqual(reply["evidence"][0]["source"]["pdf_page"], 53)
+        reply = self.client.post("/api/chat", json={
+            **ANOMALY, "question": "Как обновить прошивку мультимедиа?", "history": history,
+        }).json()
+        self.assertTrue(reply["needs_clarification"])
+        self.assertEqual(reply["evidence"], [])
+
+        reply = self.client.post("/api/chat", json={**ANOMALY, "question": "Создай заявку"}).json()
+        self.assertEqual(reply["draft"]["state"], "draft")
+        self.assertEqual(self.toir_requests, [])
+
+    def test_ollama_plans_a_scoped_action_and_recovers_from_bad_output(self):
+        settings = replace(self.settings, ollama_model="test-model")
+        history = [{"question": "Что проверить при низком давлении масла?", "answer": "Сверьте условия измерения."}]
+        requests = []
+
+        def ollama(request):
+            requests.append(json.loads(request.content))
+            content = {
+                1: '{"tool":"diagnose","query":null}',
+                2: '{"tool":"create_draft","query":null}',
+                3: '{"tool":"create_draft","query":null}',
+            }.get(len(requests), "invalid")
+            return httpx.Response(200, json={"message": {"content": content}})
+
+        with self.api(settings, ollama_transport=httpx.MockTransport(ollama)) as api:
+            # These commands go beyond the exact phrases accepted by the offline router.
+            reply = api.post("/api/chat", json={**ANOMALY, "question": "Проведи диагностику машины"}).json()
+            self.assertEqual(reply["diagnostic_result"]["diagnosis"]["status"], "anomaly")
+            reply = api.post("/api/chat", json={**ANOMALY, "question": "Оформи черновик по этой проверке"}).json()
+            self.assertEqual(reply["draft"]["state"], "draft")
+            reply = api.post("/api/chat", json={**ANOMALY, "question": "Какое давление масла?"}).json()
+            self.assertIsNone(reply["draft"])
+            reply = api.post("/api/chat", json={**ANOMALY, "question": "А на холостых?", "history": history}).json()
+            self.assertEqual(reply["evidence"][0]["source"]["pdf_page"], 19)
+        self.assertEqual(requests[-1]["messages"][1], {"role": "user", "content": history[0]["question"]})
+        self.assertIn("format", requests[0])
+        self.assertEqual(self.ml_requests, [ANOMALY])
+        self.assertEqual(self.toir_requests, [])

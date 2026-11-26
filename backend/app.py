@@ -14,9 +14,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .agent import Agent
 from .mechanic import Mechanic
 from .models import (
-    ChatReply, ChatRequest, Confirm, DiagnosticResult, DraftPatch, DraftView, Identifier, Pair, Session, Vehicle,
+    ChatReply, ChatRequest, Confirm, DiagnosticResult, DraftPatch, DraftView, Identifier, Pair,
+    Reconcile, Session, Vehicle,
 )
 from .store import Store
 from .upstream import Problem
@@ -37,6 +39,9 @@ class Settings:
     toir_url: str = "http://127.0.0.1:8002"
     timeout: float = 5
     frontend_origin: str = ""
+    ollama_url: str = "http://127.0.0.1:11434"
+    ollama_model: str = ""
+    ollama_timeout: float = 30
 
     @classmethod
     def from_environment(cls):
@@ -49,6 +54,9 @@ class Settings:
             toir_url=os.getenv("MOCK_TOIR_URL", cls.toir_url),
             timeout=float(os.getenv("UPSTREAM_TIMEOUT_SECONDS", str(cls.timeout))),
             frontend_origin=os.getenv("FRONTEND_ORIGIN", ""),
+            ollama_url=os.getenv("OLLAMA_URL", cls.ollama_url),
+            ollama_model=os.getenv("OLLAMA_MODEL", cls.ollama_model),
+            ollama_timeout=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", str(cls.ollama_timeout))),
         )
 
 
@@ -59,22 +67,28 @@ def get_workflow(request: Request) -> Workflow:
 Context = Annotated[Workflow, Depends(get_workflow)]
 
 
-def create_app(settings: Settings | None = None, *, ml_transport=None, toir_transport=None) -> FastAPI:
+def create_app(settings: Settings | None = None, *, ml_transport=None, toir_transport=None,
+               ollama_transport=None) -> FastAPI:
     settings = settings or Settings.from_environment()
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         if not math.isfinite(settings.timeout) or settings.timeout <= 0:
             raise ValueError("UPSTREAM_TIMEOUT_SECONDS must be positive")
+        if not math.isfinite(settings.ollama_timeout) or settings.ollama_timeout <= 0:
+            raise ValueError("OLLAMA_TIMEOUT_SECONDS must be positive")
         catalog = Catalog(settings.vehicles)
         mechanic = Mechanic(settings.corpus, settings.manuals)
         store = Store(settings.database)
         with (
             httpx.Client(base_url=settings.ml_url, timeout=settings.timeout, transport=ml_transport, trust_env=False) as ml,
             httpx.Client(base_url=settings.toir_url, timeout=settings.timeout, transport=toir_transport, trust_env=False) as toir,
+            httpx.Client(base_url=settings.ollama_url, timeout=settings.ollama_timeout,
+                         transport=ollama_transport, trust_env=False) as ollama,
         ):
             application.state.workflow = Workflow(catalog, store, mechanic, ml, toir,
                                                   sending_deadline=max(60, 4 * settings.timeout))
+            application.state.agent = Agent(application.state.workflow, ollama, settings.ollama_model)
             yield
 
     application = FastAPI(title="Цифровой механик", version="0.1.0", lifespan=lifespan)
@@ -128,11 +142,8 @@ def create_app(settings: Settings | None = None, *, ml_transport=None, toir_tran
             return workflow.result(workflow.diagnosis(conn, pair), vehicle)
 
     @application.post("/api/chat", response_model=ChatReply)
-    def chat(request: ChatRequest, workflow: Context):
-        vehicle = workflow.catalog.validate_pair(request)
-        with workflow.store.connection() as conn:
-            diagnosis = workflow.diagnosis(conn, request)
-        return workflow.mechanic.answer(request.question, diagnosis, vehicle.engine_model)
+    def chat(message: ChatRequest, request: Request):
+        return request.app.state.agent.reply(message)
 
     @application.post("/api/drafts", response_model=DraftView)
     def create_draft(pair: Pair, workflow: Context):
@@ -153,6 +164,10 @@ def create_app(settings: Settings | None = None, *, ml_transport=None, toir_tran
     @application.post("/api/drafts/{draft_id}/confirm", response_model=DraftView)
     def confirm_draft(draft_id: str, confirmation: Confirm, workflow: Context):
         return workflow.confirm_draft(draft_id, confirmation)
+
+    @application.post("/api/drafts/{draft_id}/reconcile", response_model=DraftView)
+    def reconcile_draft(draft_id: str, reconciliation: Reconcile, workflow: Context):
+        return workflow.reconcile_draft(draft_id, reconciliation)
 
     @application.get("/api/manuals")
     def manuals(workflow: Context):

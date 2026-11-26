@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import Path
 
-from manual_search.corpus import verified_fragments
+from manual_search.corpus import DATA_DIR, load_catalog, verified_fragments
 from manual_search.search import ManualSearch
 
 from .models import Assessment, ChatReply, Diagnosis, DraftFields, Evidence, Reference, Source
@@ -16,9 +16,42 @@ VALVE_CLEARANCE = "yamz-236-3902150-b-re-p031-valve-clearance"
 CHAIN_NOISE = "zmz-40904-40905-rk-p107-engine-knock"
 
 
+def load_defect_checks(catalog):
+    manuals = {manual["manual_id"]: manual for manual in catalog}
+    checks, fragments = {}, []
+    data = json.loads((DATA_DIR / "defect-checks.json").read_text(encoding="utf-8"))
+    for entry in data:
+        model = entry["engine_model"]
+        manual = manuals[entry["manual_id"]]
+        checks[model] = {}
+        fitment = dict.fromkeys(entry.get("check_fitment", ()), entry.get("identification"))
+        for code, (page, section, text) in {**entry["checks"], **fitment}.items():
+            if model not in manual["applicable_engine_models"] or not 1 <= page <= manual["page_count"]:
+                raise ValueError(f"Invalid diagnostic source for {model} / {code}")
+            fragment = f"{manual['manual_id']}-p{page:03d}-{model}-{code}"
+            fragments.append({
+                "fragment_id": fragment,
+                "manual_id": manual["manual_id"],
+                "manual": manual["manual"],
+                "source_file": manual["source_file"],
+                "pdf_page": page,
+                "section": section,
+                "text": text,
+                "applicable_engine_models": [model],
+            })
+            operation = text
+            if code in fitment:
+                operation = ("Сверить маркировку двигателя и фактическую комплектацию узла с карточкой ТС. "
+                             "Уточнить применимость кода ML перед назначением работ по узлу.")
+            checks[model][code] = (fragment, operation, code in fitment)
+    return checks, fragments
+
+
 class Mechanic:
     def __init__(self, index_path: Path, pdf_directory: Path):
-        curated = verified_fragments()
+        catalog = load_catalog()
+        self.defect_checks, checks = load_defect_checks(catalog)
+        curated = [*verified_fragments(catalog), *checks]
         curated_ids = {entry["fragment_id"] for entry in curated}
         extracted = []
         if index_path.is_file():
@@ -89,6 +122,18 @@ class Mechanic:
                 evidence=[self.evidence(CHAIN_NOISE, engine_model)],
             )
 
+        check = self.defect_checks.get(engine_model, {}).get(diagnosis.anomaly_type)
+        if check:
+            fragment, operation, check_fitment = check
+            return Assessment(
+                conclusion=(f"ML отметил отклонение «{diagnosis.anomaly_title}». "
+                            "Применимость кода к комплектации требует сверки." if check_fitment else conclusion),
+                next_step=operation,
+                risk="Степень риска по одной акустической проверке определить нельзя.",
+                checks=[operation],
+                evidence=[self.evidence(fragment, engine_model)],
+            )
+
         hits = self.search.search(diagnosis.anomaly_title, engine_model, diagnosis.anomaly_type, limit=2)
         evidence = [self.evidence(hit["fragment_id"], engine_model) for hit in hits]
         return Assessment(
@@ -110,7 +155,7 @@ class Mechanic:
             ],
         )
 
-    def answer(self, question: str, diagnosis: Diagnosis, engine_model: str) -> ChatReply:
+    def answer(self, question: str, diagnosis: Diagnosis, engine_model: str, *, search_query: str | None = None) -> ChatReply:
         normalized = question.casefold().replace("ё", "е")
         assess_pressure = re.search(r"\d+[\s,]*(кпа|мпа|бар|кгс)", normalized)
         travel = re.search(r"перегн|своим ходом|можно ли (ехать|доехать|продолжать)", normalized)
@@ -126,6 +171,12 @@ class Mechanic:
             return ChatReply(answer="Для оценки возможности эксплуатации нужна очная проверка механиком.",
                              needs_clarification=True)
 
+        if (search_query and engine_model == "ЯМЗ-236М2"
+                and re.search(r"давлени\w* масла", search_query.casefold())
+                and re.search(r"холост|оборот|прогрев|температур|услови", normalized)):
+            source = self.evidence(OIL_PRESSURE, engine_model)
+            return ChatReply(answer=source.text, evidence=[source])
+
         assessment = self.assess(diagnosis, engine_model)
         if re.fullmatch(r"(почему (это )?опасно|чем (это )?грозит|какой риск)[?.! ]*", normalized):
             return ChatReply(answer=assessment.risk or assessment.next_step,
@@ -133,7 +184,11 @@ class Mechanic:
         if re.fullmatch(r"(что проверить( сначала)?|с чего начать|что делать дальше)[?.! ]*", normalized):
             return ChatReply(answer=" ".join(assessment.checks) or assessment.next_step,
                              needs_clarification=not assessment.checks, evidence=assessment.evidence)
-        hits = self.search.search(question, engine_model, diagnosis.anomaly_type, limit=1)
+        if re.fullmatch(r"(какие (возможны )?причины|что могло это вызвать)[?.! ]*", normalized):
+            if assessment.possible_causes:
+                return ChatReply(answer=" ".join(assessment.possible_causes), evidence=assessment.evidence)
+            search_query = search_query or diagnosis.anomaly_title
+        hits = self.search.search(search_query or question, engine_model, diagnosis.anomaly_type, limit=1)
         if not hits:
             return ChatReply(
                 answer="В доступных руководствах для выбранного двигателя ответа нет. "

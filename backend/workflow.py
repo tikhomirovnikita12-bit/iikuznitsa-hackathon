@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from .mechanic import Mechanic
 from .models import (
     Confirm, DeliveryError, Diagnosis, DiagnosticResult, DraftFields, DraftPatch,
-    DraftView, Pair, Session, Ticket, TicketReceipt, Vehicle,
+    DraftView, Pair, Reconcile, Session, Ticket, TicketReceipt, Vehicle,
 )
 from .store import Store
 from .upstream import Problem, post
@@ -134,7 +134,7 @@ class Workflow:
                     UPDATE drafts SET state = 'delivery_unknown',
                         error_code = 'delivery_interrupted', error_message = ?
                     WHERE draft_id = ? AND state = 'sending' AND started_at < ?
-                """, ("Нет подтверждения от ТОиР. Сверьте результат перед повторной отправкой.", draft_id, cutoff))
+                """, ("Нет подтверждения от ТОиР. Найдите заявку в ТОиР и внесите её номер.", draft_id, cutoff))
 
     def get_draft(self, draft_id: str) -> DraftView:
         self.refresh_delivery(draft_id)
@@ -220,6 +220,38 @@ class Workflow:
 
         return self.finish_send(draft_id, attempt_id, "sent", receipt=receipt, payload=ticket)
 
+    def reconcile_draft(self, draft_id: str, reconciliation: Reconcile) -> DraftView:
+        if not reconciliation.verified:
+            raise Problem(422, "verification_required", "Подтвердите, что номер сверили в ТОиР.")
+        self.refresh_delivery(draft_id)
+        with self.store.connection(write=True) as conn:
+            row = self.row(conn, draft_id)
+            draft = self.view(row)
+            if draft.state == "sent" and draft.ticket_id == reconciliation.ticket_id:
+                return draft
+            if draft.state != "delivery_unknown":
+                raise Problem(409, "draft_not_reconcilable", "Внести номер можно только после неизвестного результата отправки.",
+                              draft=draft)
+            if draft.revision != reconciliation.revision:
+                raise Problem(409, "stale_draft", "Черновик изменился. Загрузите актуальную версию.", draft=draft)
+
+            ticket = Ticket(
+                vehicle_id=draft.vehicle_id, session_id=draft.session_id,
+                anomaly_type=draft.anomaly_type, **json.loads(row["fields"]),
+            )
+            conn.execute("""
+                UPDATE drafts SET state = 'sent', revision = revision + 1,
+                    error_code = NULL, error_message = NULL WHERE draft_id = ?
+            """, (draft_id,))
+            self.record_ticket(conn, draft_id, reconciliation.ticket_id, ticket)
+            return self.view(self.row(conn, draft_id))
+
+    @staticmethod
+    def record_ticket(conn, draft_id: str, ticket_id: str, payload: Ticket) -> None:
+        conn.execute("""
+            INSERT INTO submitted_tickets (draft_id, ticket_id, payload) VALUES (?, ?, ?)
+        """, (draft_id, ticket_id, payload.model_dump_json()))
+
     def finish_send(self, draft_id, attempt_id, state, *, receipt=None, payload=None, error=None) -> DraftView:
         with self.store.connection(write=True) as conn:
             updated = conn.execute("""
@@ -227,7 +259,5 @@ class Workflow:
                 WHERE draft_id = ? AND attempt_id = ? AND state IN ('sending', 'delivery_unknown')
             """, (state, error.code if error else None, str(error) if error else None, draft_id, attempt_id))
             if updated.rowcount and receipt is not None:
-                conn.execute("""
-                    INSERT INTO submitted_tickets (draft_id, ticket_id, payload) VALUES (?, ?, ?)
-                """, (draft_id, receipt.ticket_id, payload.model_dump_json()))
+                self.record_ticket(conn, draft_id, receipt.ticket_id, payload)
             return self.view(self.row(conn, draft_id))
