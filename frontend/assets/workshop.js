@@ -23,7 +23,7 @@ const dateFormat = new Intl.DateTimeFormat("ru-RU", {
 const percentFormat = new Intl.NumberFormat("ru-RU", { style: "percent", maximumFractionDigits: 0 });
 const state = {
   vehicles: [], sessions: [], vehicle: null, current: null, contexts: new Map(),
-  loadingSessions: false, selection: 0, library: null, editor: null,
+  loadingSessions: false, selection: 0, library: null, editor: null, reconciliation: null,
 };
 
 function node(tag, className = "", text) {
@@ -101,6 +101,19 @@ function readPair() {
 
 function savePair(pair) {
   try { localStorage.setItem("mechanic-pair", JSON.stringify(pair)); } catch { /* Storage may be disabled. */ }
+}
+
+function chatKey(pair) {
+  return "mechanic-chat:" + JSON.stringify([pair.vehicle_id, pair.session_id]);
+}
+
+function readTurns(pair) {
+  try {
+    const turns = JSON.parse(localStorage.getItem(chatKey(pair)));
+    return Array.isArray(turns) ? turns.slice(-6) : [];
+  } catch {
+    return [];
+  }
 }
 
 function setOnline(online) {
@@ -205,8 +218,11 @@ function selectSession(id) {
   const key = pair.vehicle_id + "/" + id;
   let context = state.contexts.get(key);
   if (!context) {
+    const turns = readTurns(pair);
     context = {
-      pair, session, engine: state.vehicle.engine_model, result: null, drafts: [], messages: [],
+      pair, session, engine: state.vehicle.engine_model, result: null, drafts: [], turns,
+      messages: turns.flatMap((turn) => [{ text: turn.question, me: true },
+        { text: turn.answer, evidence: turn.evidence }]),
       loading: true, diagnosing: false, asking: false, ticketBusy: false, diagnoseError: "",
       ticketError: "", loaded: false, poll: null,
     };
@@ -417,7 +433,7 @@ function clearChatInput() {
 
 function updateChatControls() {
   const context = state.current;
-  get("chat-input").disabled = !context?.result || context.asking;
+  get("chat-input").disabled = !context || context.loading || context.asking;
   get("chat-submit").disabled = get("chat-input").disabled || !get("chat-input").value.trim();
 }
 
@@ -429,7 +445,7 @@ function renderChat(context) {
   const messages = context?.messages || [];
   const intro = context?.result
     ? "Задайте вопрос о признаках, проверках или ремонте. В ответе будут ссылки на подходящие страницы."
-    : "Получите результат диагностики, чтобы задавать вопросы по выбранному двигателю.";
+    : "Запустите диагностику командой «Получи результат диагностики».";
   for (const message of [{ text: intro }, ...messages, ...(context?.asking ? [{ text: "Ищу в руководствах…" }] : [])]) {
     const row = node("div", "message" + (message.me ? " message-me" : "") + (message.error ? " message-error" : ""));
     if (!message.me) {
@@ -461,20 +477,39 @@ function renderChat(context) {
 
 async function ask(question) {
   const context = state.current;
-  if (!context?.result || context.asking || !question) return;
+  if (!context || context.loading || context.asking || !question) return;
+  const history = context.turns.map(({ question, answer }) => ({ question, answer }));
   context.messages.push({ text: question, me: true });
   context.asking = true;
   clearChatInput();
   renderChat(context);
+  let draftToOpen;
   try {
-    const answer = await api("/api/chat", { method: "POST", body: { ...context.pair, question } });
+    const answer = await api("/api/chat", { method: "POST", body: { ...context.pair, question, history } });
     context.messages.push({ text: answer.answer, evidence: answer.evidence });
+    context.turns = [...context.turns, {
+      question, answer: answer.answer.trim().slice(0, 2000),
+      evidence: answer.evidence.map(({ source }) => ({ source })),
+    }].slice(-6);
+    try { localStorage.setItem(chatKey(context.pair), JSON.stringify(context.turns)); } catch { /* Storage may be disabled. */ }
+    if (answer.diagnostic_result) {
+      context.result = answer.diagnostic_result;
+      context.diagnoseError = "";
+    }
+    if (answer.draft) {
+      mergeDraft(context, answer.draft);
+      if (["draft", "delivery_failed"].includes(answer.draft.state)) draftToOpen = answer.draft;
+    }
   } catch (error) {
     context.messages.push({ text: error.message, error: true });
     if (state.current === context) get("chat-input").value = question;
   } finally {
     context.asking = false;
-    if (state.current === context) renderChat(context);
+    if (state.current === context) {
+      render();
+      scheduleDraftPoll(context);
+      if (draftToOpen && !document.querySelector("dialog[open]")) openDraft(context, draftToOpen);
+    }
   }
 }
 
@@ -528,7 +563,7 @@ function renderTicket(context) {
         draft.delivery_error.message));
     }
     if (draft.state === "delivery_unknown") {
-      target.append(node("p", "", "Сверьте номер заявки в ТОиР вручную перед повторной отправкой."));
+      target.append(reconciliationButton(context, draft));
     }
     if (draft.state === "sending") {
       const refresh = button("Проверить статус", "light", () => refreshDraft(context, draft.draft_id));
@@ -550,8 +585,53 @@ function renderTicket(context) {
     details.append(node("summary", "", "Другие заявки этой сессии"));
     for (const item of others) {
       details.append(node("p", "", [item.anomaly_type, ticketStates[item.state][0], item.ticket_id].filter(Boolean).join(" · ")));
+      if (item.state === "delivery_unknown") details.append(reconciliationButton(context, item));
     }
     target.append(details);
+  }
+}
+
+function reconciliationButton(context, draft) {
+  const control = button("Внести номер из ТОиР", "light", () => {
+    get("reconcile-form").reset();
+    get("reconcile-error").hidden = true;
+    get("reconcile-context").textContent = [draft.vehicle_id, draft.session_id, draft.anomaly_type].join(" · ");
+    state.reconciliation = { context, draft };
+    get("reconcile-dialog").showModal();
+  }, "file");
+  control.disabled = context.ticketBusy;
+  return control;
+}
+
+async function reconcileDraft() {
+  const { context, draft } = state.reconciliation;
+  if (context.ticketBusy) return;
+  const fields = get("reconcile-form").querySelectorAll("input, button");
+  const note = get("reconcile-error");
+  context.ticketBusy = true;
+  note.hidden = true;
+  fields.forEach((field) => { field.disabled = true; });
+  try {
+    const saved = await api("/api/drafts/" + encodeURIComponent(draft.draft_id) + "/reconcile", {
+      method: "POST", body: {
+        revision: draft.revision, ticket_id: get("reconcile-number").value.trim(),
+        verified: get("reconcile-verified").checked,
+      },
+    });
+    mergeDraft(context, saved);
+    context.ticketError = "";
+    get("reconcile-dialog").close();
+  } catch (error) {
+    if (error.draft) {
+      mergeDraft(context, error.draft);
+      state.reconciliation.draft = error.draft;
+    }
+    note.textContent = error.message;
+    note.hidden = false;
+  } finally {
+    context.ticketBusy = false;
+    fields.forEach((field) => { field.disabled = false; });
+    if (state.current === context) renderTicket(context);
   }
 }
 
@@ -712,6 +792,10 @@ function openDraft(context, draft) {
   showDraftError("");
   get("draft-references").replaceChildren();
   for (const reference of draft.references) addReference(editor, reference);
+  const assessment = context.result?.assessment;
+  get("draft-fill").hidden = !assessment ||
+    !((!draft.operations.length && assessment.checks.length) ||
+      (!draft.references.length && assessment.evidence.length));
   dialog.showModal();
   setEditorControls(editor);
   // Refresh document choices without overwriting pages or text currently being edited.
@@ -834,6 +918,25 @@ get("manuals-open").addEventListener("click", showManuals);
 get("draft-add-reference").addEventListener("click", () => {
   if (state.editor) addReference(state.editor);
 });
+get("draft-fill").addEventListener("click", () => {
+  const editor = state.editor;
+  const assessment = editor?.context.result?.assessment;
+  if (!assessment) return;
+  const operations = get("draft-operations");
+  if (!operations.value.trim()) operations.value = assessment.checks.join("\n");
+  const references = get("draft-references");
+  if (!Array.from(references.querySelectorAll("select, input")).some((field) => field.value)) {
+    references.replaceChildren();
+    const seen = new Set();
+    for (const { source } of assessment.evidence) {
+      const key = JSON.stringify([source.manual, source.pdf_page]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      addReference(editor, source);
+    }
+  }
+  get("draft-fill").hidden = true;
+});
 get("draft-save").addEventListener("click", () => saveDraft(false));
 get("draft-form").addEventListener("submit", (event) => {
   event.preventDefault();
@@ -843,11 +946,21 @@ get("draft-dialog").addEventListener("cancel", (event) => {
   if (state.editor?.busy) event.preventDefault();
 });
 get("draft-dialog").addEventListener("close", () => { state.editor = null; });
+get("reconcile-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  reconcileDraft();
+});
+get("reconcile-dialog").addEventListener("cancel", (event) => {
+  if (state.reconciliation?.context.ticketBusy) event.preventDefault();
+});
+get("reconcile-dialog").addEventListener("close", () => { state.reconciliation = null; });
 for (const control of document.querySelectorAll(".close-dialog")) {
   control.type = "button";
   control.addEventListener("click", () => {
     const dialog = control.closest("dialog");
-    if (dialog.id !== "draft-dialog" || !state.editor?.busy) dialog.close();
+    if ((dialog.id === "draft-dialog" && state.editor?.busy) ||
+        (dialog.id === "reconcile-dialog" && state.reconciliation?.context.ticketBusy)) return;
+    dialog.close();
   });
 }
 render();

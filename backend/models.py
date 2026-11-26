@@ -96,14 +96,25 @@ class DiagnosticResult(BaseModel):
     assessment: Assessment
 
 
+Question = Annotated[Text, Field(max_length=2000)]
+
+
+class ChatTurn(Input):
+    question: Question
+    answer: Annotated[Text, Field(max_length=2000)]
+
+
 class ChatRequest(Pair):
-    question: Annotated[Text, Field(max_length=2000)]
+    question: Question
+    history: Annotated[list[ChatTurn], Field(max_length=6)] = empty_list()
 
 
 class ChatReply(BaseModel):
     answer: str
     needs_clarification: bool = False
     evidence: list[Evidence] = empty_list()
+    diagnostic_result: DiagnosticResult | None = None
+    draft: "DraftView | None" = None
 
 
 class DraftFields(Input):
@@ -128,6 +139,14 @@ class Confirm(Input):
     revision: Revision
     urgency: Urgency
     confirmed: StrictBool
+
+
+class Reconcile(Input):
+    revision: Revision
+    ticket_id: Annotated[str, StringConstraints(
+        strip_whitespace=True, max_length=40, pattern=r"^TKT-[0-9]{4,}$",
+    )]
+    verified: StrictBool
 
 
 class Ticket(Pair):

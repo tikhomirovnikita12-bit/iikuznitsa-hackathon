@@ -47,7 +47,7 @@ def check(index):
     failures = []
     for case in cases:
         if "sources" not in case:
-            print(f"{case['id']} pending agent integration")
+            print(f"{case['id']} covered by backend chat tests")
             continue
         hits = search.search(
             case["question"], case["engine_model"], case.get("anomaly_type"), limit=case["top"]
