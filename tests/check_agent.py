@@ -47,6 +47,18 @@ def main():
         assert advice["intent"] == "search" and advice["references"][0]["pdf_page"] == 53, advice
         stop = ask("S-0011", "на этом всё")
         assert stop["intent"] == "conversation" and "остановимся" in stop["explanation"]
+        oil = ask("S-0011", "так ну достаточно масла")
+        assert oil["fluid_check"] == {"oil": "ok"} and "охлаждающей жидкости" in oil["clarifying_question"], oil
+        for question in ("тебя спросить надо", "а что дальше мне-то сделать надо"):
+            next_check = ask("S-0011", question)
+            assert next_check["clarifying_question"] == oil["clarifying_question"], next_check
+        both = ask("S-0011", "все достаточно")
+        assert both["fluid_check"] == {"oil": "ok", "coolant": "ok"}, both
+        assert "манометра" in both["checks"][0]["text"] and both["references"][0]["pdf_page"] == 53
+        guidance = ask("S-0011", "подскажи")
+        assert guidance["checks"] == both["checks"], guidance
+        low_level = ask("S-0011", "недостаточно")
+        assert "моторного масла" in low_level["clarifying_question"], low_level
         moved = ask("S-0011", "Можно ли своим ходом перегнать машину на базу?")
         assert moved["clarifying_question"] and "перегон" in moved["verdict"]
         assert any(r["pdf_page"] == 19 for r in moved["references"]), moved

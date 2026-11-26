@@ -59,7 +59,7 @@ def create_app(agent=None):
         with lock:
             if reply.get("intent") != "conversation":
                 histories[key].append([q, reply["verdict"], reply["clarifying_question"],
-                                       reply["checks"][:1], reply.get("pressure_measurement")])
+                                       reply["checks"][:1], reply.get("pressure_measurement"), reply.get("fluid_check")])
             if reply["ticket_draft"]:
                 token = secrets.token_urlsafe(24)
                 drafts[key] = (token, reply["ticket_draft"])

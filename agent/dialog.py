@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from .backend import post
 from .tools.diagnosis import diagnose
-from .tools import oil_pressure
+from .tools import fluid_check, oil_pressure
 from .tools.ticket import prepare
 
 
@@ -108,6 +108,16 @@ class Agent:
             short_request = re.sub(r"^(?:(?:ну|так|а|ладно|лад|окей|ок|давай)[ ,]+)+", "", wording)
             short_request = re.sub(r"\bч[её]\b", "что", short_request)
             previous = next((row[3][0] for row in reversed(history) if len(row) > 3 and row[3]), None)
+            if ml["engine_model"] == "ЯМЗ-236М2" and ml["anomaly_type"] == "F02":
+                fluids = next((row[5] for row in reversed(history) if len(row) > 5 and row[5] is not None), None)
+                if fluids is not None and "?" not in question:
+                    updated = fluid_check.report(short_request, fluids)
+                    if updated is not None:
+                        return self.fluid_reply(reply, updated, trace)
+            else:
+                fluids = None
+            if fluids is not None and re.fullmatch(r"(?:а )?тебя (?:спросить|и спрашиваю)(?: надо)?", short_request):
+                return self.fluid_reply(reply, fluids, trace)
             if short_request == "достаточно" and previous and "достаточно масла" in previous["text"]:
                 reply.update(intent="clarify", clarifying_question=
                              "Вы про уровни масла и охлаждающей жидкости или на этом остановимся?")
@@ -130,7 +140,7 @@ class Agent:
             context = json.dumps([ml, [row[:4] for row in history], question], ensure_ascii=False)
             next_step = bool(re.fullmatch(
                 r"(?:(?:(?:сам )?(?:мне )?(?:скажи|подскажи|расскажи) )?"
-                r"что (?:мне )?(?:(?:надо|нужно|теперь|дальше) )?"
+                r"что (?:(?:мне(?:-то)?|надо|нужно|теперь|дальше) )*"
                 r"(?:делать|сделать|проверить|посмотреть)(?: (?:надо|нужно|дальше|сначала))?"
                 r"|скажи как делать|с чего начать|(?:подскажи|посоветуй)(?: мне)?|что дальше)", short_request))
             followup = bool(re.fullmatch(
@@ -170,6 +180,8 @@ class Agent:
             if action == "next_step":
                 next_step = True
                 action = "search"
+            if next_step and fluids:
+                return self.fluid_reply(reply, fluids, trace)
             if followup and not previous:
                 reply.update(intent="clarify", clarifying_question="Какую проверку нужно объяснить?")
                 return reply
@@ -256,6 +268,11 @@ class Agent:
                 reply["ticket_draft"] = prepare(reply)
                 if not reply["ticket_draft"]:
                     reply["clarifying_question"] = "Для заявки нужна подтверждённая руководством проверка. Уточните узел."
+            if ml["anomaly_type"] == "F02" and any(
+                item["fragment_id"] == fluid_check.SOURCE and "достаточно масла" in item["text"]
+                for item in reply["checks"]
+            ):
+                reply["fluid_check"] = fluids if fluids is not None else {}
             return reply
         except Exception as exc:
             trace["error"] = type(exc).__name__
@@ -265,6 +282,25 @@ class Agent:
             self.log.parent.mkdir(parents=True, exist_ok=True)
             with self.log.open("a") as stream:
                 stream.write(json.dumps(trace, ensure_ascii=False) + "\n")
+
+    def fluid_reply(self, reply, state, trace):
+        ml = reply["ml_observations"]
+        hits = self.manuals.find(fluid_check.QUERY, ml)
+        trace["tools"].append(dict(name="search", query=fluid_check.QUERY,
+            pages=[(hit["manual"], hit["pdf_page"]) for hit in hits]))
+        reply["fluid_check"] = state
+        source = next((hit for hit in hits if hit["fragment_id"] == fluid_check.SOURCE), None)
+        if source is None:
+            reply.update(intent="clarify", clarifying_question="Не нашёл применимый раздел о проверке уровней в руководстве.")
+            return reply
+        result, question = fluid_check.next_action(state)
+        if question:
+            reply.update(intent="clarify", clarifying_question=question)
+        else:
+            ref = self.manuals.reference(source["fragment_id"], ml["engine_model"])
+            reply.update(intent="search", checks=[dict(text=result, fragment_id=ref["fragment_id"])],
+                         references=[ref])
+        return reply
 
     def pressure_reply(self, reply, values, trace):
         ml = reply["ml_observations"]
