@@ -11,6 +11,16 @@ def main():
             response = client.post("/api/chat", json=dict(vehicle_id=vehicle, session_id=s, question=q))
             assert response.status_code == 200, response.data
             return response.json
+        for question in ("Покажи результат диагностики", "что мне сделать", "как это сделать?"):
+            response = ask("S-0159", question, "B332BP98")
+            if question == "что мне сделать":
+                first = response["checks"][0]["text"]
+                assert response["intent"] == "search" and "холодном" in first
+            if question == "как это сделать?":
+                detail = response["checks"][0]["text"]
+                assert response["intent"] == "search" and detail != first
+                assert "руководстве по эксплуатации автомобиля" in detail
+                assert response["references"][0]["pdf_page"] == 97
         moved = ask("S-0011", "Можно ли своим ходом перегнать машину на базу?")
         assert moved["clarifying_question"] and "перегон" in moved["verdict"]
         assert any(r["pdf_page"] == 19 for r in moved["references"]), moved

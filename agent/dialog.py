@@ -88,9 +88,16 @@ class Agent:
                 action = "ticket"
             wording = question.casefold().strip(" .!?")
             next_step = wording in {"а что мне делать", "что мне делать", "че сделать надо",
-                                    "что делать", "скажи как делать", "что проверить сначала",
+                                    "что делать", "что мне сделать", "что сделать", "что нужно сделать", "скажи как делать", "что проверить сначала",
                                     "а что проверить сначала", "что делать дальше", "с чего начать"}
-            if next_step:
+            followup = bool(re.fullmatch(
+                r"(?:а )?(?:подскажи |скажи )?как (?:именно |это |мне )*(?:сделать|проверить|делать|выполнить)",
+                wording))
+            previous = next((row[3][0] for row in reversed(history) if len(row) > 3 and row[3]), None)
+            if followup and not previous:
+                reply.update(intent="clarify", clarifying_question="Какую проверку нужно объяснить?")
+                return reply
+            if next_step or followup:
                 action = "search"
             if wording in {"покажи результат диагностики", "покажи диагностику"}:
                 action = "diagnosis"
@@ -123,6 +130,11 @@ class Agent:
                 elif action in {"ticket", "diagnosis"} or "сначала" in question.lower():
                     query = "Какие причины пониженного давления указаны в руководстве?"
 
+            if followup:
+                first_coolant_check = False
+                query = previous["text"]
+                if "уровень охлаждающей жидкости" in query.lower():
+                    query = "Уровень жидкости в расширительном бачке должен соответствовать указанному в руководстве по эксплуатации автомобиля"
             if action == "movement":
                 reply["verdict"] = "Возможность перегона по этой записи не подтверждена."
                 reply["clarifying_question"] = reply["clarifying_question"] or "Какие показания приборов получены и при каком режиме двигателя?"
@@ -131,7 +143,7 @@ class Agent:
                 trace["tools"].append(dict(name="search", query=query,
                     pages=[(h["manual"], h["pdf_page"]) for h in hits]))
                 if hits:
-                    self.select(reply, action, question, hits, trace, first_coolant_check, next_step)
+                    self.select(reply, action, question + " " + previous["text"] if followup else question, hits, trace, first_coolant_check, next_step, previous if followup else None)
                 if reply["references"]:
                     break
                 if attempt == 0:
@@ -156,24 +168,31 @@ class Agent:
             with self.log.open("a") as stream:
                 stream.write(json.dumps(trace, ensure_ascii=False) + "\n")
 
-    def select(self, reply, action, question, hits, trace, coolant=False, next_step=False):
+    def select(self, reply, action, question, hits, trace, coolant=False, next_step=False, previous=None):
         # The provider selects original passages. Only server-owned text reaches the UI.
         options = {}
         for hit in hits:
             for i, line in enumerate(passages(hit)[:10]):
+                if previous and (line == previous["text"] or hit["fragment_id"] == previous["fragment_id"]):
+                    continue
+                if previous and "уровень охлаждающей жидкости" in previous["text"].lower():
+                    if "уровень жидкости в расширительном бачке" not in line.lower():
+                        continue
                 if coolant and not all(term in line.lower() for term in ("уров", "охлаждающ", "холодн")):
                     continue
                 options[f"{hit['fragment_id']}:{i}"] = line
         if not options:
             return
-        if coolant:
+        if coolant or (previous and "уровень охлаждающей жидкости" in previous["text"].lower() and len(options) == 1):
             key, passage = next(iter(options.items()))
             fid = key.rsplit(":", 1)[0]
+            if previous and "уровень охлаждающей жидкости" in previous["text"].lower():
+                passage = re.sub(r"^\d+\.\s*", "", passage)
             reply["checks"].append(dict(text=passage, fragment_id=fid))
             reply["references"].append(self.manuals.reference(fid, reply["ml_observations"]["engine_model"]))
             return
-        fields = ["checks"] if next_step or action == "ticket" else ["checks", "risk", "possible_causes"]
-        limit = 1 if next_step or action == "diagnosis" else 2
+        fields = ["checks"] if previous or next_step or action == "ticket" else ["checks", "risk", "possible_causes"]
+        limit = 1 if previous or next_step or action == "diagnosis" else 2
         item = schema(source={"type":"string", "enum":list(options)},
                       field={"type":"string","enum":fields})
         answer = self.provider.ask("Выбери только прямой ответ на вопрос. Для 'сначала' или заявки "
