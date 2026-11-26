@@ -19,7 +19,7 @@ from .case_agent import CaseAgent
 from .config import CORPUS, DEFAULT_ML, DEFAULT_TOIR, MOCKS, ROOT, WEB, endpoint
 from .contracts import (
     Brief, ChatRequest, Diagnosis, DraftFields, DraftUpdate, Identifier, Pair, Reply, TicketReceipt,
-    TicketReconciliation, TicketRequest, TicketSubmit, ToolCall,
+    TicketReconciliation, TicketRequest, TicketSubmit, ToolCall, Section,
 )
 from .retrieval import SEARCH_QUESTIONS, key, load_retrieval
 from .state import UNKNOWN, Store, empty_state, public_state, record_call
@@ -67,7 +67,13 @@ case_agent = None
 if os.environ.get("CASE_AGENT") == "1" and not (TEAM_API_URL or TEAM_AGENT_URL):
     if not CORPUS.is_file():
         raise ValueError("Сначала подготовьте индекс командой python -m mechanic.prepare.")
-    case_agent = CaseAgent(CORPUS, db_path.parent / "agent-turns.jsonl")
+    case_agent = CaseAgent(CORPUS, db_path.parent / "agent-turns.jsonl",
+                           mechanic=team.workflow.mechanic if team else None)
+
+MISSING_DRAFT_EVIDENCE = (
+    "Для автоматической подготовки заявки пока не найдена подтверждённая руководством проверка. "
+    "Уточните узел и наблюдения в чате. Заявка ещё не создана."
+)
 
 
 @asynccontextmanager
@@ -210,10 +216,19 @@ def present(pair: Pair, state: dict):
 
 
 def session_response(pair: Pair, state: dict):
+    vehicle = VEHICLE_BY_ID[pair.vehicle_id]
+    available = draft_available(vehicle, state)
+    reason = state.get("draft_unavailable_reason") if not state["draft"] and not available else None
+    if (reason is None and case_agent and not available and not state["draft"]
+            and not state["brief_error"] and state["diagnosis"]):
+        diagnosis = Diagnosis.model_validate(state["diagnosis"])
+        if diagnosis.status == "anomaly" and demo_agent.case_for(vehicle, diagnosis) != "mismatch":
+            reason = MISSING_DRAFT_EVIDENCE
     return {
         **public_state(state),
         "messages": chat_history(state),
-        "draft_available": draft_available(VEHICLE_BY_ID[pair.vehicle_id], state),
+        "draft_available": available,
+        "draft_unavailable_reason": reason,
         "reconcile_available": bool(team and team.can_reconcile and state["ticket"]["status"] == "unknown"),
     }
 
@@ -409,11 +424,10 @@ def diagnose(pair: Pair):
             diagnosis.status, diagnosis.anomaly_type
         ):
             state["agent_history"] = []
-            if state["ticket"]["status"] in ("idle", "draft", "error"):
-                state.update(draft=None, draft_id=None, draft_revision=None, draft_origin=None,
-                             messages=[], ticket=empty_state()["ticket"])
+            state.update(draft=None, draft_id=None, draft_revision=None, draft_origin=None,
+                         messages=[], ticket=empty_state()["ticket"])
         state.update(diagnosis=diagnosis.model_dump(), brief=brief, brief_error=brief_error,
-                     diagnosis_requested=requested)
+                     diagnosis_requested=requested, draft_unavailable_reason=None)
         state["messages"] = chat_history(state)
 
     return present(pair, store.update(pair.key(), save))
@@ -464,8 +478,11 @@ def draft_available(vehicle: dict, state: dict) -> bool:
     diagnosis = Diagnosis.model_validate(state["diagnosis"])
     if diagnosis.status != "anomaly" or demo_agent.case_for(vehicle, diagnosis) == "mismatch":
         return False
+    if state.get("draft_unavailable_reason"):
+        checked = getattr(case_agent, "checked_draft", None)
+        return bool(checked and checked(vehicle, diagnosis))
     if case_agent:
-        return True
+        return case_agent.can_prepare(vehicle, diagnosis, state["agent_history"])
     if TEAM_AGENT_URL:
         return bool(state["brief"] and state["brief"].get("references"))
     proposal = demo_agent.draft(vehicle, diagnosis)
@@ -489,6 +506,7 @@ def save_proposal(state: dict, pair: Pair, diagnosis: Diagnosis, draft: DraftFie
         state.update(draft_id=uuid4().hex, draft_revision=1)
         state["ticket"]["status"] = "draft"
     state["draft_origin"] = origin
+    state["draft_unavailable_reason"] = None
 
 
 @app.post("/api/draft")
@@ -497,19 +515,32 @@ def prepare_draft(pair: Pair):
     snapshot = read_state(pair)
     if snapshot["draft"]:
         return session_response(pair, snapshot)
-    if not draft_available(vehicle, snapshot):
+    available = draft_available(vehicle, snapshot)
+    if not available and (not case_agent or not snapshot["diagnosis"] or snapshot["brief_error"]):
         raise ApiError(409, "draft_unavailable", "Для черновика пока недостаточно подтверждённых данных.")
 
     diagnosis = Diagnosis.model_validate(snapshot["diagnosis"])
+    if diagnosis.status != "anomaly" or demo_agent.case_for(vehicle, diagnosis) == "mismatch":
+        raise ApiError(409, "draft_unavailable", "Для черновика пока недостаточно подтверждённых данных.")
     started = perf_counter()
     tool = "agent.chat" if TEAM_AGENT_URL or case_agent else "agent.fixture"
     try:
-        reply, draft, origin, calls, _entry = response_to_chat(vehicle, diagnosis, snapshot, "Подготовь заявку")
-        if draft is None:
-            raise ApiError(422, "draft_unavailable", reply.summary)
-        verify_references(draft.references, vehicle, required=True)
-        if origin == "fixture":
-            calls.extend(bind_fixture_sources([draft], vehicle, diagnosis))
+        if available:
+            reply, draft, origin, calls, entry = response_to_chat(vehicle, diagnosis, snapshot, "Подготовь заявку")
+        else:
+            reason = snapshot.get("draft_unavailable_reason") or MISSING_DRAFT_EVIDENCE
+            reply = Reply(summary="Черновик пока не подготовлен.",
+                          sections=[Section(kind="clarify", items=[reason])])
+            draft, origin, calls, entry = None, "team", [], None
+        for section in reply.sections:
+            verify_references(section.references, vehicle, section.kind in ("causes", "checks", "work", "risk"))
+        if draft is not None:
+            verify_references(draft.references, vehicle, required=True)
+            if origin == "fixture":
+                calls.extend(bind_fixture_sources([draft], vehicle, diagnosis))
+        else:
+            reason = " ".join(item for section in reply.sections if section.kind == "clarify" for item in section.items)
+            reason = reason or MISSING_DRAFT_EVIDENCE
     except ApiError as error:
         add_call(pair, tool, started, status_for(error))
         raise
@@ -521,10 +552,24 @@ def prepare_draft(pair: Pair):
         current = team.stored_diagnosis(pair) if team else state["diagnosis"]
         if current != snapshot["diagnosis"]:
             raise ApiError(409, "diagnosis_changed", "Результат проверки изменился. Обновите сессию.")
-        record_call(state, audit(tool, started))
+        if (state["draft"] is not None or state["messages"] != snapshot["messages"]
+                or state["agent_history"] != snapshot["agent_history"]
+                or state["draft_origin"] != snapshot["draft_origin"]):
+            record_call(state, audit(tool, started, "rejected"))
+            for call in calls:
+                record_call(state, call)
+            return
+        record_call(state, audit(tool, started, "ok" if draft is not None else "rejected"))
         for call in calls:
             record_call(state, call)
-        save_proposal(state, pair, diagnosis, draft, origin)
+        if draft is not None:
+            save_proposal(state, pair, diagnosis, draft, origin)
+        else:
+            state["draft_unavailable_reason"] = reason
+            state["messages"].append({"role": "assistant", "origin": origin, **reply.model_dump()})
+            state["messages"] = chat_history(state)
+            if entry is not None:
+                state["agent_history"] = [*state["agent_history"][-5:], entry]
 
     return present(pair, store.update(pair.key(), save))
 
@@ -559,12 +604,18 @@ def chat(request: ChatRequest):
         current = team.stored_diagnosis(request) if team else state["diagnosis"]
         if current != snapshot["diagnosis"]:
             raise ApiError(409, "diagnosis_changed", "Результат изменился. Задайте вопрос по обновлённой проверке.")
+        if any(state[key] != snapshot[key] for key in ("messages", "agent_history", "draft_origin")):
+            record_call(state, audit(tool, started, "rejected"))
+            for call in calls:
+                record_call(state, call)
+            return
         state["messages"].extend([
             {"role": "user", "text": request.message},
             {"role": "assistant", "origin": origin, **reply.model_dump()},
         ])
         if agent_entry is not None:
             state["agent_history"] = [*state["agent_history"][-5:], agent_entry]
+        state["draft_unavailable_reason"] = None
         state["messages"] = chat_history(state)
         record_call(state, audit(tool, started))
         for call in calls:

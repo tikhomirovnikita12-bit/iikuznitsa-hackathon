@@ -77,8 +77,12 @@ class TeamWorkflow:
             return None
 
     def current_draft(self, pair):
+        diagnosis = self.stored_diagnosis(pair)
+        if not diagnosis or diagnosis["status"] != "anomaly":
+            return None
         drafts = self.workflow.drafts(self.pair(pair))
-        return drafts[-1] if drafts else None
+        return next((draft for draft in reversed(drafts)
+                     if draft.anomaly_type == diagnosis["anomaly_type"]), None)
 
     def prepare(self, pair, fields):
         draft = self.workflow.create_draft(self.pair(pair))
@@ -123,7 +127,13 @@ class TeamWorkflow:
         if restore_diagnosis:
             actual = self.stored_diagnosis(pair)
             if actual != state["diagnosis"]:
-                state.update(diagnosis=actual, brief=None, brief_error=None)
+                previous = state["diagnosis"]
+                state.update(diagnosis=actual, brief=None, brief_error=None,
+                             draft_origin=None, draft_unavailable_reason=None)
+                if previous and (previous["status"], previous["anomaly_type"]) != (
+                    (actual["status"], actual["anomaly_type"]) if actual else (None, None)
+                ):
+                    state.update(messages=[], agent_history=[])
         draft = self.current_draft(pair)
         if draft:
             error = draft.delivery_error
@@ -136,4 +146,7 @@ class TeamWorkflow:
                 "status": TICKET_STATES[draft.state], "ticket_id": draft.ticket_id,
                 "message": message,
             }
+        else:
+            state.update(draft=None, draft_id=None, draft_revision=None, draft_origin=None)
+            state["ticket"] = {"status": "idle", "ticket_id": None, "message": None}
         return state
