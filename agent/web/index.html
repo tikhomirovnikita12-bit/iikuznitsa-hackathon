@@ -15,6 +15,22 @@ async function send(q){
  const generation=epoch, ids={vehicle_id:v.value,session_id:s.value};
  const card=node(chat,'article','');node(card,'b',q);const status=node(card,'p','Обработка…');
  try{const r=await post('/api/chat',{...ids,question:q});if(generation!==epoch)return;
+ if(r.pressure_measurement){
+   const value=r.pressure_measurement;
+   const initial=Object.keys(value).length===0;
+   const result=r.checks[0];
+   status.textContent=result?.text || (initial?r.verdict:r.clarifying_question) || r.verdict;
+   if(result)node(card,'p',r.verdict);
+   if(initial&&r.clarifying_question)node(card,'p',r.clarifying_question);
+   if(r.references.length){
+     const ref=r.references[0];
+     const details=node(card,'details','');node(details,'summary','Норматив · стр. '+ref.pdf_page);
+     node(details,'p',r.pressure_reference_text);
+     const link=node(details,'a','Открыть руководство · стр. '+ref.pdf_page);
+     link.href=ref.url;link.title=ref.manual;link.target='_blank';
+   }
+   return;
+ }
  const m=r.ml_observations, diagnostic=!r.intent||r.intent==='diagnosis';
  const quality={good:'Запись хорошего качества',warning:'В записи есть помехи',bad:'Запись непригодна для анализа'};
  status.textContent=diagnostic||r.intent==='movement'?r.verdict:'';

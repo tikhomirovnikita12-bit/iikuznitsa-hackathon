@@ -80,9 +80,10 @@ class Agent:
             pressure_case = ml["engine_model"] == "ЯМЗ-236М2" and ml["anomaly_type"] == "F02"
             previous_pressure = history[-1][4] if history and len(history[-1]) > 4 else None
             movement = bool(re.search(r"перегна|перегон|своим ходом", question, re.I))
-            values = oil_pressure.readings(question, previous_pressure or {}) if pressure_case else {}
+            values = oil_pressure.readings(question, previous_pressure) if pressure_case else {}
             if pressure_case and (movement or oil_pressure.PRESSURE.search(question)
-                                  or (previous_pressure is not None and values != previous_pressure)):
+                                  or (previous_pressure is not None and
+                                      (values != previous_pressure or oil_pressure.BARE_NUMBER.fullmatch(question.strip())))):
                 return self.pressure_reply(reply, values, trace)
             context = json.dumps([ml, [row[:4] for row in history], question], ensure_ascii=False)
             plan = self.provider.ask("Выбери действие по ПОСЛЕДНЕМУ вопросу механика. "
@@ -193,7 +194,9 @@ class Agent:
         ref = self.manuals.reference(source["fragment_id"], ml["engine_model"])
         reply["references"].append(ref)
         result, reply["clarifying_question"] = oil_pressure.compare(values)
-        reply["checks"].append(dict(text=result or source["text"], fragment_id=ref["fragment_id"]))
+        if result:
+            reply["checks"].append(dict(text=result, fragment_id=ref["fragment_id"]))
+        reply["pressure_reference_text"] = source["text"]
         return reply
 
     def select(self, reply, action, question, hits, trace, coolant=False, next_step=False, previous=None):
