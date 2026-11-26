@@ -21,6 +21,9 @@ def main():
                 assert response["intent"] == "search" and detail != first
                 assert "руководстве по эксплуатации автомобиля" in detail
                 assert response["references"][0]["pdf_page"] == 97
+        term = ask("S-0011", "что такое картер")
+        assert term["intent"] == "explain" and "коленчатый вал" in term["explanation"]
+        assert not term["references"] and not term["checks"]
         moved = ask("S-0011", "Можно ли своим ходом перегнать машину на базу?")
         assert moved["clarifying_question"] and "перегон" in moved["verdict"]
         assert any(r["pdf_page"] == 19 for r in moved["references"]), moved

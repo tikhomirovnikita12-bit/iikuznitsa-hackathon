@@ -1,12 +1,33 @@
 <!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Цифровой механик</title>
-<style>body{font:16px system-ui;max-width:48rem;margin:auto;padding:1rem;color:#182e32}button,select,input{font:inherit;padding:.5rem;margin:.25rem}article,fieldset{margin:1rem 0;padding:1rem;border:1px solid #bcc}article{padding:1.2rem;border-radius:.6rem;line-height:1.5;overflow-wrap:anywhere}article>b{display:block;color:#526369;font-size:.9rem}h3{font-size:1rem;margin:1em 0 .25em}ul{margin:.2em 0;padding-left:1.3em}li{margin:.45em 0}details{margin:.75em 0;color:#42565a}summary{cursor:pointer}a{display:block;font-size:.85rem}input{max-width:80%}</style>
+<style>
+:root { color-scheme: light; --ink: #172d34; --muted: #536770; --accent: #006b62; --line: #d6e3e2; }
+* { box-sizing: border-box; }
+body { font: 16px/1.55 "Avenir Next", system-ui, sans-serif; max-width: 52rem; margin: auto; padding: clamp(1rem, 4vw, 2.5rem); color: var(--ink); background: #f3f8f7; }
+h1 { font-size: clamp(1.65rem, 5vw, 2.3rem); letter-spacing: -.035em; line-height: 1.15; margin: 0 0 1.3rem; }
+button, select, input { font: inherit; padding: .45rem .7rem; border-radius: .55rem; border: 1px solid var(--line); margin: .2rem; color: var(--ink); background: white; }
+button { cursor: pointer; font-weight: 650; background: var(--accent); color: white; }
+#ask { display: flex; gap: .25rem; margin-top: 1rem; }
+#question { flex: 1; min-width: 0; }
+article, fieldset { margin: .9rem 0; padding: 1rem 1.15rem; background: white; border: 1px solid var(--line); border-radius: .85rem; overflow-wrap: anywhere; }
+article > b { display: block; color: var(--muted); font-size: .9rem; padding-bottom: .55rem; border-bottom: 1px solid var(--line); }
+article p { margin: .65rem 0; }
+h3 { font-size: 1rem; color: var(--accent); margin: .85rem 0 .25rem; }
+ul { margin: .2rem 0; padding-left: 1.35rem; }
+li { margin: .45rem 0; }
+details { margin-top: .75rem; color: var(--muted); }
+summary { cursor: pointer; font-weight: 600; font-size: .9rem; }
+a { color: var(--accent); display: block; font-size: .88rem; font-weight: 650; margin-top: .25rem; }
+.verdict, .answer { font-weight: 700; color: var(--accent); }
+.verdict.anomaly { color: #8e4a04; }
+.verdict.check_failed { color: #a52d39; }
+.clarification { padding: .6rem .8rem; background: #edf6f4; border-radius: .5rem; }
+</style>
 <h1>Цифровой механик</h1><label>ТС <select id="vehicle"></select></label><label>Проверка <select id="sid"></select></label>
 <button id="diagnose">Получить результат диагностики</button><main id="chat"></main>
 <form id="ask"><input id="question" required placeholder="Вопрос механику" aria-label="Вопрос"><button>Отправить</button></form>
 <script>
 const $=id=>document.getElementById(id), v=$('vehicle'), s=$('sid'), chat=$('chat');
-const key=()=>JSON.stringify([v.value,s.value]);
 let epoch=0;
 function clear(){epoch++;chat.replaceChildren()}
 function node(parent,tag,text){const el=document.createElement(tag);el.textContent=text;parent.append(el);return el}
@@ -15,11 +36,18 @@ async function send(q){
  const generation=epoch, ids={vehicle_id:v.value,session_id:s.value};
  const card=node(chat,'article','');node(card,'b',q);const status=node(card,'p','Обработка…');
  try{const r=await post('/api/chat',{...ids,question:q});if(generation!==epoch)return;
+ if(r.explanation){status.textContent=r.explanation;return;}
+ if(r.intent==='clarify'){
+   status.textContent=r.clarifying_question || 'Уточните, пожалуйста, что вы хотите узнать.';
+   status.className='clarification';
+   return;
+ }
  if(r.pressure_measurement){
    const value=r.pressure_measurement;
    const initial=Object.keys(value).length===0;
    const result=r.checks[0];
    status.textContent=result?.text || (initial?r.verdict:r.clarifying_question) || r.verdict;
+   status.className=result?'answer':(initial?'verdict anomaly':'clarification');
    if(result)node(card,'p',r.verdict);
    if(initial&&r.clarifying_question)node(card,'p',r.clarifying_question);
    if(r.references.length){
@@ -35,6 +63,7 @@ async function send(q){
  const quality={good:'Запись хорошего качества',warning:'В записи есть помехи',bad:'Запись непригодна для анализа'};
  status.textContent=diagnostic||r.intent==='movement'?r.verdict:'';
  status.hidden=!status.textContent;
+ status.className='verdict '+m.status;
  if(diagnostic)node(card,'p',m.description);
  if(m.signal_quality!=='good')node(card,'p',quality[m.signal_quality]);
  const details=node(card,'details','');node(details,'summary','Данные проверки');
@@ -43,14 +72,14 @@ async function send(q){
  node(details,'p','Уверенность модели: '+score(m.confidence));
  node(details,'p','Оценка отклонения: '+score(m.anomaly_score));
  node(details,'p',[m.engine_model,m.anomaly_type,m.model_version].filter(Boolean).join(' · '));
- const parent=diagnostic?details:card;
+ const parent=card;
  if(!r.ticket_draft)for(const [k,label] of [['possible_causes','Возможные причины'],['risk','Риск'],['checks','Что проверить']]){
  if(!r[k].length)continue;
  node(parent,'h3',label);const list=node(parent,'ul','');
  for(const item of r[k]){const li=node(list,'li',item.text);const ref=r.references.find(x=>x.fragment_id===item.fragment_id);
  if(ref){const a=node(li,'a','Руководство · стр. '+ref.pdf_page);a.title=ref.manual;a.href=ref.url;a.target='_blank'}}}
  card.append(details);
- if(r.clarifying_question)node(card,'p',r.clarifying_question);
+ if(r.clarifying_question)node(card,'p',r.clarifying_question).className='clarification';
  if(r.ticket_draft){const form=node(card,'fieldset','');node(form,'legend','Проект заявки');
  const d=r.ticket_draft;node(form,'p',[d.vehicle_id,d.session_id,d.anomaly_type,d.urgency].join(' · '));node(form,'p',d.conclusion);
  for(const op of d.operations)node(form,'p',op);

@@ -17,6 +17,10 @@ def schema(**fields):
 
 
 STRING = {"type": "string"}
+TERM = re.compile(r"(?:а )?(?:что такое|что означает|что значит) ([а-яёa-z][а-яёa-z -]{1,55})")
+GLOSSARY = {
+    "картер": "Картер — корпус, в котором работает коленчатый вал. В этом контексте речь о масле в поддоне картера: поддон расположен снизу двигателя и служит резервуаром для масла.",
+}
 PLAN = schema(action={"type": "string", "enum": ["diagnosis", "search", "ticket", "movement", "clarify"]},
               query=STRING, question=STRING)
 
@@ -29,7 +33,7 @@ def passages(hit):
     if re.match(r"\s*(?:рис\.|таблица\s+\d)", raw, re.I):
         return []
     if hit.get("verified"):
-        return [line for line in raw.splitlines() if 12 <= len(line) <= 600]
+        return [line for line in raw.splitlines() if 12 <= len(line) <= 600 and not line.rstrip().endswith(":")]
     clean = re.sub(r"(?<=[а-яё])-\s*\n\s*(?=[а-яё])", "", raw)
     clean = " ".join(clean.split())
     if len(clean) > 700 or re.search(r"[а-яё]- [а-яё]|\d+\s*[–—]\s*\w+.*?;\s*\d+\s*[–—]", clean):
@@ -77,6 +81,30 @@ class Agent:
                 reply["clarifying_question"] = (f"ML указала «{ml['anomaly_title']}», а в карточке "
                     f"{ml['engine_model']} ({ml['fuel']}). Подтвердите двигатель и выбранную запись.")
                 return reply
+            wording = question.casefold().strip(" .!?")
+            if term := TERM.fullmatch(wording):
+                topic = term[1]
+                explanation = GLOSSARY.get(topic)
+                if explanation is None:
+                    result = self.provider.ask(
+                        "Дай краткое общепринятое определение термина из автотехники. "
+                        "До двух предложений. Без нормативов, чисел, диагноза, инструкций "
+                        "и рекомендаций для конкретной машины. Если это не термин или неясно, "
+                        "верни пустую строку. Термин: " + json.dumps(topic, ensure_ascii=False),
+                        schema(definition=STRING), trace)
+                    explanation = result["definition"].strip()
+                    if len(explanation) > 350 or re.search(r"\d|https?://", explanation):
+                        explanation = ""
+                if explanation:
+                    reply.update(intent="explain", explanation=explanation)
+                else:
+                    reply.update(intent="clarify", clarifying_question="Какой автомобильный термин нужно пояснить?")
+                return reply
+            if wording in {"привет", "здравствуйте", "добрый день", "спасибо", "понятно"}:
+                message = ("Пожалуйста." if wording in {"спасибо", "понятно"}
+                           else "Привет! Могу пояснить результат диагностики или поискать ответ в руководстве.")
+                reply.update(intent="conversation", explanation=message)
+                return reply
             pressure_case = ml["engine_model"] == "ЯМЗ-236М2" and ml["anomaly_type"] == "F02"
             previous_pressure = history[-1][4] if history and len(history[-1]) > 4 else None
             movement = bool(re.search(r"перегна|перегон|своим ходом", question, re.I))
@@ -98,7 +126,6 @@ class Agent:
             if re.fullmatch(r"(?:создай|создать|подготовь|оформи) заявку(?: на дефектовку)?",
                             question.strip(" .!?").casefold()):
                 action = "ticket"
-            wording = question.casefold().strip(" .!?")
             next_step = wording in {"а что мне делать", "что мне делать", "че сделать надо",
                                     "что делать", "что мне сделать", "что сделать", "что нужно сделать", "скажи как делать", "что проверить сначала",
                                     "а что проверить сначала", "что делать дальше", "с чего начать"}
@@ -164,7 +191,7 @@ class Agent:
                         schema(query=STRING), trace)["query"]
             if not reply["references"]:
                 reply["clarifying_question"] = reply["clarifying_question"] or (
-                    "Применимого фрагмента не найдено. Уточните узел и режим работы для дефектовки.")
+                    "В руководстве для этого двигателя прямого ответа не нашёл. Уточните узел или условия, если они известны.")
             if action == "ticket":
                 trace["tools"].append(dict(name="prepare_ticket"))
                 reply["ticket_draft"] = prepare(reply)
@@ -228,7 +255,7 @@ class Agent:
                       field={"type":"string","enum":fields})
         answer = self.provider.ask("Выбери только прямой ответ на вопрос. Для 'сначала' или заявки "
             "выбери начальную проверку в checks. Для условий измерения выбери полный норматив. "
-            "Если данные нерелевантны, верни пустой массив. Вопрос: " + question + " " + action +
+            "Упоминание термина, заголовок и прежний совет не считаются ответом. Если прямого ответа нет, верни пустой массив. Вопрос: " + question + " " + action +
             "\n" + json.dumps({k:v[:800] for k,v in options.items()}, ensure_ascii=False),
             schema(items={"type":"array","items":item,"maxItems":limit}), trace)
         for selected in answer["items"][:limit]:
