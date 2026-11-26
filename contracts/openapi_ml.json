@@ -1,0 +1,252 @@
+{
+ "components": {
+  "schemas": {
+   "DiagnoseRequest": {
+    "properties": {
+     "session_id": {
+      "examples": [
+       "S-0005"
+      ],
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+     },
+     "vehicle_id": {
+      "examples": [
+       "M333YK47"
+      ],
+      "minLength": 1,
+      "title": "Vehicle Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "vehicle_id",
+     "session_id"
+    ],
+    "title": "DiagnoseRequest",
+    "type": "object"
+   },
+   "DiagnoseResponse": {
+    "properties": {
+     "anomaly_score": {
+      "anyOf": [
+       {
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Anomaly Score"
+     },
+     "anomaly_title": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Anomaly Title"
+     },
+     "anomaly_type": {
+      "anyOf": [
+       {
+        "pattern": "^F(0[1-9]|1[0-4])$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "F01…F14 или null",
+      "title": "Anomaly Type"
+     },
+     "confidence": {
+      "anyOf": [
+       {
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Confidence"
+     },
+     "description": {
+      "title": "Description",
+      "type": "string"
+     },
+     "model_version": {
+      "title": "Model Version",
+      "type": "string"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "signal_quality": {
+      "enum": [
+       "good",
+       "warning",
+       "bad"
+      ],
+      "title": "Signal Quality",
+      "type": "string"
+     },
+     "status": {
+      "enum": [
+       "normal",
+       "anomaly",
+       "check_failed"
+      ],
+      "title": "Status",
+      "type": "string"
+     },
+     "vehicle_id": {
+      "title": "Vehicle Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "vehicle_id",
+     "session_id",
+     "status",
+     "anomaly_type",
+     "anomaly_title",
+     "anomaly_score",
+     "confidence",
+     "signal_quality",
+     "description",
+     "model_version"
+    ],
+    "title": "DiagnoseResponse",
+    "type": "object"
+   },
+   "HTTPValidationError": {
+    "properties": {
+     "detail": {
+      "items": {
+       "$ref": "#/components/schemas/ValidationError"
+      },
+      "title": "Detail",
+      "type": "array"
+     }
+    },
+    "title": "HTTPValidationError",
+    "type": "object"
+   },
+   "ValidationError": {
+    "properties": {
+     "ctx": {
+      "title": "Context",
+      "type": "object"
+     },
+     "input": {
+      "title": "Input"
+     },
+     "loc": {
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "title": "Location",
+      "type": "array"
+     },
+     "msg": {
+      "title": "Message",
+      "type": "string"
+     },
+     "type": {
+      "title": "Error Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "title": "ValidationError",
+    "type": "object"
+   }
+  }
+ },
+ "info": {
+  "description": "Заглушка сервиса акустической диагностики ДВС для хакатона «ИИкузница». Данные синтетические.",
+  "title": "НейроДВС Mock ML API",
+  "version": "mock-v1"
+ },
+ "openapi": "3.1.0",
+ "paths": {
+  "/diagnose": {
+   "post": {
+    "operationId": "diagnose_diagnose_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/DiagnoseRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/DiagnoseResponse"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "404": {
+      "description": "Неизвестный vehicle_id или session_id"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Diagnose"
+   }
+  },
+  "/health": {
+   "get": {
+    "operationId": "health_health_get",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "Health"
+   }
+  }
+ }
+}
