@@ -32,6 +32,7 @@ def team_checkout() -> Path | None:
 class TeamWorkflow:
     def __init__(self, checkout, catalog_path, ml_url, toir_url, timeout):
         sys.path.insert(0, str(checkout.resolve()))
+        from backend import models
         from backend.mechanic import Mechanic
         from backend.models import Confirm, DraftPatch, Pair
         from backend.store import Store
@@ -41,6 +42,7 @@ class TeamWorkflow:
         database = ROOT / os.environ.get("TEAM_DB_PATH",
                                          os.environ.get("MECHANIC_DB_PATH", "artifacts/mechanic.sqlite3"))
         self.Pair, self.Patch, self.Confirm, self.Problem = Pair, DraftPatch, Confirm, Problem
+        self.Reconcile = getattr(models, "Reconcile", None)
         self.ml = httpx.Client(base_url=ml_url, timeout=timeout, trust_env=False)
         self.toir = httpx.Client(base_url=toir_url, timeout=timeout, trust_env=False)
         self.workflow = Workflow(
@@ -109,6 +111,14 @@ class TeamWorkflow:
                 return error.draft
             raise
 
+    @property
+    def can_reconcile(self):
+        return self.Reconcile is not None and hasattr(self.workflow, "reconcile_draft")
+
+    def reconcile(self, draft, request):
+        fields = request.model_dump(include={"revision", "ticket_id", "verified"})
+        return self.workflow.reconcile_draft(draft.draft_id, self.Reconcile(**fields))
+
     def populate(self, state, pair, *, restore_diagnosis=False):
         if restore_diagnosis:
             actual = self.stored_diagnosis(pair)
@@ -120,7 +130,8 @@ class TeamWorkflow:
             message = error.message if error else None
             if draft.state == "delivery_unknown":
                 message = "Результат отправки неизвестен. " + (message or "Сверьте заявку в ТОиР.")
-            state.update(draft=draft.model_dump(include=DRAFT_FIELDS), draft_revision=draft.revision)
+            state.update(draft=draft.model_dump(include=DRAFT_FIELDS), draft_id=draft.draft_id,
+                         draft_revision=draft.revision)
             state["ticket"] = {
                 "status": TICKET_STATES[draft.state], "ticket_id": draft.ticket_id,
                 "message": message,

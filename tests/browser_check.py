@@ -72,6 +72,7 @@ def stand(port, directory, **overrides):
 @contextmanager
 def slow_mock():
     requests = []
+    receipts = []
 
     class Delay(BaseHTTPRequestHandler):
         def do_POST(self):
@@ -80,6 +81,8 @@ def slow_mock():
             result = httpx.post(f"http://127.0.0.1:{port}{self.path}", content=body,
                                 headers={"Content-Type": "application/json"}, trust_env=False)
             requests.append((self.path, result.status_code))
+            if self.path == "/tickets" and result.status_code == 201:
+                receipts.append(result.json()["ticket_id"])
             sleep(1)
             try:
                 self.send_response(result.status_code)
@@ -96,7 +99,7 @@ def slow_mock():
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            yield f"http://127.0.0.1:{server.server_port}", requests
+            yield f"http://127.0.0.1:{server.server_port}", requests, receipts
         finally:
             server.shutdown()
             thread.join(5)
@@ -123,6 +126,14 @@ def pick(page, vehicle, session, *, touch=False):
 def diagnose(page, title):
     page.locator("#diagnose").click()
     expect(page.locator("#result-title")).to_have_text(title)
+
+
+def verdict_entry(page, status, summary):
+    entry = page.locator("#messages .diagnosis-message")
+    expect(entry).to_have_count(1)
+    expect(entry).to_have_attribute("data-status", status)
+    expect(entry).to_contain_text(summary)
+    return entry
 
 
 def ask(page, text, expected, keyboard=False):
@@ -211,6 +222,11 @@ def desktop_checks(browser, base, out, results):
     expect(page.locator("#result")).to_contain_text("Высокий риск")
     expect(page.locator("#result")).to_contain_text("0,84")
     expect(page.locator("#result")).to_contain_text("F02")
+    entry = verdict_entry(page, "anomaly", "Обнаружено отклонение")
+    expect(entry).to_contain_text("Проверьте количество масла")
+    expect(entry.locator('a[href="/sources/yamz236-re/19"]')).to_be_visible()
+    page.reload()
+    verdict_entry(page, "anomaly", "Обнаружено отклонение")
     manual = page.locator("#result .ref-manual")
     expect(manual).to_have_count(1)
     expect(manual.locator(".ref-title")).to_have_text("ЯМЗ-236. Руководство по эксплуатации")
@@ -252,13 +268,17 @@ def desktop_checks(browser, base, out, results):
     stored = page.request.get(base + "/api/state", params=query).json()
     edits = {key: stored["draft"][key] for key in ("conclusion", "urgency", "operations", "spare_parts")}
     resend = page.request.post(base + "/api/ticket", data={**query, "edits": edits,
-                               "revision": stored["draft_revision"], "priority_confirmed": True}).json()
+                               "draft_id": stored["draft_id"], "revision": stored["draft_revision"],
+                               "priority_confirmed": True}).json()
     assert resend["ticket"]["ticket_id"] == number
     assert sum(item["tool"] == "mock_toir.tickets" for item in resend["calls"]) == 1
     results.append({"pair": OIL, "step": "Редактирование, подтверждение, восстановление", "result": number})
 
     page.locator("#session").select_option(NORMAL[1])
     diagnose(page, "Значимых отклонений не обнаружено")
+    page.reload()
+    expect(verdict_entry(page, "normal", "Значимых отклонений не обнаружено")).to_contain_text(
+        "Продолжайте штатный контроль двигателя")
     expect(prepare_ticket_button(page)).to_have_count(0)
     ask(page, "Что проверить сначала?", "S-0010")
     assert not page.locator("#messages").get_by_text("низкое давление", exact=False).count()
@@ -268,6 +288,10 @@ def desktop_checks(browser, base, out, results):
 
     pick(page, *FAILED)
     diagnose(page, "Сбой проверки записи")
+    page.reload()
+    failed = verdict_entry(page, "check_failed", "Сбой проверки записи")
+    expect(failed).to_contain_text("перегрузка микрофона")
+    expect(failed).to_contain_text("Повторите запись")
     expect(prepare_ticket_button(page)).to_have_count(0)
     expect(page.locator("#result")).to_contain_text("перегрузка микрофона")
     expect(page.locator("#result")).to_contain_text("Повторите запись")
@@ -362,6 +386,71 @@ def mobile_and_race(playwright, browser, base, directory, out, results):
     context.close()
 
 
+def stale_draft_across_tabs(browser, directory, results):
+    with stand(0, directory) as base:
+        context = browser.new_context()
+        editor = context.new_page()
+        editor.goto(base)
+        pick(editor, *OIL)
+        diagnose(editor, "Обнаружено отклонение")
+        draft(editor, from_result=True)
+
+        peer = context.new_page()
+        peer.goto(editor.url)
+        expect(peer.locator("#operations")).to_be_editable()
+        initial = editor.locator("#operations").input_value()
+        local = initial + "\nНесохранённая пометка из первой вкладки."
+        saved = initial + "\nЗамер из второй вкладки."
+        editor.locator("#operations").fill(local)
+        peer.locator("#operations").fill(saved)
+        peer.get_by_role("button", name="Сохранить изменения").click()
+        expect(peer.get_by_text("Изменения сохранены", exact=True)).to_be_visible()
+
+        editor.locator("#session").select_option(NORMAL[1])
+        expect(editor.locator("#ticket-panel")).to_be_hidden()
+        editor.locator("#session").select_option(OIL[1])
+        expect(editor.locator("#draft-conflict")).to_be_visible()
+        expect(editor.locator("#operations")).to_have_value(local)
+        expect(editor.get_by_role("button", name="Сохранить изменения")).to_be_disabled()
+        expect(editor.get_by_role("button", name="Подтвердить и отправить")).to_be_disabled()
+        editor.locator("#use-saved-draft").click()
+        expect(editor.locator("#draft-conflict")).to_be_hidden()
+        expect(editor.locator("#operations")).to_have_value(saved)
+
+        pair = {"vehicle_id": OIL[0], "session_id": OIL[1]}
+        base_version = editor.request.get(base + "/api/state", params=pair).json()
+        editor.locator("#operations").fill(local)
+        latest = saved + "\nПодтверждён новый план."
+        peer.locator("#operations").fill(latest)
+        peer.get_by_role("button", name="Сохранить изменения").click()
+        expect(peer.get_by_text("Изменения сохранены", exact=True)).to_be_visible()
+
+        deliveries = []
+        editor.on("request", lambda req: deliveries.append(req) if req.url.endswith("/api/ticket") else None)
+        with editor.expect_response("**/api/ticket") as response:
+            submit(editor)
+        conflict = response.value
+        assert conflict.status == 409
+        assert conflict.json()["error"]["code"] == "stale_draft"
+        submission = conflict.request.post_data_json
+        assert submission["draft_id"] == base_version["draft_id"]
+        assert submission["revision"] == base_version["draft_revision"]
+        expect(editor.locator("#draft-conflict")).to_be_visible()
+        expect(editor.locator("#operations")).to_have_value(local)
+        expect(editor.get_by_role("button", name="Подтвердить и отправить")).to_be_disabled()
+        editor.locator("#use-saved-draft").click()
+        expect(editor.locator("#operations")).to_have_value(latest)
+        expect(editor.locator(".ticket-badge")).to_have_count(0)
+        assert len(deliveries) == 1
+        current = editor.request.get(base + "/api/state", params=pair).json()
+        assert current["draft"]["operations"] == latest.splitlines()
+        assert current["ticket"]["status"] == "draft"
+        assert not any(call["tool"] == "mock_toir.tickets" for call in current["calls"])
+        context.close()
+    results.append({"pair": OIL, "step": "Конфликт черновика между вкладками и при смене сессии",
+                    "result": "passed"})
+
+
 def failure_checks(browser, directory, results):
     with stand(0, directory, MOCK_ML_URL="http://127.0.0.1:65534") as base:
         page = browser.new_page()
@@ -384,7 +473,7 @@ def failure_checks(browser, directory, results):
         expect(page.locator("#conclusion")).to_have_value(before)
         page.close()
     results.append({"pair": OIL, "step": "Недоступны Mock ML и Mock ТОиР, черновик после обновления", "result": "passed"})
-    with slow_mock() as (proxy, calls):
+    with slow_mock() as (proxy, calls, receipts):
         with stand(0, directory, MOCK_ML_URL=proxy, MOCK_API_TIMEOUT="0.30") as base:
             page = browser.new_page()
             page.goto(base)
@@ -402,9 +491,23 @@ def failure_checks(browser, directory, results):
             page.reload()
             expect(page.locator("#ticket-panel")).to_contain_text("Результат отправки неизвестен")
             assert not page.get_by_role("button", name="Подтвердить и отправить").count()
+            catalog = page.request.get(base + "/api/catalog").json()
+            if catalog["backend"] == "team":
+                number, = receipts
+                save_number = page.get_by_role("button", name="Сохранить номер", exact=True)
+                expect(save_number).to_be_disabled()
+                page.locator("#reconcile-ticket-id").fill(number)
+                expect(save_number).to_be_disabled()
+                page.locator("#reconcile-verified").check()
+                save_number.click()
+                expect(page.locator(".ticket-badge")).to_have_text(number)
+                page.reload()
+                expect(page.locator(".ticket-badge")).to_have_text(number)
+                assert not page.get_by_role("button", name="Подтвердить и отправить").count()
             assert calls == [("/diagnose", 200), ("/tickets", 201)], calls
             page.close()
-    results.append({"pair": OIL, "step": "Раздельный тайм-аут ML и потеря ответа после 201 от ТОиР", "result": "passed"})
+    results.append({"pair": OIL, "step": "Тайм-аут ML, потеря ответа ТОиР и сверка номера без повторной отправки",
+                    "result": "passed"})
 
 
 def record(browser, base, folder):
@@ -511,6 +614,7 @@ def main():
                 results = []
                 desktop_checks(browser, base, out, results)
                 mobile_and_race(playwright, browser, base, directory, out, results)
+                stale_draft_across_tabs(browser, directory, results)
                 failure_checks(browser, directory, results)
                 (out / "browser-results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
                 print(f"{len(results)} browser checks passed", flush=True)

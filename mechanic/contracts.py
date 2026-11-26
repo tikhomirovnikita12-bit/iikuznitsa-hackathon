@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 
 Identifier = Annotated[str, StringConstraints(min_length=1, max_length=64)]
+Revision = Annotated[int, Field(ge=1, strict=True)]
 FaultCode = Annotated[str, StringConstraints(pattern=r"^F(0[1-9]|1[0-4])$")]
 Score = Annotated[float, Field(ge=0, le=1)]
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
@@ -60,12 +61,19 @@ class TicketReceipt(BaseModel):
 
 
 class DraftUpdate(Pair):
+    draft_id: Identifier
+    revision: Revision
     edits: DraftEdits
-    revision: Annotated[int, Field(ge=1, strict=True)] | None = None
 
 
 class TicketSubmit(DraftUpdate):
     priority_confirmed: Annotated[bool, Field(strict=True)]
+
+
+class TicketReconciliation(Pair):
+    revision: Revision
+    ticket_id: Annotated[str, StringConstraints(strip_whitespace=True, max_length=40, pattern=r"^TKT-[0-9]{4,}$")]
+    verified: Annotated[bool, Field(strict=True)]
 
 
 class ChatRequest(Pair):

@@ -42,10 +42,11 @@ const date = new Intl.DateTimeFormat("ru-RU", {
 const score = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 3 });
 
 class ApiFault extends Error {
-  constructor(code, message, status = 0) {
+  constructor(code, message, status = 0, state = null) {
     super(message);
     this.code = code;
     this.status = status;
+    this.state = state;
   }
 }
 
@@ -61,7 +62,7 @@ async function api(path, method = "GET", payload) {
     const data = await response.json().catch(() => null);
     if (!response.ok || !data) {
       throw new ApiFault(data?.error?.code || "server_error",
-        data?.error?.message || "Бэкенд вернул ошибку. Проверьте состояние сервиса.", response.status);
+        data?.error?.message || "Бэкенд вернул ошибку. Проверьте состояние сервиса.", response.status, data?.state);
     }
     return data;
   } catch (error) {
@@ -286,12 +287,28 @@ function userMessage(text) {
   return bubble;
 }
 
+function diagnosisMessage(message) {
+  const entry = element("article", "bubble diagnosis-message");
+  entry.dataset.status = message.status;
+  entry.append(element("p", "message-meta", "Результат диагностики"),
+    element("p", "answer-title", message.summary),
+    element("p", "", message.description),
+    element("p", "diagnosis-next-step", message.next_step));
+  if (message.origin === "fixture") entry.append(element("p", "context-key", "Тестовая рекомендация"));
+  if (message.references?.length) entry.append(references(message.references));
+  return entry;
+}
+
 function renderChat() {
   ui["chat-context"].textContent = view.state?.diagnosis ? view.pair.vehicle_id + " / " + view.pair.session_id
     : "Доступен после получения результата";
   const openDetails = [...ui.messages.querySelectorAll("details")].map((node) => node.open);
   const fragment = document.createDocumentFragment();
   for (const message of view.state?.messages || []) {
+    if (message.role === "diagnosis") {
+      fragment.append(diagnosisMessage(message));
+      continue;
+    }
     if (message.role === "user") {
       fragment.append(userMessage(message.text));
       continue;
@@ -328,6 +345,14 @@ function renderChat() {
 
 function draftKey() {
   return JSON.stringify(view.pair);
+}
+
+function draftVersion() {
+  return { draft_id: view.state.draft_id ?? undefined, revision: view.state.draft_revision ?? undefined };
+}
+
+function sameDraftVersion(left, right) {
+  return left.draft_id === right.draft_id && left.revision === right.revision;
 }
 
 function field(id, label, control) {
@@ -375,8 +400,10 @@ function fieldSummary(draft) {
   return summary;
 }
 
-function editableDraft(draft) {
-  const edits = view.pendingEdits.get(draftKey()) || draft;
+function editableDraft(draft, pending, conflict) {
+  const key = draftKey();
+  const version = pending?.version ?? draftVersion();
+  const edits = pending?.edits ?? draft;
   const form = element("form", "ticket-form");
   const conclusion = textarea(edits.conclusion, 3, true);
   const operations = textarea(edits.operations.join("\n"), 4, true);
@@ -398,9 +425,13 @@ function editableDraft(draft) {
   const actions = element("div", "ticket-actions");
   const save = button(view.busy === "save" ? "Сохраняем…" : "Сохранить изменения");
   const submit = button("Подтвердить и отправить", "primary", "submit");
-  save.disabled = Boolean(view.busy);
+  save.disabled = Boolean(view.busy) || conflict;
   submit.disabled = true;
   for (const control of [conclusion, operations, parts, priority, checkbox]) control.disabled = Boolean(view.busy);
+  if (conflict) {
+    for (const control of [conclusion, operations, parts]) control.readOnly = true;
+    priority.disabled = checkbox.disabled = true;
+  }
   actions.append(submit, save);
   form.append(confirm, actions);
 
@@ -412,18 +443,70 @@ function editableDraft(draft) {
 
   for (const control of [conclusion, operations, parts, priority]) {
     control.addEventListener("input", () => {
-      view.pendingEdits.set(draftKey(), values(false));
+      view.pendingEdits.set(key, { edits: values(false), version });
       checkbox.checked = false;
       submit.disabled = true;
     });
   }
-  checkbox.addEventListener("change", () => { submit.disabled = !checkbox.checked; });
+  checkbox.addEventListener("change", () => { submit.disabled = conflict || !checkbox.checked; });
   save.addEventListener("click", () => {
-    if (form.reportValidity()) updateDraft(values(true), false);
+    if (!conflict && form.reportValidity()) updateDraft(values(true), version, false);
   });
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (checkbox.checked) updateDraft(values(true), true);
+    if (!conflict && checkbox.checked) updateDraft(values(true), version, true);
+  });
+  return form;
+}
+
+function renderDraftConflict(panel, draft) {
+  const notice = alert("Черновик или его статус изменился. Скопируйте нужные локальные правки перед загрузкой сохранённой версии.", "info");
+  notice.id = "draft-conflict";
+  notice.setAttribute("role", "alert");
+  const saved = element("details", "answer-block");
+  saved.append(element("summary", "", "Что сейчас сохранено"), fieldSummary(draft));
+  const load = button("Загрузить сохранённый черновик");
+  load.id = "use-saved-draft";
+  load.addEventListener("click", () => {
+    view.pendingEdits.delete(draftKey());
+    view.ticketError = null;
+    renderTicket();
+    (byId("conclusion") || byId("ticket-title"))?.focus();
+  });
+  const actions = element("div", "ticket-actions");
+  actions.append(load);
+  panel.append(notice, saved, actions);
+}
+
+function reconcileForm() {
+  const form = element("form", "reconcile-form");
+  const ticketId = element("input", "ticket-number");
+  ticketId.type = "text";
+  ticketId.required = true;
+  ticketId.pattern = "TKT-[0-9]{4,}";
+  ticketId.autocomplete = "off";
+  ticketId.maxLength = 40;
+  ticketId.placeholder = "TKT-0001";
+  ticketId.disabled = Boolean(view.busy);
+  form.append(element("h3", "", "Сверка с ТОиР"), field("reconcile-ticket-id", "Номер заявки в ТОиР", ticketId));
+
+  const confirmation = element("label", "priority-confirm");
+  const verified = element("input");
+  verified.type = "checkbox";
+  verified.id = "reconcile-verified";
+  verified.disabled = Boolean(view.busy);
+  confirmation.append(verified, document.createTextNode("Номер сверил в ТОиР"));
+  const submit = button(view.busy === "reconcile" ? "Сохраняем номер…" : "Сохранить номер", "primary", "submit");
+  submit.disabled = true;
+  verified.addEventListener("change", () => { submit.disabled = !verified.checked; });
+  const actions = element("div", "ticket-actions");
+  actions.append(submit);
+  form.append(confirmation, actions);
+
+  const version = draftVersion();
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (verified.checked) reconcileDraft(ticketId.value.trim(), version);
   });
   return form;
 }
@@ -468,7 +551,14 @@ function renderTicket() {
   }
 
   const canEdit = !view.needsTicketCheck && !sending && ["draft", "error"].includes(ticket.status);
-  panel.append(canEdit ? editableDraft(draft) : fieldSummary(draft));
+  const pending = view.pendingEdits.get(draftKey());
+  const conflict = Boolean(pending && (!sameDraftVersion(pending.version, draftVersion()) ||
+    ["sending", "created", "unknown"].includes(ticket.status)));
+  if (conflict) renderDraftConflict(panel, draft);
+  panel.append(canEdit || conflict ? editableDraft(draft, pending, conflict) : fieldSummary(draft));
+  if (!conflict && !view.needsTicketCheck && ticket.status === "unknown" && view.state.reconcile_available) {
+    panel.append(reconcileForm());
+  }
 }
 
 function renderJournal() {
@@ -761,29 +851,45 @@ async function action(kind, path, method, payload = {}) {
   if (!view.pair || view.busy) return null;
   clearTimeout(view.pollTimer);
   const generation = view.generation;
+  const key = draftKey();
+  const pending = view.pendingEdits.get(key);
+  const updatesDraft = kind === "save" || kind === "submit";
   view.busy = kind;
   if (kind === "diagnose") view.diagnosisError = null;
   if (kind === "chat") {
     view.chatError = null;
     view.pendingQuestion = payload.message;
   }
-  if (["prepare", "save", "submit"].includes(kind)) view.ticketError = null;
+  if (["prepare", "save", "submit", "reconcile"].includes(kind)) view.ticketError = null;
   render();
   if (kind === "diagnose" && compactLayout.matches) {
     ui.diagnostic.scrollIntoView({ block: "start" });
   }
   try {
     const state = await api(path, method, { ...view.pair, ...payload });
+    if (updatesDraft && view.pendingEdits.get(key) === pending) view.pendingEdits.delete(key);
     if (generation !== view.generation) return null;
     view.state = state;
     if (kind === "diagnose") view.editingContext = false;
-    if (kind === "save" || kind === "submit") view.pendingEdits.delete(draftKey());
     return state;
   } catch (error) {
     if (generation !== view.generation) return null;
+    if (updatesDraft && error.code === "stale_draft") {
+      if (error.state) {
+        view.state = error.state;
+      } else {
+        view.needsTicketCheck = true;
+        view.ticketError = error.message;
+      }
+      return null;
+    }
     if (kind === "diagnose") view.diagnosisError = error;
     if (kind === "chat") view.chatError = error.message;
     if (kind === "prepare" || kind === "save") view.ticketError = error.message;
+    if (kind === "reconcile") {
+      if (error.code === "stale_draft" && error.state) view.state = error.state;
+      view.ticketError = error.message;
+    }
     if (kind === "submit") {
       view.needsTicketCheck = error.status === 0 || error.status >= 500 || error.status === 409;
       view.ticketError = view.needsTicketCheck
@@ -814,12 +920,13 @@ async function sendQuestion(value) {
   else ui.messages.lastElementChild?.scrollIntoView({ block: "nearest" });
 }
 
-async function updateDraft(edits, submit) {
+async function updateDraft(edits, version, submit) {
   const kind = submit ? "submit" : "save";
   const generation = view.generation;
-  const revision = view.state.draft_revision ?? undefined;
+  const key = draftKey();
+  if (!view.pendingEdits.has(key)) view.pendingEdits.set(key, { edits, version });
   const result = await action(kind, submit ? "ticket" : "draft", submit ? "POST" : "PUT",
-    submit ? { edits, revision, priority_confirmed: true } : { edits, revision });
+    submit ? { ...version, edits, priority_confirmed: true } : { ...version, edits });
   if (!result || generation !== view.generation) return;
   if (submit) {
     announce(result.ticket.ticket_id ? "Заявка " + result.ticket.ticket_id + " зарегистрирована."
@@ -829,6 +936,23 @@ async function updateDraft(edits, submit) {
     view.ticketError = null;
     ui["ticket-panel"].querySelector(".ticket-head").append(element("p", "flag good", "Изменения сохранены"));
     announce("Изменения сохранены.");
+  }
+}
+
+async function reconcileDraft(ticketId, version) {
+  const generation = view.generation;
+  const state = await action("reconcile", "drafts/" + encodeURIComponent(version.draft_id) + "/reconcile", "POST",
+    { revision: version.revision, ticket_id: ticketId, verified: true });
+  if (generation !== view.generation) return;
+  if (state?.ticket?.ticket_id) {
+    announce("Сохранён подтверждённый номер " + state.ticket.ticket_id + ".");
+    revealTicket();
+  } else {
+    const field = byId("reconcile-ticket-id");
+    if (field) {
+      field.value = ticketId;
+      field.focus();
+    }
   }
 }
 

@@ -70,7 +70,7 @@ a { color: var(--accent); text-underline-offset: .18em; }
 }
 .field { display: grid; gap: .27rem; margin-top: 1rem; }
 .field label, .composer label { font-size: .92rem; font-weight: 650; }
-.vehicle-picker input, select, textarea {
+.vehicle-picker input, .ticket-number, select, textarea {
   width: 100%; min-width: 0; color: var(--ink); background-color: var(--paper); border: 1px solid var(--control-line);
   border-radius: var(--radius); padding: .56rem .7rem; min-height: 45px;
 }
@@ -183,6 +183,9 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
   border-bottom: 1px solid var(--line);
 }
 .bubble.user { background: var(--surface); }
+.diagnosis-message { border-inline-start: 3px solid var(--control-line); }
+.diagnosis-next-step { margin-top: .35rem; font-weight: 650; }
+.diagnosis-message .refs { margin-top: .4rem; }
 .messages > .progress { margin: .7rem var(--section-padding); }
 .bubble p { white-space: pre-wrap; }
 .message-meta { font-size: .87rem; font-weight: 650; color: var(--muted); margin-bottom: .18rem; }
@@ -238,6 +241,8 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
 .ticket-review dt { font-weight: 700; }
 .ticket-review dd { margin: 0; }
 .ticket-review ul { padding-inline-start: 1.1rem; margin: 0; }
+.reconcile-form { margin-top: .9rem; padding-top: .85rem; border-top: 1px solid var(--line); }
+.reconcile-form h3 { font-size: 1rem; }
 
 .journal { overflow: hidden; }
 .journal summary { padding: .65rem 1rem; font-weight: 650; }

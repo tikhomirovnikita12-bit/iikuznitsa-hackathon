@@ -48,13 +48,24 @@ def diagnose(client, pair=OIL):
     return response.json()
 
 
+def verdict(result):
+    messages = [message for message in result["messages"] if message["role"] == "diagnosis"]
+    message, = messages
+    assert message["status"] == result["diagnosis"]["status"]
+    assert message["description"] == result["diagnosis"]["description"]
+    assert message["summary"] and message["next_step"]
+    return message
+
+
 def prepare(client, pair=OIL):
     diagnose(client, pair)
     result = client.post("/api/chat", json={**pair, "message": "Подготовь заявку"}).json()
     draft = result["draft"]
     assert draft
     edits = {key: draft[key] for key in ("conclusion", "operations", "urgency", "spare_parts")}
-    return {**pair, "edits": edits, "priority_confirmed": True}
+    assert result["draft_id"] and result["draft_revision"] >= 1
+    return {**pair, "draft_id": result["draft_id"], "revision": result["draft_revision"],
+            "edits": edits, "priority_confirmed": True}
 
 
 def test_actual_mock_outcomes_and_pair_isolation(stand):
@@ -62,14 +73,24 @@ def test_actual_mock_outcomes_and_pair_isolation(stand):
     result = diagnose(client)
     assert result["diagnosis"]["anomaly_type"] == "F02"
     assert {source["pdf_page"] for source in result["brief"]["references"]} == {19, 53}
+    assert {source["pdf_page"] for source in verdict(result)["references"]} == {19, 53}
+    assert state(client)["messages"] == result["messages"]
     assert state(client, NORMAL)["diagnosis"] is None
-    assert diagnose(client, NORMAL)["diagnosis"]["status"] == "normal"
+    normal = diagnose(client, NORMAL)
+    assert normal["diagnosis"]["status"] == "normal"
+    assert "Значимых отклонений не обнаружено" in verdict(normal)["summary"]
+    assert verdict(state(client, NORMAL)) == verdict(normal)
     reply = client.post("/api/chat", json={**NORMAL, "message": "Что проверить сначала?"}).json()
     assert "S-0010" in reply["messages"][-1]["summary"]
-    assert not state(client)["messages"]
-    failed = diagnose(client, FAILED)["diagnosis"]
+    assert state(client)["messages"] == result["messages"]
+    failed_result = diagnose(client, FAILED)
+    failed = failed_result["diagnosis"]
     assert failed["status"] == "check_failed"
     assert failed["confidence"] is None and failed["anomaly_score"] is None
+    assert "перегрузка микрофона" in verdict(failed_result)["description"]
+    assert "Повторите запись" in verdict(failed_result)["next_step"]
+    assert verdict(state(client, FAILED)) == verdict(failed_result)
+    assert verdict(diagnose(client, NORMAL)) == verdict(normal)
     wrong = client.post("/api/diagnose", json={**FAILED, "vehicle_id": OIL["vehicle_id"]})
     assert wrong.status_code == 404 and wrong.json()["error"]["code"] == "invalid_pair"
 
@@ -118,8 +139,32 @@ def test_definite_error_preserves_draft_until_explicit_retry(stand, monkeypatch)
     assert state(client)["draft"]["conclusion"] == request["edits"]["conclusion"]
     assert not calls
     monkeypatch.setattr(main, "post", real_post)
+    request["revision"] = state(client)["draft_revision"]
     assert client.post("/api/ticket", json=request).json()["ticket"]["status"] == "created"
     assert len(calls) == 1
+
+
+def test_stale_update_and_submit_return_latest_draft(stand):
+    client, calls = stand
+    original = prepare(client)
+    edits = {**original["edits"], "operations": [*original["edits"]["operations"], "Замер из второй вкладки."]}
+    saved = client.put("/api/draft", json={**original, "edits": edits})
+    assert saved.status_code == 200, saved.text
+    latest = saved.json()
+    assert latest["draft_id"] == original["draft_id"]
+    assert latest["draft_revision"] > original["revision"]
+    assert latest["draft"]["operations"] == edits["operations"]
+
+    stale = {**original, "edits": {**original["edits"], "operations": ["Несохранённая пометка."]}}
+    for changed in (client.put("/api/draft", json=stale), client.post("/api/ticket", json=stale)):
+        assert changed.status_code == 409, changed.text
+        conflict = changed.json()
+        assert conflict["error"]["code"] == "stale_draft"
+        assert conflict["state"]["draft_id"] == latest["draft_id"]
+        assert conflict["state"]["draft_revision"] == latest["draft_revision"]
+        assert conflict["state"]["draft"]["operations"] == edits["operations"]
+    assert state(client)["draft"]["operations"] == edits["operations"]
+    assert not calls
 
 
 def test_timeout_after_dispatch_locks_retry_across_store_restart(stand, monkeypatch):

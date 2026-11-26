@@ -1,8 +1,10 @@
 import json
 import os
-from contextlib import asynccontextmanager
+import re
+from contextlib import asynccontextmanager, contextmanager
 from time import perf_counter, time
 from typing import Annotated
+from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, Query, Request
@@ -14,8 +16,8 @@ from pydantic import ValidationError
 from . import demo_agent, sources
 from .config import DEFAULT_ML, DEFAULT_TOIR, MOCKS, ROOT, WEB, endpoint
 from .contracts import (
-    Brief, ChatRequest, Diagnosis, DraftFields, DraftUpdate, Pair, Reply, TicketReceipt,
-    TicketRequest, TicketSubmit, ToolCall,
+    Brief, ChatRequest, Diagnosis, DraftFields, DraftUpdate, Identifier, Pair, Reply, TicketReceipt,
+    TicketReconciliation, TicketRequest, TicketSubmit, ToolCall,
 )
 from .retrieval import SEARCH_QUESTIONS, key, load_retrieval
 from .state import UNKNOWN, Store, empty_state, public_state, record_call
@@ -77,15 +79,19 @@ app.mount("/assets", StaticFiles(directory=WEB), name="assets")
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, code: str, message: str):
+    def __init__(self, status: int, code: str, message: str, state: dict | None = None):
         super().__init__(message)
         self.status = status
         self.code = code
         self.message = message
+        self.state = state
 
 
 def error_response(error: ApiError):
-    return JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=error.status)
+    body = {"error": {"code": error.code, "message": error.message}}
+    if error.state is not None:
+        body["state"] = error.state
+    return JSONResponse(body, status_code=error.status)
 
 
 @app.exception_handler(ApiError)
@@ -121,7 +127,8 @@ PROXY_ROUTES = {
 @app.middleware("http")
 async def team_gateway(request: Request, call_next):
     path = request.url.path
-    if TEAM_API_URL and (request.method, path) in PROXY_ROUTES:
+    reconciliation = request.method == "POST" and re.fullmatch(r"/api/drafts/[^/]+/reconcile", path)
+    if TEAM_API_URL and ((request.method, path) in PROXY_ROUTES or reconciliation):
         try:
             async with httpx.AsyncClient(timeout=TEAM_TIMEOUT, trust_env=False) as client:
                 upstream = await client.request(
@@ -196,7 +203,37 @@ def present(pair: Pair, state: dict):
 
 
 def session_response(pair: Pair, state: dict):
-    return {**public_state(state), "draft_available": draft_available(VEHICLE_BY_ID[pair.vehicle_id], state)}
+    return {
+        **public_state(state),
+        "messages": chat_history(state),
+        "draft_available": draft_available(VEHICLE_BY_ID[pair.vehicle_id], state),
+        "reconcile_available": bool(team and team.can_reconcile and state["ticket"]["status"] == "unknown"),
+    }
+
+
+def chat_history(state: dict) -> list[dict]:
+    conversation = [message for message in state["messages"] if message["role"] != "diagnosis"][-60:]
+    diagnosis = state["diagnosis"]
+    if diagnosis is None:
+        return conversation
+
+    status = diagnosis["status"]
+    summary, next_step = {
+        "normal": ("Значимых отклонений не обнаружено", "Продолжайте штатный контроль двигателя."),
+        "anomaly": ("Обнаружено отклонение", "Уточните симптомы и фактические измерения для дефектовки."),
+        "check_failed": ("Сбой проверки записи", "Повторите запись. По этой записи вывод о двигателе невозможен."),
+    }[status]
+    brief = state["brief"] or {}
+    verdict = {
+        "role": "diagnosis",
+        "status": status,
+        "summary": summary,
+        "description": diagnosis["description"],
+        "next_step": brief.get("first_check", next_step),
+        "references": brief.get("references", []),
+        "origin": brief.get("origin"),
+    }
+    return [verdict, *conversation]
 
 
 def post(url: str, payload: dict, timeout: float) -> httpx.Response:
@@ -250,9 +287,10 @@ def agent_call(action: str, vehicle: dict, diagnosis: Diagnosis, state: dict, me
     if not TEAM_AGENT_URL:
         raise RuntimeError("Не задан TEAM_AGENT_URL")
     context = {key: vehicle[key] for key in ("vehicle_id", "engine_model", "fuel", "make", "model")}
+    conversation = [item for item in state["messages"] if item["role"] in ("user", "assistant")]
     payload = {
         "action": action, "vehicle": context, "diagnosis": diagnosis.model_dump(), "message": message,
-        "messages": state["messages"][-12:] if action == "chat" else [],
+        "messages": conversation[-12:] if action == "chat" else [],
     }
     if retrieval:
         questions = [message] if message else [diagnosis.description]
@@ -363,9 +401,11 @@ def diagnose(pair: Pair):
         if (saved_diagnosis and state["ticket"]["status"] in ("idle", "draft", "error") and
             (saved_diagnosis["status"], saved_diagnosis["anomaly_type"]) !=
             (diagnosis.status, diagnosis.anomaly_type)):
-            state.update(draft=None, draft_origin=None, messages=[], ticket=empty_state()["ticket"])
+            state.update(draft=None, draft_id=None, draft_revision=None, draft_origin=None,
+                         messages=[], ticket=empty_state()["ticket"])
         state.update(diagnosis=diagnosis.model_dump(), brief=brief, brief_error=brief_error,
                      diagnosis_requested=requested)
+        state["messages"] = chat_history(state)
 
     return present(pair, store.update(pair.key(), save))
 
@@ -424,6 +464,7 @@ def save_proposal(state: dict, pair: Pair, diagnosis: Diagnosis, draft: DraftFie
             **diagnosis.model_dump(include={"vehicle_id", "session_id", "anomaly_type"}),
             **draft.model_dump(),
         ).model_dump()
+        state.update(draft_id=uuid4().hex, draft_revision=1)
         state["ticket"]["status"] = "draft"
     state["draft_origin"] = origin
 
@@ -500,7 +541,7 @@ def chat(request: ChatRequest):
             {"role": "user", "text": request.message},
             {"role": "assistant", "origin": origin, **reply.model_dump()},
         ])
-        state["messages"] = state["messages"][-60:]
+        state["messages"] = chat_history(state)
         record_call(state, audit(tool, started))
         for call in calls:
             record_call(state, call)
@@ -508,6 +549,42 @@ def chat(request: ChatRequest):
             save_proposal(state, request, diagnosis, draft, origin)
 
     return present(request, store.update(request.key(), save))
+
+
+def stale_draft(pair: Pair, state: dict | None = None) -> ApiError:
+    latest = read_state(pair) if state is None else state
+    return ApiError(409, "stale_draft", "Черновик изменился. Проверьте сохранённую версию.",
+                    session_response(pair, latest))
+
+
+def require_draft_version(state: dict, request: DraftUpdate):
+    if state["draft_id"] != request.draft_id or state["draft_revision"] != request.revision:
+        raise stale_draft(request, state)
+
+
+def same_submission(request: TicketSubmit, draft_id: str, revision: int, fields: dict) -> bool:
+    edits = request.edits.model_dump()
+    return (request.draft_id == draft_id and request.revision <= revision and
+            all(fields[key] == value for key, value in edits.items()))
+
+
+@contextmanager
+def selected_team_draft(pair: Pair, draft_id: str, revision: int, *, submission: TicketSubmit | None = None):
+    draft = team.current_draft(pair)
+    if not draft:
+        raise stale_draft(pair)
+    if submission is not None and draft.state in ("sending", "sent", "delivery_unknown"):
+        matches = same_submission(submission, draft.draft_id, draft.revision, draft.model_dump())
+    else:
+        matches = (draft.draft_id, draft.revision) == (draft_id, revision)
+    if not matches:
+        raise stale_draft(pair)
+    try:
+        yield draft
+    except team.Problem as error:
+        if error.code in ("stale_draft", "draft_locked", "draft_not_found"):
+            raise stale_draft(pair) from error
+        raise
 
 
 def edit_draft(state: dict, request: DraftUpdate, vehicle: dict):
@@ -520,19 +597,36 @@ def edit_draft(state: dict, request: DraftUpdate, vehicle: dict):
     if demo_agent.case_for(vehicle, diagnosis) == "mismatch":
         raise ApiError(409, "engine_mismatch", demo_agent.mismatch(vehicle))
     verify_references(draft.references, vehicle, required=True)
-    state["draft"] = draft.model_dump()
+    updated = draft.model_dump()
+    if updated != state["draft"]:
+        state.update(draft=updated, draft_revision=state["draft_revision"] + 1)
 
 
 @app.put("/api/draft")
 def save_draft(request: DraftUpdate):
     vehicle = vehicle_for(request)
     if team:
-        draft = team.current_draft(request)
-        if not draft:
-            raise ApiError(409, "draft_locked", "Черновик отсутствует или его статус изменился.")
-        team.patch(draft, request)
+        with selected_team_draft(request, request.draft_id, request.revision) as draft:
+            team.patch(draft, request)
         return session_response(request, read_state(request))
-    return session_response(request, store.update(request.key(), lambda state: edit_draft(state, request, vehicle)))
+
+    def save(state):
+        require_draft_version(state, request)
+        edit_draft(state, request, vehicle)
+
+    return session_response(request, store.update(request.key(), save))
+
+
+@app.post("/api/drafts/{draft_id}/reconcile")
+def reconcile_draft(draft_id: Identifier, request: TicketReconciliation):
+    vehicle_for(request)
+    if not team or not team.can_reconcile:
+        raise ApiError(409, "reconcile_unavailable", "На этом бэкенде сверка номера ещё недоступна.")
+    started = perf_counter()
+    with selected_team_draft(request, draft_id, request.revision) as draft:
+        team.reconcile(draft, request)
+    add_call(request, "backend.drafts.reconcile", started, "ok")
+    return session_response(request, read_state(request))
 
 
 def send_toir(draft: dict) -> dict:
@@ -560,16 +654,16 @@ def submit(request: TicketSubmit):
     if not request.priority_confirmed:
         raise ApiError(422, "priority_unconfirmed", "Подтвердите выбранный приоритет.")
     if team:
-        draft = team.current_draft(request)
-        if not draft:
-            raise ApiError(409, "draft_locked", "Черновик отсутствует или его статус изменился.")
-        state = read_state(request)
-        if draft.state in ("draft", "delivery_failed"):
-            diagnosis = Diagnosis.model_validate(state["diagnosis"])
-            if demo_agent.case_for(vehicle, diagnosis) == "mismatch":
-                raise ApiError(409, "engine_mismatch", demo_agent.mismatch(vehicle))
-        started = perf_counter()
-        result = team.submit(draft, request)
+        with selected_team_draft(request, request.draft_id, request.revision, submission=request) as draft:
+            if draft.state in ("draft", "delivery_failed"):
+                stored = team.stored_diagnosis(request)
+                if not stored:
+                    raise ApiError(409, "diagnosis_changed", "Запустите проверку этой сессии.")
+                diagnosis = Diagnosis.model_validate(stored)
+                if demo_agent.case_for(vehicle, diagnosis) == "mismatch":
+                    raise ApiError(409, "engine_mismatch", demo_agent.mismatch(vehicle))
+            started = perf_counter()
+            result = team.submit(draft, request)
         if draft.state in ("draft", "delivery_failed"):
             status = {"sent": "ok", "delivery_unknown": "unknown"}.get(result.state, "error")
             add_call(request, "mock_toir.tickets", started, status)
@@ -579,7 +673,10 @@ def submit(request: TicketSubmit):
     def claim(state):
         nonlocal claimed
         if state["ticket"]["status"] in ("sending", "created", "unknown"):
+            if not same_submission(request, state["draft_id"], state["draft_revision"], state["draft"]):
+                raise stale_draft(request, state)
             return
+        require_draft_version(state, request)
         edit_draft(state, request, vehicle)
         state["ticket"].update(status="sending", ticket_id=None, message=None, started_at=time())
         claimed = True
