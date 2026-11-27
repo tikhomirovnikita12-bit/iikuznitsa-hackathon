@@ -6,9 +6,7 @@ from .tools import fluid_check, oil_pressure
 
 MOVEMENT_VERDICT = "Возможность перегона по этим данным не подтверждена."
 MOVEMENT_LIMITS = (
-    "Фактические замеры сообщены механиком; сравнение с нормативом не является допуском к перегону. "
-    "Рекомендация — очная дефектовка по результатам измерений. Прямой запрет из руководства здесь не установлен; "
-    "высокий приоритет сам по себе его не создаёт."
+    "Прямой запрет из руководства здесь не установлен. Возможность перегона определяет механик после очной проверки."
 )
 MEASUREMENT_GUIDE = re.compile(
     r"(?:условия замера давления(?: масла)?|"
@@ -117,7 +115,10 @@ class MeasurementAgent:
                    if movement else "Сверка давления масла с нормативом.")
         reply.update(intent="movement" if movement else "measurement", pressure_measurement=values, verdict=verdict)
         if movement:
-            reply["movement_limitations"] = MOVEMENT_LIMITS
+            pressure = values.get("pressure")
+            observation = (f"Со слов механика, давление масла {pressure.replace('.', ',')} кПа."
+                           if pressure is not None else "Для оценки нужны фактическое давление и условия замера.")
+            reply["movement_limitations"] = f"{observation} {MOVEMENT_LIMITS}"
         source = self._add_reference(reply, oil_pressure.QUERY, oil_pressure.SOURCE, trace)
         if source is None:
             reply["clarifying_question"] = "Не удалось найти применимый норматив в руководстве."

@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / ".runtime"
 PYTHON = ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 OIL = ("E549YT198", "S-0011")
-UNSUPPORTED = ("O710HH78", "S-0014")
+UNSUPPORTED = ("C933KX98", "S-0163")
 NORMAL = ("E549YT198", "S-0010")
 FAILED = ("P456AT178", "S-0003")
 LOW_CONFIDENCE = ("M739BA198", "S-0103")
@@ -244,15 +244,19 @@ def admission_checks(browser, base, out, results, *, mobile=False):
                            (FAILED, "recording_invalid"), (MISMATCH, "fault_engine_mismatch")):
             open_pair(page, base, pair)
             state = page_state(page, base, pair)
-            assert state["admission"]["block_reason"]["code"] == code
-            expect(page.locator("#result .admission-notice")).to_contain_text(state["admission"]["block_reason"]["message"])
+            admission = state["admission"]
+            assert admission["block_reason"]["code"] == code
+            message = admission["block_reason"]["message"]
+            if code == "procedure_unavailable" and admission["has_documented_first_check"]:
+                message = "Автоматическое оформление заявки недоступно."
+            expect(page.locator("#result .admission-notice")).to_contain_text(message)
             expect(prepare_ticket_button(page)).to_have_count(0)
             assert not any(call["tool"] == "mock_toir.tickets" for call in state["calls"])
             if pair == LOW_CONFIDENCE:
                 expect(page.locator("#result")).to_contain_text("Запись с помехами")
             if pair == FAILED:
                 expect(page.locator("#result")).to_contain_text("вывод о двигателе невозможен")
-        results.append({"step": "Причины отказа: F04 без процедуры, confidence 0.48, bad и несовместимый F08", "mobile": mobile, "result": "passed"})
+        results.append({"step": "Причины отказа: F09 без процедуры, confidence 0.48, bad и несовместимый F08", "mobile": mobile, "result": "passed"})
 
         open_pair(page, base, OIL)
         ask(page, "Что проверить сначала?", "Проверка по руководству выбранного двигателя.")
@@ -526,7 +530,8 @@ def dictation_check(browser, base, results):
         with page.expect_response(lambda response: response.url.endswith("/api/chat")) as response:
             send.tap()
         assert response.value.ok
-        assert requests == [{"vehicle_id": OIL[0], "session_id": OIL[1], "message": OIL_QUESTION}]
+        assert requests == [{"vehicle_id": OIL[0], "session_id": OIL[1], "message": OIL_QUESTION,
+                             "match_input_language": True}]
         expect(page.locator("#messages .bubble:not(.user) a[href='/sources/yamz236-re/19']").first).to_be_visible()
         expect(question).to_be_empty()
 

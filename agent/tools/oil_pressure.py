@@ -24,6 +24,7 @@ SPEED_RANGE = re.compile(
 )
 CONFIRM_UNIT = re.compile(rf"(?:да(?:,?\s*({PRESSURE_UNIT}))?|({PRESSURE_UNIT}))[.!]?")
 OBSERVATION = re.compile(r"\b(?:измерил\w*|замерил\w*|показал\w*|показывает|у меня)\b", re.I)
+HYPOTHETICAL = re.compile(r"\b(?:если|допустим|предположим|гипотетически)\b", re.I)
 
 
 def kilopascals(amount, unit):
@@ -38,7 +39,7 @@ def decimal_text(value):
 
 
 def reports_value(question):
-    text = " ".join(question.split())
+    text = HYPOTHETICAL.split(" ".join(question.split()), maxsplit=1)[0].rstrip(" ,")
     if "?" in text and not (PRESSURE.match(text) or OBSERVATION.search(text)):
         return False
     return bool(PRESSURE.search(text) or BARE_NUMBER.fullmatch(text))
@@ -46,7 +47,7 @@ def reports_value(question):
 
 def readings(question, previous):
     values = dict(previous or {})
-    text = " ".join(question.casefold().split())
+    text = HYPOTHETICAL.split(" ".join(question.casefold().split()), maxsplit=1)[0].rstrip(" ,")
     answer = text.strip(" .!?")
     if values.get("pressure") is not None and answer in {"да", "нет"}:
         if values.get("warm") is None:

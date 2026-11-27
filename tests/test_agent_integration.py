@@ -128,7 +128,7 @@ class Member4Tests(unittest.TestCase):
                 self.assertIn(f"/sources/yamz236-re/{page}", {ref["url"] for ref in reply["references"]})
                 self.assertEqual(self.provider.requests, before)
 
-    def test_first_check_from_manual_for_blocked_draft(self):
+    def test_first_check_from_manual_for_reworded_question(self):
         for plate, session, page in (("B332BP98", "S-0159", 97), ("Y439TH198", "S-0071", 161)):
             with self.subTest(session=session):
                 pair = dict(vehicle_id=plate, session_id=session)
@@ -189,6 +189,45 @@ class Member4Tests(unittest.TestCase):
         self.assertRegex(movement["messages"][-1]["summary"].casefold(), r"не подтвержд[её]н|нельзя|не разреш")
         self.assertIsNone(movement["draft"])
         self.assertFalse(self.sent)
+
+    def test_f14_risk_explanation_is_cited_in_overview_chat_and_restored_state(self):
+        pair = dict(vehicle_id="Y815BM178", session_id="S-0152")
+        before = self.provider.requests
+        initial = self.post("diagnose", pair)
+        self.assertEqual(initial["brief"]["risk"], "unassessed")
+        self.assertIn("не удерживать натяжение цепи", initial["brief"]["rationale"])
+        self.assertEqual([ref["pdf_page"] for ref in initial["brief"]["risk_references"]], [143])
+        response = self.post("chat", pair, message="Почему это опасно?")
+        sections = response["messages"][-1]["sections"]
+        risk, = (section for section in sections if section["kind"] == "risk")
+        self.assertIn("локализовать стук", risk["items"][0])
+        self.assertEqual([ref["pdf_page"] for ref in risk["references"]], [143])
+        self.assertIsNone(response["draft"])
+
+        def old_brief(state):
+            state["brief"].update(rationale="Уровень риска по имеющимся данным не установлен.",
+                                  risk_references=[])
+
+        main.store.update((pair["vehicle_id"], pair["session_id"]), old_brief)
+        restored = self.client.get("/api/state", params=pair).json()
+        self.assertEqual(restored["brief"]["rationale"], initial["brief"]["rationale"])
+        self.assertEqual(restored["brief"]["risk_references"], initial["brief"]["risk_references"])
+        self.assertEqual(self.provider.requests, before)
+
+    def test_movement_describes_actual_pressure_only_after_it_is_reported(self):
+        self.post("diagnose", self.oil)
+        question = "Можно ли своим ходом перегнать машину на базу?"
+        first = self.post("chat", self.oil, message=question)["messages"][-1]["analysis"]
+        self.assertEqual(first["pressure_measurement"], {})
+        self.assertIn("нужны фактическое давление", first["movement_limitations"])
+        self.assertNotIn("Со слов механика", first["movement_limitations"])
+        self.assertIn("Укажите значение и единицу", first["clarifying_question"])
+        hypothetical = self.post("chat", self.oil, message="Можно ли перегнать машину, если давление 350 кПа?")
+        self.assertEqual(hypothetical["messages"][-1]["analysis"]["pressure_measurement"], {})
+        following = self.post("chat", self.oil, message="3,5 бар, прогрет, 2100 об/мин, без допуска")
+        analysis = following["messages"][-1]["analysis"]
+        self.assertIn("Со слов механика, давление масла 350 кПа", analysis["movement_limitations"])
+        self.assertIn("ниже", analysis["checks"][0]["text"])
 
     def test_negated_and_explanatory_ticket_questions_do_not_create_drafts(self):
         self.post("diagnose", self.fuel)

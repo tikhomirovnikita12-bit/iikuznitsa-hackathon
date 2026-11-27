@@ -122,6 +122,21 @@ def test_fleet_report_categories_and_history(stand):
                for step in row["history"])
 
 
+def test_quarantine_is_ranked_by_risk_priority_and_anomaly_score(stand):
+    client, _ = stand
+    rows = client.get("/api/fleet").json()["vehicles"]
+    quarantine = [row for row in rows if row["category"] == "quarantine"]
+    scores = [row["latest"]["anomaly_score"] for row in quarantine]
+    assert scores == sorted(scores, reverse=True)
+    risk, priority = quarantine[-2:]
+    main.store.update((risk["vehicle_id"], risk["latest"]["session_id"]),
+                      lambda state: state.update(brief={"risk": "high"}))
+    main.store.update((priority["vehicle_id"], priority["latest"]["session_id"]),
+                      lambda state: state.update(confirmed_urgency="medium"))
+    ranked = client.get("/api/fleet").json()["vehicles"]
+    assert [row["vehicle_id"] for row in ranked[:2]] == [risk["vehicle_id"], priority["vehicle_id"]]
+
+
 def test_fleet_reads_team_state_without_local_store(stand, monkeypatch):
     """При TEAM_API_URL локальный Store отсутствует: заявку отдаёт командный адаптер."""
     client, _ = stand
@@ -676,13 +691,13 @@ def test_f03_fixture_explains_risk_and_checks_without_unlocking_draft(stand, mon
 
 @pytest.mark.parametrize("plate,session,page,part", [
     ("B332BP98", "S-0159", 97, "охлаждающей жидкости"),
-    ("Y439TH198", "S-0071", 161, "ремней"),
+    ("Y439TH198", "S-0071", 161, "ремн"),
 ])
-def test_initial_check_is_available_without_a_ticket_operation(stand, plate, session, page, part):
+def test_documented_first_check_and_handoff_do_not_create_a_draft(stand, plate, session, page, part):
     client, submissions = stand
     pair = {"vehicle_id": plate, "session_id": session}
     initial = diagnose(client, pair)
-    assert not initial["admission"]["can_prepare"]
+    assert initial["admission"]["has_documented_first_check"]
     assert part in initial["brief"]["first_check"].casefold()
 
     result = client.post("/api/chat", json={**pair, "message": "Что проверить сначала?"})
@@ -691,6 +706,10 @@ def test_initial_check_is_available_without_a_ticket_operation(stand, plate, ses
     check = next(section for section in reply["sections"] if section["kind"] == "checks")
     assert part in " ".join(check["items"]).casefold()
     assert [reference["pdf_page"] for reference in check["references"]] == [page]
+    manual = next(item for item in client.get("/api/catalog").json()["manuals"]
+                  if item["manual"] == check["references"][0]["manual"])
+    pdf = client.get(f"/sources/{manual['slug']}/{page}/page.pdf")
+    assert pdf.status_code == 200 and pdf.headers["content-type"] == "application/pdf"
     assert any(section["kind"] == "clarify" for section in reply["sections"])
     assert result.json()["draft"] is None
 

@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from backend.admission import evaluate_admission, diagnosis_revision
-from backend.mechanic import Mechanic as EvidenceMechanic, conflict_case
+from backend.mechanic import Mechanic as EvidenceMechanic, RISK_QUESTION, UNKNOWN_RISK, conflict_case
 
 from . import demo_agent, generator_check, localization, sources, speech
 from agent import case_context
@@ -232,6 +232,7 @@ def vehicle_for(pair: Pair) -> dict:
 
 
 FLEET_CATEGORIES = ("quarantine", "attention", "recheck", "ready")
+FLEET_SEVERITY = {"low": 1, "medium": 2, "high": 3}
 
 
 def fleet_row(vehicle: dict) -> dict:
@@ -273,7 +274,8 @@ def fleet_row(vehicle: dict) -> dict:
         "engine_model": vehicle["engine_model"],
         "category": category,
         "reason": reason,
-        "urgency": draft["urgency"] if draft else None,
+        "urgency": state.get("confirmed_urgency") or (draft["urgency"] if draft else None),
+        "risk": brief["risk"] if brief else "unassessed",
         "ticket": {key: ticket.get(key) for key in ("status", "ticket_id")},
         "latest": {
             "session_id": latest["session_id"],
@@ -298,15 +300,22 @@ def fleet_row(vehicle: dict) -> dict:
 @app.get("/api/fleet")
 def fleet():
     rows = [fleet_row(vehicle) for vehicle in VEHICLES]
+
+    def priority(row):
+        severity = max(FLEET_SEVERITY.get(row["urgency"], 0), FLEET_SEVERITY.get(row["risk"], 0))
+        score = row["latest"]["anomaly_score"]
+        return FLEET_CATEGORIES.index(row["category"]), -severity, -(score if score is not None else -1), row["vehicle_id"]
+
     return {
         "summary": {**{name: sum(row["category"] == name for row in rows) for name in FLEET_CATEGORIES},
                     "total": len(rows)},
-        "vehicles": sorted(rows, key=lambda row: (FLEET_CATEGORIES.index(row["category"]), row["vehicle_id"])),
+        "vehicles": sorted(rows, key=priority),
         "criteria": {
             "quarantine": "оценка аномалии >= 0,8, высокий риск или заявка в работе",
             "recheck": "последняя проверка закончилась сбоем записи",
             "attention": "последняя проверка показала отклонение",
             "ready": "последняя проверка — норма",
+            "order": "Внутри категории выше машины с более высоким риском или приоритетом заявки, затем по баллу отклонения.",
         },
     }
 
@@ -384,6 +393,20 @@ def session_response(pair: Pair, state: dict):
         state = {**state, "brief": generator_check.brief(check["value"]), "brief_error": None}
     decision = admission_for(pair, state)
     brief = state.get("brief") or {}
+    if not check and decision["can_prepare"] and not brief.get("risk_references"):
+        diagnosis = Diagnosis.model_validate(state["diagnosis"])
+        assessment = policy_mechanic.assess(diagnosis, vehicle["engine_model"])
+        if assessment.risk and assessment.risk != UNKNOWN_RISK and assessment.evidence:
+            operation = decision["approved_operations"][0]
+            brief = brief or {"origin": "rule"}
+            source = assessment.evidence[0].source
+            brief = {
+                **brief, "risk": assessment.risk_level, "rationale": assessment.risk,
+                "risk_references": [{"manual": source.manual, "pdf_page": source.pdf_page}],
+                "first_check": brief.get("first_check") if brief.get("references") else operation["operation"],
+                "references": brief.get("references") or operation["references"],
+            }
+            state = {**state, "brief": brief, "brief_error": None}
     decision = {
         **decision,
         "has_documented_first_check": bool(
@@ -581,10 +604,15 @@ def overview(vehicle: dict, diagnosis: Diagnosis):
             for item in result["references"]
             if first_item and item.get("fragment_id") == first_item.get("fragment_id")
         ]
+        risk_fragments = {item["fragment_id"] for item in result["risk"]}
+        risk_references = [
+            Reference(manual=item["manual"], pdf_page=item["pdf_page"])
+            for item in result["references"] if item["fragment_id"] in risk_fragments
+        ]
         brief = Brief(risk=result.get("risk_level") or "unassessed",
                       rationale=" ".join(item["text"] for item in result["risk"]) or "Уровень риска по имеющимся данным не установлен.",
                       first_check=first or result["clarifying_question"] or reply.summary,
-                      references=first_references or references)
+                      references=first_references or references, risk_references=risk_references)
         return {"origin": "team", **brief.model_dump(), "analysis": result}, calls, "agent.overview"
     case = demo_agent.case_for(vehicle, diagnosis)
     if not TEAM_AGENT_URL or case == "mismatch":
@@ -688,7 +716,7 @@ def response_to_chat(vehicle, diagnosis, state, question):
                      if diagnosis.status == "anomaly" and diagnosis.signal_quality != "bad" else []), None, "fixture", [], None
 
     check = generator_check.session_check(vehicle, state)
-    if check and not draft_requested and generator_check.TOPIC.search(question.casefold()):
+    if check and not draft_requested and (generator_check.TOPIC.search(question.casefold()) or RISK_QUESTION.match(question)):
         return generator_check.reply(check["value"]), None, "rule", [], None
 
     demo_case = demo_agent.case_for(vehicle, diagnosis)
@@ -725,6 +753,15 @@ def response_to_chat(vehicle, diagnosis, state, question):
         reason = (decision.get("block_reason") or {}).get("message", "")
         message = case_context.blocked_message(reason, data, vehicle["engine_model"])
         return Reply(summary=message), None, "fixture", [], None
+    if diagnosis.status == "anomaly" and demo_case != "coolant" and RISK_QUESTION.match(question):
+        assessment = policy_mechanic.assess(diagnosis, vehicle["engine_model"])
+        if assessment.risk and assessment.risk != UNKNOWN_RISK and assessment.evidence:
+            source = assessment.evidence[0].source
+            reply = Reply(summary=assessment.risk, sections=[
+                Section(kind="risk", items=[assessment.risk],
+                        references=[Reference(manual=source.manual, pdf_page=source.pdf_page)]),
+            ])
+            return reply, None, "rule", [], None
     if demo_case == "oil" and (reply := demo_agent.oil_followup_reply(question, state["messages"])):
         return reply, None, "fixture", [], None
     if retrieval:

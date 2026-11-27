@@ -23,7 +23,7 @@ def prepare(client, pair):
     ({'vehicle_id':'M739BA198','session_id':'S-0103'},'confidence_too_low'),
     ({'vehicle_id':'P456AT178','session_id':'S-0003'},'recording_invalid'),
     ({'vehicle_id':'Y652CK98','session_id':'S-0132'},'fault_engine_mismatch'),
-    ({'vehicle_id':'O710HH78','session_id':'S-0014'},'procedure_unavailable'),
+    ({'vehicle_id':'C933KX98','session_id':'S-0163'},'procedure_unavailable'),
 ])
 def test_screen_blocks_unsafe_drafts_and_chat_without_delivery(integrated, pair, code):
     api, _adapter, sent = integrated
@@ -75,6 +75,23 @@ def test_screen_rejects_free_form_work_and_f08_unknown_condition(integrated):
     assert accepted.status_code == 200, accepted.text
     assert accepted.json()['ticket']['ticket_id']
     assert len(sent) == 1
+
+def test_generator_draft_requires_confirmed_discharge(integrated):
+    api, _adapter, sent = integrated
+    pair = {"vehicle_id": "P348EE78", "session_id": "S-0035"}
+    state, request = prepare(api, pair)
+    assert [ref["pdf_page"] for ref in state["draft"]["references"]] == [55]
+    confirmation = state["admission"]["approved_operations"][0]["conditions"][0]
+    assert confirmation["requires_confirmation"]
+    rejected = api.post("/api/ticket", json=request)
+    assert rejected.status_code == 422
+    assert rejected.json()["admission"]["block_reason"]["code"] == "applicability_required"
+    assert not sent
+    accepted = api.post("/api/ticket", json={**request, "applicability_confirmations": [confirmation["id"]]})
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["ticket"]["ticket_id"]
+    assert len(sent) == 1
+
 
 from test_mechanic import stand as local_stand
 
