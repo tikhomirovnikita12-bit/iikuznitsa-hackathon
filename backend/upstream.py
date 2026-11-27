@@ -5,12 +5,13 @@ from pydantic import BaseModel, ValidationError
 
 
 class Problem(Exception):
-    def __init__(self, status, code, message, *, uncertain=False, draft=None):
+    def __init__(self, status, code, message, *, uncertain=False, draft=None, admission=None):
         super().__init__(message)
         self.status = status
         self.code = code
         self.uncertain = uncertain
         self.draft = draft
+        self.admission = admission
 
 
 ResponseModel = TypeVar("ResponseModel", bound=BaseModel)

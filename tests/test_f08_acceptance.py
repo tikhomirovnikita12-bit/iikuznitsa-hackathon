@@ -19,7 +19,7 @@ from mechanic.team_workflow import TeamWorkflow
 
 FUEL = {"vehicle_id": "M333YK47", "session_id": "S-0005"}
 MISMATCH = {"vehicle_id": "Y652CK98", "session_id": "S-0132"}
-OIL = {"vehicle_id": "E549YT198", "session_id": "S-0011"}
+CHAIN = {"vehicle_id": "Y815BM178", "session_id": "S-0152"}
 
 
 class DeclineSelection:
@@ -45,6 +45,7 @@ def integrated(tmp_path, monkeypatch):
     monkeypatch.setenv("TEAM_DB_PATH", str(tmp_path / "workflow.sqlite3"))
     adapter = TeamWorkflow(ROOT, main.CATALOG_PATH, main.ML_URL, main.TOIR_URL, main.MOCK_TIMEOUT)
     monkeypatch.setattr(main, "team", adapter)
+    monkeypatch.setattr(main, "policy_mechanic", adapter.workflow.mechanic)
     monkeypatch.setattr(main, "store", Store(tmp_path / "screen.sqlite3", send_deadline=1))
     monkeypatch.setattr(main, "TEAM_API_URL", "")
     monkeypatch.setattr(main, "TEAM_AGENT_URL", "")
@@ -90,7 +91,9 @@ def submission(pair, state, confirmed):
     return {**pair, "draft_id": state["draft_id"], "revision": state["draft_revision"],
             "edits": {**{key: state["draft"][key]
                          for key in ("conclusion", "operations", "spare_parts")}, "urgency": "medium"},
-            "priority_confirmed": confirmed}
+            "priority_confirmed": confirmed,
+            "diagnosis_revision": state["admission"]["diagnosis_revision"],
+            "applicability_confirmations": ["initial_start_or_long_storage"] if pair == FUEL else []}
 
 
 @pytest.mark.parametrize("entry", ["button", "chat"])
@@ -123,6 +126,13 @@ def test_actual_f08_uses_backend_evidence_and_preserves_confirmation(integrated,
     assert rejected.status_code == 422
     assert sent == []
     payload = submission(FUEL, state, True)
+    missing_condition = client.post("/api/ticket", json={**payload, "applicability_confirmations": []})
+    assert missing_condition.status_code == 422, missing_condition.text
+    assert missing_condition.json()["error"]["code"] == "applicability_required"
+    assert not sent
+    # A rejected attempt may save edits and advance the draft revision.
+    state = client.get("/api/state", params=FUEL).json()
+    payload = submission(FUEL, state, True)
     response = client.post("/api/ticket", json=payload)
     assert response.status_code == 200, response.text
     ticket = response.json()["ticket"]
@@ -143,14 +153,15 @@ def test_gasoline_f08_stays_blocked(integrated, entry):
     path, payload = (("/api/draft", MISMATCH) if entry == "button"
                      else ("/api/chat", {**MISMATCH, "message": "Подготовь заявку"}))
     response = client.post(path, json=payload)
-    assert response.status_code in (200, 409), response.text
+    assert response.status_code == (422 if entry == "button" else 200), response.text
+    assert response.json()["admission"]["block_reason"]["code"] == "fault_engine_mismatch"
     assert response.json().get("draft") is None
     assert client.get("/api/state", params=MISMATCH).json()["draft"] is None
     assert adapter.workflow.drafts(adapter.Pair(**MISMATCH)) == []
     assert sent == []
 
 
-def test_oil_draft_still_reaches_ticket_id(integrated):
+def test_reviewed_chain_draft_reaches_ticket_id(integrated):
     client, _adapter, agent, sent = integrated
 
     class SelectFirst:
@@ -159,12 +170,12 @@ def test_oil_draft_still_reaches_ticket_id(integrated):
             return {"items": [{"field": "checks", "source": options[0]}]}
 
     agent.agent.provider = SelectFirst()
-    assert diagnose(client, OIL)["draft_available"] is True
-    state = request_draft(client, OIL, "button")
-    assert state["draft"]["anomaly_type"] == "F02"
+    assert diagnose(client, CHAIN)["draft_available"] is True
+    state = request_draft(client, CHAIN, "button")
+    assert state["draft"]["anomaly_type"] == "F14"
     assert state["draft"]["operations"] and state["draft"]["references"]
     assert sent == []
-    response = client.post("/api/ticket", json=submission(OIL, state, True))
+    response = client.post("/api/ticket", json=submission(CHAIN, state, True))
     assert response.status_code == 200, response.text
     assert response.json()["ticket"]["ticket_id"]
     assert len(sent) == 1
@@ -203,8 +214,8 @@ def test_f08_curated_draft_keeps_operation_and_source_in_case_history(integrated
 
 def test_late_chat_draft_keeps_newer_case_facts(integrated, monkeypatch):
     client, adapter, agent, sent = integrated
-    initial = diagnose(client, OIL)
-    proposal = agent.checked_draft(main.VEHICLE_BY_ID[OIL["vehicle_id"]],
+    initial = diagnose(client, CHAIN)
+    proposal = agent.checked_draft(main.VEHICLE_BY_ID[CHAIN["vehicle_id"]],
                                    Diagnosis.model_validate(initial["diagnosis"]))
     assert proposal
     entered, finish = Event(), Event()
@@ -220,36 +231,36 @@ def test_late_chat_draft_keeps_newer_case_facts(integrated, monkeypatch):
 
     monkeypatch.setattr(main, "response_to_chat", respond)
     with ThreadPoolExecutor(max_workers=2) as executor:
-        pending = executor.submit(client.post, "/api/chat", json={**OIL, "message": "Подготовь заявку"})
+        pending = executor.submit(client.post, "/api/chat", json={**CHAIN, "message": "Подготовь заявку"})
         try:
             assert entered.wait(5)
-            fresh = client.post("/api/chat", json={**OIL, "message": "Новые измерения"})
+            fresh = client.post("/api/chat", json={**CHAIN, "message": "Новые измерения"})
             assert fresh.status_code == 200, fresh.text
         finally:
             finish.set()
         late = pending.result(timeout=10)
 
     assert late.status_code == 200, late.text
-    latest = client.get("/api/state", params=OIL).json()
+    latest = client.get("/api/state", params=CHAIN).json()
     assert latest["messages"] == fresh.json()["messages"] == late.json()["messages"]
     assert latest["draft"] is None
-    assert main.store.read((OIL["vehicle_id"], OIL["session_id"]))["agent_history"][-1] == fresh_entry
-    assert adapter.workflow.drafts(adapter.Pair(**OIL)) == []
+    assert main.store.read((CHAIN["vehicle_id"], CHAIN["session_id"]))["agent_history"][-1] == fresh_entry
+    assert adapter.workflow.drafts(adapter.Pair(**CHAIN)) == []
     assert sent == []
 
 
 @pytest.mark.parametrize("failure,status", [(TimeoutError("timeout"), 504), (URLError("offline"), 503)])
 def test_transport_errors_do_not_become_fallback_drafts(integrated, failure, status):
     client, adapter, agent, sent = integrated
-    assert diagnose(client, OIL)["draft_available"] is True
+    assert diagnose(client, CHAIN)["draft_available"] is True
 
     class Failure:
         def ask(self, *_args):
             raise failure
 
     agent.agent.provider = Failure()
-    response = client.post("/api/draft", json=OIL)
+    response = client.post("/api/chat", json={**CHAIN, "message": "Как проверить состояние цепи в приводе ГРМ?"})
     assert response.status_code == status, response.text
-    assert client.get("/api/state", params=OIL).json()["draft"] is None
-    assert adapter.workflow.drafts(adapter.Pair(**OIL)) == []
+    assert client.get("/api/state", params=CHAIN).json()["draft"] is None
+    assert adapter.workflow.drafts(adapter.Pair(**CHAIN)) == []
     assert sent == []

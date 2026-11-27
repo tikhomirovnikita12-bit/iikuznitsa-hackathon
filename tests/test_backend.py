@@ -17,6 +17,7 @@ from backend.app import ROOT, Settings, create_app
 
 NORMAL = {"vehicle_id": "E549YT198", "session_id": "S-0010"}
 ANOMALY = {"vehicle_id": "E549YT198", "session_id": "S-0011"}
+CHAIN = {"vehicle_id": "Y815BM178", "session_id": "S-0152"}
 BAD_RECORDING = {"vehicle_id": "P456AT178", "session_id": "S-0003"}
 
 
@@ -66,7 +67,7 @@ class BackendTests(unittest.TestCase):
         self.toir_requests.append(json.loads(request.content))
         return self.toir_override(request) if self.toir_override else relay(self.toir, request)
 
-    def draft(self, pair=ANOMALY):
+    def draft(self, pair=CHAIN):
         self.assertEqual(self.client.post("/api/diagnose", json=pair).status_code, 200)
         response = self.client.post("/api/drafts", json=pair)
         self.assertEqual(response.status_code, 200, response.text)
@@ -94,7 +95,7 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(self.toir.get("/health").json()["service"], "mock-toir")
         vehicles = self.client.get("/api/vehicles").json()
         self.assertEqual(len(vehicles), 50)
-        self.assertEqual(set(vehicles[0]), {"vehicle_id", "make", "model", "engine_model"})
+        self.assertEqual(set(vehicles[0]), {"vehicle_id", "make", "model", "engine_model", "fuel"})
         self.assertIsNone(next(v["model"] for v in vehicles if v["vehicle_id"] == "O727CA198"))
         sessions = self.client.get("/api/vehicles/E549YT198/sessions").json()
         self.assertTrue(any(item["session_id"] == "S-0011" for item in sessions))
@@ -142,11 +143,12 @@ class BackendTests(unittest.TestCase):
 
     def test_draft_validation_edit_confirm_and_read_after_restart(self):
         self.client.post("/api/diagnose", json=BAD_RECORDING)
-        self.assertEqual(self.client.post("/api/drafts", json=BAD_RECORDING).status_code, 409)
+        self.assertEqual(self.client.post("/api/drafts", json=BAD_RECORDING).status_code, 422)
         path, draft = self.draft()
-        self.assertIsNone(draft["urgency"])
+        self.assertEqual(draft["suggested_urgency"], "medium")
+        self.assertIsNone(draft["confirmed_urgency"])
         self.assertEqual(draft["spare_parts"], [])
-        self.assertEqual(self.client.post("/api/drafts", json=ANOMALY).json(), draft)
+        self.assertEqual(self.client.post("/api/drafts", json=CHAIN).json(), draft)
 
         wrong_engine = {"manual": "536.3902150 РЭ", "pdf_page": 49}
         invalid = self.client.patch(path, json={"revision": 1, "references": [wrong_engine]})
@@ -155,7 +157,7 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(blank.status_code, 422)
         cleared = self.client.patch(path, json={"revision": 1, "operations": []})
         self.assertEqual(cleared.status_code, 200)
-        self.assertEqual(self.confirm(path, 2).json()["error"]["code"], "invalid_ticket")
+        self.assertEqual(self.confirm(path, 2).json()["error"]["code"], "operations_required")
         denied = self.client.post(path + "/confirm", json={"revision": 2, "urgency": "high", "confirmed": False})
         self.assertEqual(denied.status_code, 422)
         updated = self.client.patch(path, json={"revision": 2, "operations": draft["operations"]})
@@ -170,13 +172,13 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(self.confirm(path, 3).json(), sent)
         self.assertEqual(len(self.toir_requests), 1)
         self.assertEqual(self.toir_requests[0], {
-            **ANOMALY, "anomaly_type": "F02", "urgency": "high", "spare_parts": [],
+            **CHAIN, "anomaly_type": "F14", "urgency": "high", "spare_parts": [],
             "conclusion": draft["conclusion"], "operations": draft["operations"],
             "references": draft["references"],
         })
         with self.api() as reopened:
             self.assertEqual(reopened.get(path).json(), sent)
-            self.assertEqual(reopened.get("/api/drafts", params=ANOMALY).json(), [sent])
+            self.assertEqual(reopened.get("/api/drafts", params=CHAIN).json(), [sent])
 
     def test_parallel_confirm_only_sends_once(self):
         path, _ = self.draft()
@@ -248,7 +250,7 @@ class BackendTests(unittest.TestCase):
         with self.api() as reopened:
             self.assertEqual(reopened.get(path).json(), sent)
 
-    def test_customer_anomalies_have_sourced_work_even_without_extracted_index(self):
+    def test_customer_anomalies_require_reviewed_work_even_without_extracted_index(self):
         settings = replace(self.settings, corpus=self.settings.database.parent / "no-index.json")
         vehicles = json.loads(settings.vehicles.read_text(encoding="utf-8"))["vehicles"]
         statuses = {"normal": 0, "anomaly": 0, "check_failed": 0}
@@ -266,14 +268,18 @@ class BackendTests(unittest.TestCase):
                         if status != "anomaly":
                             continue
                         response = api.post("/api/drafts", json=pair)
+                        if not result["admission"]["can_prepare"]:
+                            self.assertEqual(response.status_code, 422, response.text)
+                            self.assertEqual(response.json()["admission"]["block_reason"]["code"],
+                                             result["admission"]["block_reason"]["code"])
+                            continue
                         self.assertEqual(response.status_code, 200, response.text)
                         draft = response.json()
-                        self.assertTrue(draft["operations"])
+                        self.assertEqual(draft["operations"], [operation["operation"]
+                            for operation in draft["admission"]["approved_operations"]])
                         self.assertTrue(draft["references"])
-                        self.assertEqual(draft["operations"], result["assessment"]["checks"])
-                        reference = draft["references"][0]
                         check_reference = api.patch(f"/api/drafts/{draft['draft_id']}", json={
-                            "revision": 1, "references": [reference],
+                            "revision": 1, "references": draft["references"],
                         })
                         self.assertEqual(check_reference.status_code, 200, check_reference.text)
         self.assertEqual(sum(statuses.values()), 195)
@@ -285,7 +291,7 @@ class BackendTests(unittest.TestCase):
         path, draft = self.draft(pair)
         self.assertEqual(draft["anomaly_type"], "F08")
         self.assertEqual(draft["operations"], [
-            "При подготовке к первичному пуску нового двигателя или после длительной стоянки проверить соединения и надёжность крепления топливопроводов.",
+            "При подготовке к первичному пуску нового двигателя или после длительной стоянки проверить соединения и надежность крепления топливопроводов.",
         ])
         self.assertEqual(draft["references"], [{"manual": "236-3902150-Б РЭ", "pdf_page": 16}])
         self.assertEqual(draft["spare_parts"], [])
@@ -295,7 +301,9 @@ class BackendTests(unittest.TestCase):
         })
         self.assertEqual(rejected.status_code, 422)
         self.assertEqual(self.toir_requests, [])
-        request = {"revision": draft["revision"], "urgency": "medium", "confirmed": True}
+        request = {"revision": draft["revision"], "urgency": "medium", "confirmed": True,
+                   "diagnosis_revision": draft["diagnosis_revision"],
+                   "applicability_confirmations": ["initial_start_or_long_storage"]}
         sent = self.client.post(path + "/confirm", json=request)
         self.assertEqual(sent.status_code, 200, sent.text)
         self.assertEqual(sent.json()["state"], "sent")
@@ -309,8 +317,8 @@ class BackendTests(unittest.TestCase):
     def test_latest_diagnosis_must_still_match_draft(self):
         path, _ = self.draft()
         changed = self.ml.post("/diagnose", json=NORMAL).json()
-        self.ml_override = lambda req: httpx.Response(200, json={**changed, **ANOMALY})
-        self.assertEqual(self.client.post("/api/diagnose", json=ANOMALY).json()["diagnosis"]["status"], "normal")
+        self.ml_override = lambda req: httpx.Response(200, json={**changed, **CHAIN})
+        self.assertEqual(self.client.post("/api/diagnose", json=CHAIN).json()["diagnosis"]["status"], "normal")
         self.assertEqual(self.confirm(path).json()["error"]["code"], "diagnosis_changed")
         self.assertEqual(self.toir_requests, [])
 
@@ -360,8 +368,40 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(reply["needs_clarification"])
         self.assertEqual(reply["evidence"], [])
 
-        reply = self.client.post("/api/chat", json={**ANOMALY, "question": "Создай заявку"}).json()
-        self.assertEqual(reply["draft"]["state"], "draft")
+        denied = self.client.post("/api/chat", json={**ANOMALY, "question": "Создай заявку"})
+        self.assertEqual(denied.status_code, 422)
+        self.assertEqual(denied.json()["error"]["code"], "procedure_unavailable")
+        self.assertEqual(self.toir_requests, [])
+
+    def test_chat_keeps_explicit_valve_topic_despite_oil_diagnosis(self):
+        self.assertEqual(self.client.post("/api/diagnose", json=ANOMALY).status_code, 200)
+        topic = "Какие тепловые зазоры клапанного механизма?"
+        first = self.client.post("/api/chat", json={**ANOMALY, "question": topic})
+        self.assertEqual(first.status_code, 200, first.text)
+        reply = first.json()
+        self.assertEqual({row["source"]["pdf_page"] for row in reply["evidence"]}, {31, 269, 276})
+        history = [{"question": topic, "answer": reply["answer"]}]
+        for question in ("Как это проверить?", "А как это проверить?", "При каких условиях проверять?"):
+            with self.subTest(question=question):
+                response = self.client.post("/api/chat", json={**ANOMALY, "question": question, "history": history})
+                self.assertEqual(response.status_code, 200, response.text)
+                reply = response.json()
+                self.assertEqual({row["source"]["pdf_page"] for row in reply["evidence"]}, {31, 269, 276})
+                self.assertIn("зазор", reply["answer"])
+                self.assertNotIn("давление масла", reply["answer"])
+                history.append({"question": question, "answer": reply["answer"]})
+
+        # A new explicit subject must override the valve history.
+        question = "При каких условиях проверять давление масла?"
+        response = self.client.post("/api/chat", json={**ANOMALY, "question": question, "history": history})
+        self.assertEqual(response.status_code, 200, response.text)
+        reply = response.json()
+        self.assertEqual({row["source"]["pdf_page"] for row in reply["evidence"]}, {19, 12})
+        history.append({"question": question, "answer": reply["answer"]})
+        response = self.client.post("/api/chat", json={**ANOMALY, "question": "А на холостых?", "history": history})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["evidence"][0]["source"]["pdf_page"], 19)
+        self.assertIn("холостом ходу", response.json()["answer"])
         self.assertEqual(self.toir_requests, [])
 
     def test_ollama_plans_a_scoped_action_and_recovers_from_bad_output(self):
@@ -382,7 +422,8 @@ class BackendTests(unittest.TestCase):
             # These commands go beyond the exact phrases accepted by the offline router.
             reply = api.post("/api/chat", json={**ANOMALY, "question": "Проведи диагностику машины"}).json()
             self.assertEqual(reply["diagnostic_result"]["diagnosis"]["status"], "anomaly")
-            reply = api.post("/api/chat", json={**ANOMALY, "question": "Оформи черновик по этой проверке"}).json()
+            self.assertEqual(api.post("/api/diagnose", json=CHAIN).status_code, 200)
+            reply = api.post("/api/chat", json={**CHAIN, "question": "Оформи черновик по этой проверке"}).json()
             self.assertEqual(reply["draft"]["state"], "draft")
             reply = api.post("/api/chat", json={**ANOMALY, "question": "Какое давление масла?"}).json()
             self.assertIsNone(reply["draft"])
@@ -390,5 +431,5 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(reply["evidence"][0]["source"]["pdf_page"], 19)
         self.assertEqual(requests[-1]["messages"][1], {"role": "user", "content": history[0]["question"]})
         self.assertIn("format", requests[0])
-        self.assertEqual(self.ml_requests, [ANOMALY])
+        self.assertEqual(self.ml_requests, [ANOMALY, CHAIN])
         self.assertEqual(self.toir_requests, [])

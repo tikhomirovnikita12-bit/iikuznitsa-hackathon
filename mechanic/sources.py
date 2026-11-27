@@ -108,13 +108,17 @@ def source_page(slug: str, page: int):
   <header class="source-header">
     <p class="source-position">Страница PDF {page} из {manual.pages}</p>
     <h1>{label}</h1>
+    <p class="muted">Порядковый номер страницы в PDF. Печатная нумерация в документе может отличаться.</p>
     <p class="source-filename">{file}</p>
+    <p class="muted">Руководство для: {escape(", ".join(manual.engines))}</p>
+    <section id="source-context" class="source-context" aria-label="Контекст проверки" hidden></section>
     <nav class="source-links" aria-label="Руководство в PDF">
       <a class="button secondary" id="source-return" href="/">К проверке</a>
-      <a class="button primary" href="/manuals/{slug}.pdf#page={page}">Открыть оригинал PDF</a>
-      <a class="button secondary" href="/sources/{slug}/{page}/page.pdf">Открыть только страницу {page}</a>
+      <a class="button primary" href="/sources/{slug}/{page}/page.pdf">Открыть только страницу {page}</a>
+      <a class="button secondary" href="/manuals/{slug}.pdf#page={page}">Открыть оригинал PDF</a>
     </nav>
   </header>
+  <p class="alert info" id="source-preview-note" role="status" {"hidden" if image else ""}>Предпросмотр недоступен. Откройте отдельную страницу PDF кнопкой выше; оригинал руководства также доступен.</p>
   {image}
 </main></body></html>""")
 

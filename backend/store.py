@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS drafts (
     started_at REAL,
     error_code TEXT,
     error_message TEXT,
+    diagnosis_revision TEXT,
+    suggested_urgency TEXT,
+    confirmed_urgency TEXT,
+    applicability_confirmations TEXT NOT NULL DEFAULT '[]',
     UNIQUE (vehicle_id, session_id, anomaly_type)
 );
 
@@ -42,6 +46,13 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as conn:
             conn.executescript(SCHEMA)
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(drafts)")}
+            for name, definition in {
+                "diagnosis_revision": "TEXT", "suggested_urgency": "TEXT", "confirmed_urgency": "TEXT",
+                "applicability_confirmations": "TEXT NOT NULL DEFAULT '[]'",
+            }.items():
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE drafts ADD COLUMN {name} {definition}")
 
     @contextmanager
     def connection(self, *, write=False):

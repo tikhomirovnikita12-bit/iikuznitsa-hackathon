@@ -89,7 +89,10 @@ class TeamWorkflow:
         if draft.state != "draft" or draft.revision != 1:
             return
         try:
-            self.workflow.patch_draft(draft.draft_id, self.Patch(revision=draft.revision, **fields.model_dump()))
+            # Operations and sources are supplied by the server's reviewed registry.
+            self.workflow.patch_draft(draft.draft_id, self.Patch(revision=draft.revision,
+                conclusion=fields.conclusion, urgency=draft.suggested_urgency,
+                operations=draft.operations, references=draft.references, spare_parts=fields.spare_parts))
         except self.Problem as error:
             if error.code not in ("stale_draft", "draft_locked"):
                 raise
@@ -98,9 +101,11 @@ class TeamWorkflow:
         edits = request.edits.model_dump()
         if request.revision is None or request.revision != draft.revision:
             raise self.Problem(409, "stale_draft", "Черновик изменился. Проверьте актуальную версию.", draft=draft)
-        if draft.model_dump(include=set(edits)) == edits:
+        confirmations = request.applicability_confirmations
+        if draft.model_dump(include=set(edits)) == edits and draft.applicability_confirmations == confirmations:
             return draft
-        return self.workflow.patch_draft(draft.draft_id, self.Patch(revision=request.revision, **edits))
+        return self.workflow.patch_draft(draft.draft_id, self.Patch(revision=request.revision,
+                                        applicability_confirmations=confirmations, **edits))
 
     def submit(self, draft, request):
         if draft.state in ("sending", "sent", "delivery_unknown"):
@@ -108,7 +113,10 @@ class TeamWorkflow:
         draft = self.patch(draft, request)
         try:
             return self.workflow.confirm_draft(
-                draft.draft_id, self.Confirm(revision=draft.revision, urgency=request.edits.urgency, confirmed=True),
+                draft.draft_id, self.Confirm(revision=draft.revision, urgency=request.edits.urgency, confirmed=True,
+                    warning_acknowledged=request.warning_acknowledged,
+                    diagnosis_revision=request.diagnosis_revision,
+                    applicability_confirmations=request.applicability_confirmations),
             )
         except self.Problem as error:
             if error.draft and error.draft.state in ("delivery_failed", "delivery_unknown"):
@@ -141,12 +149,15 @@ class TeamWorkflow:
             if draft.state == "delivery_unknown":
                 message = "Результат отправки неизвестен. " + (message or "Сверьте заявку в ТОиР.")
             state.update(draft=draft.model_dump(include=DRAFT_FIELDS), draft_id=draft.draft_id,
-                         draft_revision=draft.revision)
+                         draft_revision=draft.revision, draft_diagnosis_revision=draft.diagnosis_revision,
+                         applicability_confirmations=draft.applicability_confirmations,
+                         confirmed_urgency=draft.confirmed_urgency)
             state["ticket"] = {
                 "status": TICKET_STATES[draft.state], "ticket_id": draft.ticket_id,
                 "message": message,
             }
         else:
-            state.update(draft=None, draft_id=None, draft_revision=None, draft_origin=None)
+            state.update(draft=None, draft_id=None, draft_revision=None, draft_origin=None,
+                         draft_diagnosis_revision=None, applicability_confirmations=[], confirmed_urgency=None)
             state["ticket"] = {"status": "idle", "ticket_id": None, "message": None}
         return state

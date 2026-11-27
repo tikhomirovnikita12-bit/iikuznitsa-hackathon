@@ -47,6 +47,8 @@ class ManualSearch:
             for group in terms["synonyms"]
         ]
         for fragment_id, entry in self.fragments.items():
+            if entry.get("conflict_only"):
+                continue
             section = tokens(normalized_words(entry["section"]))
             body = tokens(normalized_words(entry["text"]))
             tags = tokens(normalized_words(" ".join(entry.get("search_terms", ()))))

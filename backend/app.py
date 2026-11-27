@@ -97,6 +97,8 @@ def create_app(settings: Settings | None = None, *, ml_transport=None, toir_tran
     @application.exception_handler(Problem)
     async def problem_response(_request: Request, error: Problem):
         body = {"error": {"code": error.code, "message": str(error)}}
+        if error.admission is not None:
+            body["admission"] = error.admission
         if error.draft is not None:
             body["draft"] = error.draft.model_dump(mode="json")
         return JSONResponse(status_code=error.status, content=body)
@@ -132,6 +134,10 @@ def create_app(settings: Settings | None = None, *, ml_transport=None, toir_tran
         vehicle = workflow.catalog.validate_pair(pair)
         with workflow.store.connection() as conn:
             return workflow.result(workflow.diagnosis(conn, pair), vehicle)
+
+    @application.get("/api/admission")
+    def admission(vehicle_id: Identifier, session_id: Identifier, workflow: Context):
+        return workflow.admission_for(Pair(vehicle_id=vehicle_id, session_id=session_id))
 
     @application.post("/api/chat", response_model=ChatReply)
     def chat(message: ChatRequest, request: Request):

@@ -45,7 +45,7 @@ def main():
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--no-mocks", action="store_true", help="Использовать уже запущенные сервисы")
     parser.add_argument("--agent", action="store_true", help="Подключить агента к общему экрану через Ollama")
-    parser.add_argument("--archive", type=Path, help="Архив заказчика; по умолчанию ZIP в корне проекта")
+    parser.add_argument("--archive", type=Path, help="ZIP или каталог материалов; по умолчанию поиск в корне проекта")
     parser.add_argument("--rebuild-index", action="store_true", help="Пересобрать индекс и изображения, сохранив SQLite")
     args = parser.parse_args()
     if args.agent:

@@ -1,7 +1,8 @@
-from agent.dialog import Agent, history_entry, incompatible_fault, passages, ticket_query
+from agent.dialog import Agent, history_entry
 from agent.tools.manual import Manuals
 from backend.mechanic import Mechanic
 from backend.models import Diagnosis as BackendDiagnosis
+from backend.admission import AdmissionPolicy, evaluate_admission
 
 from .sources import BY_NAME
 from .contracts import DraftFields, Reference, Reply, Section
@@ -11,12 +12,13 @@ from .demo_agent import wants_draft
 
 class CaseAgent:
     def __init__(self, corpus, log, *, mechanic=None):
-        self.agent = Agent(backend=None, manuals=Manuals(corpus), log=log)
         self.mechanic = mechanic if mechanic is not None else Mechanic(corpus, MATERIALS)
+        self.agent = Agent(backend=None, manuals=Manuals(corpus), log=log, mechanic=self.mechanic)
 
     def checked_draft(self, vehicle, diagnosis):
         context = {**diagnosis.model_dump(), "engine_model": vehicle["engine_model"], "fuel": vehicle["fuel"]}
-        if diagnosis.status != "anomaly" or incompatible_fault(context):
+        admission = evaluate_admission(vehicle, context, mechanic=self.mechanic)
+        if not admission["can_prepare"]:
             return None
         backend_diagnosis = BackendDiagnosis.model_validate(diagnosis.model_dump())
         fields = self.mechanic.suggest_draft(backend_diagnosis, vehicle["engine_model"])
@@ -24,7 +26,8 @@ class CaseAgent:
             not self.mechanic.reference_applies(reference, vehicle["engine_model"]) for reference in fields.references
         ):
             return None
-        evidence = self.mechanic.assess(backend_diagnosis, vehicle["engine_model"]).evidence
+        evidence = [self.mechanic.evidence(row["fragment_id"], vehicle["engine_model"])
+                    for row in AdmissionPolicy(self.mechanic).approved_operations(backend_diagnosis, vehicle["engine_model"])]
         if not evidence or any(not self.mechanic.pdf_paths[
             self.mechanic.search.fragments[item.source.fragment_id]["manual_id"]
         ].is_file() for item in evidence):
@@ -33,13 +36,12 @@ class CaseAgent:
 
     def checked_reply(self, question, fields, vehicle, diagnosis):
         summary = "Черновик подготовлен по проверенной операции руководства. Проверьте применимость и приоритет."
-        reply = Reply(summary=summary, sections=[Section(kind="checks", items=fields.operations,
-                                                       references=fields.references)])
-        evidence = self.mechanic.assess(BackendDiagnosis.model_validate(diagnosis.model_dump()),
-                                        vehicle["engine_model"]).evidence
+        reply = Reply(summary=summary, sections=[Section(kind="signs", items=[diagnosis.description]),
+            Section(kind="checks", items=fields.operations, references=fields.references)])
+        evidence = [self.mechanic.evidence(row["fragment_id"], vehicle["engine_model"])
+                    for row in AdmissionPolicy(self.mechanic).approved_operations(diagnosis.model_dump(), vehicle["engine_model"])]
         first = fields.operations[0]
-        source = next((item.source for item in evidence if len(fields.references) == 1
-                       or f"стр. {item.source.pdf_page}" in first), None)
+        source = evidence[0].source if evidence else None
         entry = history_entry(question, {
             "intent": "ticket", "verdict": summary + " " + " ".join(fields.operations),
             "clarifying_question": None,
@@ -48,21 +50,27 @@ class CaseAgent:
         return reply, fields, entry
 
     def can_prepare(self, vehicle, diagnosis, history=()):
-        context = {**diagnosis.model_dump(), "engine_model": vehicle["engine_model"], "fuel": vehicle["fuel"]}
-        if context["status"] != "anomaly" or incompatible_fault(context):
-            return False
-        # Match the first ticket search without invoking the model or changing case state.
-        return bool(self.checked_draft(vehicle, diagnosis)) or any(
-            passages(hit) for hit in self.agent.manuals.find(ticket_query(context), context)
-        )
+        return bool(self.checked_draft(vehicle, diagnosis))
+
+    def blocked_reply(self, question, vehicle, diagnosis):
+        admission = evaluate_admission(vehicle, diagnosis.model_dump(), mechanic=self.mechanic)
+        reason = admission.get("block_reason") or {}
+        summary = reason.get("message", "Для заявки пока нет подтверждённой процедуры.")
+        next_action = reason.get("next_action", "Передайте узел на очную дефектовку и уточните применимую процедуру.")
+        reply = Reply(summary=summary, sections=[
+            Section(kind="signs", items=[diagnosis.description]),
+            Section(kind="clarify", items=[next_action]),
+        ])
+        entry = history_entry(question, {"intent": "clarify", "verdict": summary,
+                                        "clarifying_question": next_action, "checks": []})
+        return reply, None, entry
 
     def chat(self, vehicle, diagnosis, question, history):
         context = {**diagnosis.model_dump(), "engine_model": vehicle["engine_model"], "fuel": vehicle["fuel"]}
-        if (wants_draft(question) and not any(
-            passages(hit) for hit in self.agent.manuals.find(ticket_query(context), context)
-        )):
-            if fallback := self.checked_draft(vehicle, diagnosis):
-                return *self.checked_reply(question, fallback, vehicle, diagnosis), []
+        if wants_draft(question):
+            if checked := self.checked_draft(vehicle, diagnosis):
+                return *self.checked_reply(question, checked, vehicle, diagnosis), []
+            return *self.blocked_reply(question, vehicle, diagnosis), []
         trace = {}
         result = self.agent.turn(
             diagnosis.vehicle_id, diagnosis.session_id, question, history, trace_out=trace,
@@ -70,15 +78,11 @@ class CaseAgent:
         )
         calls = []
         for tool in trace["tools"]:
-            calls.append(dict(tool="agent." + tool["name"], duration_ms=round(tool["seconds"] * 1000),
+            calls.append(dict(tool="agent." + tool["name"], duration_ms=round(tool.get("seconds", 0) * 1000),
                               status="ok", pages=tool.get("pages", [])))
         for call in trace["calls"]:
             calls.append(dict(tool="ollama.chat", duration_ms=round(call["seconds"] * 1000), status="ok",
                               model=call["model"], input_tokens=call["input_tokens"], output_tokens=call["output_tokens"]))
-        if result.get("intent") == "ticket" and not result["ticket_draft"]:
-            if fallback := self.checked_draft(vehicle, diagnosis):
-                return *self.checked_reply(question, fallback, vehicle, diagnosis), calls
-
         references = {
             item["fragment_id"]: Reference(manual=item["manual"], pdf_page=item["pdf_page"])
             for item in result["references"]
@@ -86,18 +90,17 @@ class CaseAgent:
         for item in result["references"]:
             manual = BY_NAME[item["manual"]]
             item["url"] = f"/sources/{manual.slug}/{item['pdf_page']}"
-        sections = []
+        sections = [Section(kind="signs", items=[diagnosis.description])]
         for field, kind in (("possible_causes", "causes"), ("risk", "risk"), ("checks", "checks")):
             for item in result[field]:
-                sections.append(Section(kind=kind, items=[item["text"]], references=[references[item["fragment_id"]]]))
+                prefix = "Гипотеза: " if kind in {"causes", "risk"} else ""
+                sections.append(Section(kind=kind, items=[prefix + item["text"]],
+                                        references=[references[item["fragment_id"]]]))
+        if result.get("movement_limitations"):
+            sections.append(Section(kind="clarify", items=[result["movement_limitations"]]))
         if question_to_clarify := result["clarifying_question"]:
             sections.append(Section(kind="clarify", items=[question_to_clarify],
-                                    references=[] if sections else list(references.values())))
+                                    references=list(references.values()) if not any(section.references for section in sections) else []))
 
         summary = result.get("explanation") or result["verdict"]
-        draft = result["ticket_draft"]
-        proposal = None
-        if draft:
-            proposal = DraftFields.model_validate({key: draft[key] for key in DraftFields.model_fields})
-            summary = "Черновик подготовлен. Проверьте поля и подтвердите приоритет."
-        return Reply(summary=summary, sections=sections, analysis=result), proposal, history_entry(question, result), calls
+        return Reply(summary=summary, sections=sections, analysis=result), None, history_entry(question, result), calls

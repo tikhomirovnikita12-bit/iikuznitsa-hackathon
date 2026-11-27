@@ -142,6 +142,50 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(list(self.root.rglob("unexpected.py")), [])
         self.build.assert_called_once()
 
+    def unpacked_bundle(self, directory):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / self.manual.filename).write_bytes(b"%PDF-test")
+        with ZipFile(directory / prepare.CUSTOMER_ARCHIVE, "w") as archive:
+            for name in prepare.MOCK_FILES:
+                archive.writestr("bundle/" + name, "{}")
+        return directory
+
+    def test_unpacked_folder_in_project_root_is_detected_from_another_cwd(self):
+        bundle = self.unpacked_bundle(self.root / "007_хакатон_ИИ")
+        with patch.object(Path, "cwd", return_value=Path("/unrelated")):
+            prepare.ensure_ready()
+        self.assertEqual((prepare.MATERIALS / self.manual.filename).read_bytes(),
+                         (bundle / self.manual.filename).read_bytes())
+        self.assertTrue((prepare.MOCKS / "mock_ml/app.py").is_file())
+
+    def test_loose_pdfs_and_mock_archive_in_root_are_detected(self):
+        self.unpacked_bundle(self.root)
+        prepare.ensure_ready()
+        self.assertTrue(prepare.CORPUS.is_file())
+
+    def test_explicit_unpacked_directory_is_supported(self):
+        bundle = self.unpacked_bundle(self.root / "custom-materials")
+        prepare.ensure_ready(bundle)
+        self.assertTrue(prepare.CORPUS.is_file())
+
+    def test_unpacked_source_reuses_cache_and_detects_changed_pdf(self):
+        bundle = self.unpacked_bundle(self.root / "007_хакатон_ИИ")
+        prepare.ensure_ready()
+        prepare.ensure_ready()
+        self.build.assert_called_once()
+        (bundle / self.manual.filename).write_bytes(b"%PDF-new-source")
+        prepare.ensure_ready()
+        self.assertEqual(self.build.call_count, 2)
+        self.assertEqual((prepare.MATERIALS / self.manual.filename).read_bytes(), b"%PDF-new-source")
+
+    def test_unpacked_directory_without_mock_archive_explains_missing_file(self):
+        bundle = self.unpacked_bundle(self.root / "007_хакатон_ИИ")
+        (bundle / prepare.CUSTOMER_ARCHIVE).unlink()
+        with self.assertRaises(prepare.PreparationError) as raised:
+            prepare.ensure_ready()
+        self.assertIn(prepare.CUSTOMER_ARCHIVE, str(raised.exception))
+        self.build.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

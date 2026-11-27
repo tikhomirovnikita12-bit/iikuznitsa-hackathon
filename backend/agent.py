@@ -137,7 +137,9 @@ class Agent:
             ), None)
             query = (plan.query if plan and plan.tool == "manual_search" else None)
             if not query and topic:
-                query = f"{topic[:240]} {question}"
+                # The follow-up supplies intent, not a new subject. Adding generic
+                # verbs such as «проверить» can outweigh the actual valve/oil topic.
+                query = topic
             # Standalone wording like «какие причины?» refers to the conversation here.
             if query and re.match(r"^(?:а\s+)?какие (?:возможны )?причины", question.casefold()):
                 question = "Какие причины описаны для этого признака?"

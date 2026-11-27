@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.models import Confirm
+from backend import admission
 from mechanic import main
 from mechanic.config import ROOT
 from mechanic.contracts import Diagnosis, DraftFields, Reply
@@ -37,6 +38,22 @@ def changing_case(tmp_path, monkeypatch):
     adapter.toir = httpx.Client(base_url=main.TOIR_URL, transport=httpx.MockTransport(toir))
     adapter.workflow.ml, adapter.workflow.toir = adapter.ml, adapter.toir
     monkeypatch.setattr(main, "team", adapter)
+    monkeypatch.setattr(main, "policy_mechanic", adapter.workflow.mechanic)
+    # Scoped synthetic approvals exercise versioning transitions independently of
+    # real F02 procedure availability (the production registry still blocks F02).
+    registry = []
+    for code, fragment_id in (
+        ("F02", "yamz-236-3902150-b-re-p053-low-oil-pressure"),
+        ("F01", "yamz-236-3902150-b-re-p031-valve-clearance"),
+    ):
+        source = adapter.workflow.mechanic.search.fragments[fragment_id]
+        registry.append({"id": "fixture-" + code, "engine_model": "ЯМЗ-236М2", "anomaly_type": code,
+                         "node": "Тест переходов " + code, "manual_id": source["manual_id"],
+                         "fragment_id": fragment_id, "pdf_page": source["pdf_page"], "quote": source["text"],
+                         "operation": "Тестовая операция для " + code, "conditions": []})
+    registry_path = tmp_path / "approved-fixture.json"
+    registry_path.write_text(json.dumps(registry, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(admission, "REGISTRY", registry_path)
     monkeypatch.setattr(main, "store", Store(tmp_path / "screen.sqlite3", send_deadline=1))
     monkeypatch.setattr(main, "case_agent", None)
     monkeypatch.setattr(main, "TEAM_API_URL", "")
@@ -60,7 +77,8 @@ def create_oil(client):
 
 def edits(state):
     return {**PAIR, "draft_id": state["draft_id"], "revision": state["draft_revision"],
-            "edits": {key: state["draft"][key] for key in ("conclusion", "urgency", "operations", "spare_parts")}}
+            "edits": {key: state["draft"][key] for key in ("conclusion", "urgency", "operations", "spare_parts")},
+            "diagnosis_revision": state["admission"]["diagnosis_revision"]}
 
 
 def set_valves(response):
@@ -117,7 +135,9 @@ def test_each_diagnosis_selects_its_draft_and_rejects_old_requests(changing_case
     response.update(anomaly_type="F02", anomaly_title="Низкое давление масла")
     back_to_oil = diagnose(client)
     assert back_to_oil["draft_id"] == oil["draft_id"], "F01 was created later but must not replace F02"
-    assert back_to_oil["draft_revision"] == oil["draft_revision"]
+    assert back_to_oil["draft_revision"] > oil["draft_revision"], "Changed diagnosis text requires fresh confirmation"
+    assert back_to_oil["draft_diagnosis_revision"] == back_to_oil["admission"]["diagnosis_revision"]
+    assert client.put("/api/draft", json=old_payload).status_code == 409
     assert client.post("/api/draft", json=PAIR).json()["draft_id"] == oil["draft_id"]
     history = adapter.workflow.drafts(adapter.Pair(**PAIR))
     assert {draft.draft_id for draft in history} == {oil["draft_id"], valves.draft_id}
@@ -145,7 +165,8 @@ def test_historical_delivery_does_not_block_new_diagnosis(changing_case, old_sta
     oil = create_oil(client)
     if old_status == "sent":
         adapter.workflow.confirm_draft(oil["draft_id"], Confirm(
-            revision=oil["draft_revision"], urgency="medium", confirmed=True))
+            revision=oil["draft_revision"], urgency="medium", confirmed=True,
+            diagnosis_revision=oil["admission"]["diagnosis_revision"]))
     else:
         with adapter.workflow.store.connection(write=True) as conn:
             conn.execute("UPDATE drafts SET state = 'delivery_unknown' WHERE draft_id = ?", (oil["draft_id"],))

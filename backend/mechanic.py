@@ -16,6 +16,16 @@ VALVE_CLEARANCE = "yamz-236-3902150-b-re-p031-valve-clearance"
 CHAIN_NOISE = "zmz-40904-40905-rk-p107-engine-knock"
 
 
+def conflict_case(question: str, engine_model: str):
+    """Known reviewed discrepancies are returned as a complete source group."""
+    path = DATA_DIR / "conflicts.json"
+    if not path.is_file():
+        return None
+    return next((entry for entry in json.loads(path.read_text(encoding="utf-8"))
+                 if entry["engine_model"] == engine_model
+                 and re.search(entry["question_pattern"], question, re.I)), None)
+
+
 def load_defect_checks(catalog):
     manuals = {manual["manual_id"]: manual for manual in catalog}
     checks, fragments = {}, []
@@ -88,7 +98,7 @@ class Mechanic:
             return Assessment(conclusion="Значимых отклонений в записи не обнаружено.",
                               next_step="При наличии жалоб сопоставить запись с наблюдениями механика.")
 
-        conclusion = f"Предполагаемое отклонение: {diagnosis.anomaly_title}. Требуется подтверждение измерениями."
+        conclusion = f"Гипотеза по результату ML: {diagnosis.anomaly_title}. Требуется подтверждение измерениями."
         if engine_model == "ЯМЗ-236М2" and diagnosis.anomaly_type == "F02":
             return Assessment(
                 conclusion=conclusion,
@@ -145,17 +155,23 @@ class Mechanic:
         )
 
     def suggest_draft(self, diagnosis: Diagnosis, engine_model: str) -> DraftFields:
+        from .admission import AdmissionPolicy, suggested_urgency
+
         assessment = self.assess(diagnosis, engine_model)
+        operations = AdmissionPolicy(self).approved_operations(diagnosis, engine_model)
+        references = [reference for item in operations for reference in item.get("references", [])]
         return DraftFields(
             conclusion=assessment.conclusion,
-            operations=assessment.checks,
-            references=[
-                Reference(manual=item.source.manual, pdf_page=item.source.pdf_page)
-                for item in assessment.evidence
-            ],
+            urgency=suggested_urgency(diagnosis),
+            operations=[item["operation"] for item in operations],
+            references=list({(item["manual"], item["pdf_page"]): Reference(**item)
+                             for item in references}.values()),
         )
 
     def answer(self, question: str, diagnosis: Diagnosis, engine_model: str, *, search_query: str | None = None) -> ChatReply:
+        if diagnosis.status == "check_failed" or diagnosis.signal_quality == "bad":
+            return ChatReply(answer="Запись непригодна для оценки двигателя. Повторите запись и выберите новую сессию.",
+                             needs_clarification=True)
         normalized = question.casefold().replace("ё", "е")
         assess_pressure = re.search(r"\d+[\s,]*(кпа|мпа|бар|кгс)", normalized)
         travel = re.search(r"перегн|своим ходом|можно ли (ехать|доехать|продолжать)", normalized)
@@ -170,6 +186,17 @@ class Mechanic:
                 )
             return ChatReply(answer="Для оценки возможности эксплуатации нужна очная проверка механиком.",
                              needs_clarification=True)
+
+        if case := conflict_case(search_query or question, engine_model):
+            if any(fragment not in self.search.fragments for fragment in case["fragment_ids"]):
+                return ChatReply(answer="Сверенный набор источников неполон. Передайте вопрос на дефектовку и уточните процедуру.",
+                                 needs_clarification=True)
+            evidence = [self.evidence(fragment, engine_model) for fragment in case["fragment_ids"]]
+            parts = [case["explanation"]]
+            parts.extend(f"{item.source.manual}, PDF {item.source.pdf_page}:\n{item.text}" for item in evidence)
+            if case.get("limitations"):
+                parts.append("Ограничения: " + case["limitations"])
+            return ChatReply(answer="\n\n".join(parts), evidence=evidence)
 
         if (search_query and engine_model == "ЯМЗ-236М2"
                 and re.search(r"давлени\w* масла", search_query.casefold())

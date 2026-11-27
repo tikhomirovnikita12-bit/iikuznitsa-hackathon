@@ -1,0 +1,11 @@
+{
+  "started_at": "2026-11-27T09:15:36.225006+00:00",
+  "configured_model": "gemma2:2b",
+  "ollama_url": "http://127.0.0.1:11434",
+  "executed": false,
+  "runs": [],
+  "accounting": "Sum calls once from each step; search and indexing have no LLM tokens.",
+  "ended_at": "2026-11-27T09:15:36.247006+00:00",
+  "status": "unavailable",
+  "reason": "<urlopen error [Errno 61] Connection refused>"
+}

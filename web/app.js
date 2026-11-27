@@ -6,25 +6,26 @@ const ui = Object.fromEntries([
   "vehicle-popup", "vehicle-options", "vehicle-empty",
   "context", "workarea", "context-summary", "context-title", "context-vehicle", "context-session",
   "edit-context", "collapse-context", "journal-panel", "ask-question",
-  "selection", "selection-error", "retry-catalog", "diagnose", "diagnostic", "result",
+  "selection", "selection-error", "retry-catalog", "diagnostic", "result",
   "chat-context", "messages", "chat-error", "composer", "question", "send", "suggestions",
-  "ticket-panel", "journal", "announcement",
+  "ticket-panel", "journal", "announcement", "recording-help", "quick-replies", "reply-options",
 ].map((id) => [id, byId(id)]));
 
 const view = {
   catalog: null, pair: null, state: null, generation: 0, busy: null,
   diagnosisError: null, chatError: null, ticketError: null, needsTicketCheck: false,
-  pendingQuestion: "", pendingEdits: new Map(), pollTimer: null, editingContext: false,
+  pendingQuestion: "", pendingEdits: new Map(), consents: null, pollTimer: null, editingContext: false,
 };
 const compactLayout = matchMedia("(max-width: 820px)");
 const vehiclePicker = { selected: null, matches: [], activeIndex: -1 };
 const plateLetters = { а: "a", в: "b", е: "e", к: "k", м: "m", н: "h", о: "o",
   р: "p", с: "c", т: "t", у: "y", х: "x" };
 const sectionNames = {
-  signs: "Признаки", causes: "Возможные причины", checks: "Проверки",
-  work: "Возможные работы", clarify: "Что уточнить", risk: "Риски",
+  signs: "Наблюдения ML", causes: "Возможные причины · гипотезы", checks: "Проверки",
+  work: "Возможные работы", clarify: "Что уточнить", risk: "Риски · гипотезы",
 };
 const urgencyNames = { low: "Низкий", medium: "Средний", high: "Высокий" };
+const urgencyDescriptions = { high: "Дефектовка до выпуска в рейс", medium: "Ближайшее ТО с работой под наблюдением", low: "Проверка узла на следующей проверке" };
 const riskLabels = {
   low: ["Низкий риск", "good"], medium: ["Средний риск", "warn"],
   high: ["Высокий риск", "danger"], unassessed: ["Риск требует уточнения", "neutral"],
@@ -34,9 +35,9 @@ const callStatuses = {
   ok: "Успешно", error: "Ошибка", timeout: "Тайм-аут", unknown: "Результат неизвестен", rejected: "Отклонено",
 };
 const outcomes = {
-  normal: "Значимых отклонений не обнаружено",
+  normal: "Отклонений по записи не обнаружено",
   anomaly: "Обнаружено отклонение",
-  check_failed: "Сбой проверки записи",
+  check_failed: "Запись не удалось проверить",
 };
 const date = new Intl.DateTimeFormat("ru-RU", {
   dateStyle: "short", timeStyle: "short", timeZone: "Europe/Moscow",
@@ -44,11 +45,12 @@ const date = new Intl.DateTimeFormat("ru-RU", {
 const score = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 3 });
 
 class ApiFault extends Error {
-  constructor(code, message, status = 0, state = null) {
+  constructor(code, message, status = 0, state = null, admission = null) {
     super(message);
     this.code = code;
     this.status = status;
     this.state = state;
+    this.admission = admission;
   }
 }
 
@@ -64,7 +66,7 @@ async function api(path, method = "GET", payload) {
     const data = await response.json().catch(() => null);
     if (!response.ok || !data) {
       throw new ApiFault(data?.error?.code || "server_error",
-        data?.error?.message || "Бэкенд вернул ошибку. Проверьте состояние сервиса.", response.status, data?.state);
+        data?.error?.message || "Бэкенд вернул ошибку. Проверьте состояние сервиса.", response.status, data?.state, data?.admission);
     }
     return data;
   } catch (error) {
@@ -119,13 +121,11 @@ function showHeading(node, text) {
 function setControls() {
   const editingVehicle = ui.vehicle.value !== selectedVehicleId();
   ui.session.disabled = !vehiclePicker.selected || editingVehicle;
-  ui.diagnose.disabled = !view.pair || Boolean(view.busy) || editingVehicle;
-  ui.diagnose.textContent = view.busy === "diagnose" ? "Получаем результат…" : "Получить результат диагностики";
   ui.question.disabled = !view.state?.diagnosis || Boolean(view.busy);
   ui["ask-question"].hidden = !view.state?.diagnosis;
   ui["ask-question"].disabled = ui.question.disabled;
   ui.send.disabled = ui.question.disabled;
-  ui.send.textContent = view.busy === "chat" ? "Ждём ответ…" : "Спросить";
+  ui.send.textContent = view.busy === "chat" ? "Ждём ответ…" : "Отправить";
 }
 
 function formatDate(value) {
@@ -155,7 +155,7 @@ function references(items) {
     group.append(element("span", "ref-title", title), links);
     for (const page of [...pages].sort((a, b) => a - b)) {
       const topic = manualPageTopics[manual?.slug]?.[page];
-      const label = "стр. " + page + (topic ? " — " + topic : "");
+      const label = "PDF, стр. " + page + (topic ? " — " + topic : "");
       const link = element(manual ? "a" : "span", manual ? "ref" : "ref-unavailable", label);
       if (manual) {
         link.href = "/sources/" + encodeURIComponent(manual.slug) + "/" + page;
@@ -169,6 +169,7 @@ function references(items) {
 }
 
 function renderDiagnosis() {
+  const wasExpanded = Boolean(ui.result.querySelector(".diagnosis-details")?.open);
   const result = ui.result;
   const diagnosis = view.state?.diagnosis;
   ui.diagnostic.dataset.status = diagnosis?.status || "";
@@ -187,45 +188,114 @@ function renderDiagnosis() {
     ui.diagnostic.dataset.status = "error";
     showHeading(result, titles[view.diagnosisError.code] || "Запрос завершился с ошибкой");
     result.append(alert(view.diagnosisError.message, "error"));
+    if (view.pair) {
+      const retry = button("Повторить получение отчёта");
+      retry.id = "retry-diagnosis";
+      retry.disabled = Boolean(view.busy);
+      retry.addEventListener("click", () => choose(view.pair.vehicle_id, view.pair.session_id));
+      result.append(retry);
+    }
     if (!diagnosis) return;
     result.append(element("p", "section-label", "Последний сохранённый результат"));
   } else if (!diagnosis) {
-    showHeading(result, view.pair ? "Диагностика ещё не запрошена" : "Выберите транспорт и сессию");
+    showHeading(result, view.pair ? "Подготавливаем отчёт" : "Выберите машину и запись");
     if (view.pair) result.append(element("p", "context-key", view.pair.vehicle_id + " / " + view.pair.session_id));
     return;
   }
 
+  const vehicle = vehiclePicker.selected;
+  const session = vehicle?.sessions.find((item) => item.session_id === diagnosis.session_id);
+  const context = element("div", "result-context");
+  context.append(element("strong", "", diagnosis.vehicle_id),
+    element("span", "", vehicle?.engine_model || ""));
+  if (session) context.append(element("span", "context-key", formatDate(session.checked_at) + " · МСК"));
+  if (!view.diagnosisError) result.replaceChildren(context);
+  else result.append(context);
   const heading = element(view.diagnosisError ? "h3" : "h2", "", outcomes[diagnosis.status]);
-  if (!view.diagnosisError) {
-    heading.id = "result-title";
-    result.replaceChildren(heading);
-  } else {
-    result.append(heading);
-  }
-  const meta = element("div", "result-meta");
-  meta.append(element("span", "context-key",
-    diagnosis.vehicle_id + " / " + diagnosis.session_id + " · " + diagnosis.model_version));
-  result.append(meta);
-  if (diagnosis.anomaly_type) {
+  if (!view.diagnosisError) heading.id = "result-title";
+  result.append(heading);
+  if (diagnosis.status === "anomaly" && diagnosis.anomaly_type) {
     result.append(element("p", "diagnosis-type",
-      (diagnosis.anomaly_title || view.catalog?.fault_types?.[diagnosis.anomaly_type] || "Возможное отклонение")
-      + " · " + diagnosis.anomaly_type));
+      diagnosis.anomaly_title || view.catalog?.fault_types?.[diagnosis.anomaly_type] || "Возможное отклонение"));
   }
   result.append(element("p", "diagnosis-description", diagnosis.description));
+  if (view.state.admission?.block_reason && view.state.admission.block_reason.code !== "draft_required" && diagnosis.status !== "normal"
+      && !["created", "sending", "unknown"].includes(view.state.ticket?.status)) result.append(admissionNotice(view.state.admission));
+
+  // Show the risk and uncertainty before the next action, including on a phone.
   const brief = view.state.brief;
-  const next = element("div", "first-check");
-  next.append(element("h3", "", "Первое действие"));
+  if (diagnosis.status === "anomaly") {
+    const risk = element("div", "risk-line");
+    const [label, theme] = riskLabels[brief?.risk] || riskLabels.unassessed;
+    risk.dataset.risk = brief?.risk || "unassessed";
+    risk.append(element("span", "hypothesis-label", "Гипотеза о риске"), element("span", "flag " + theme, label),
+      element("p", "", brief?.rationale || "Нужны симптомы и контрольная проверка для оценки риска."));
+    result.append(risk);
+  }
+  const metrics = element("dl", "metrics");
+  for (const [label, value] of [
+    ["Уверенность ML · 0–1", diagnosis.confidence],
+    ["Качество записи", qualityNames[diagnosis.signal_quality]],
+  ]) {
+    const cell = element("div", "metric");
+    cell.append(element("dt", "", label), element("dd", "",
+      value == null ? "Нет значения" : typeof value === "number" ? score.format(value) : value));
+    metrics.append(cell);
+  }
+  result.append(metrics);
+  const threshold = view.catalog.confidence_threshold;
+  if (diagnosis.status !== "check_failed" && diagnosis.confidence != null && diagnosis.confidence < threshold) {
+    result.append(alert("Низкая уверенность (" + score.format(diagnosis.confidence)
+      + "). Подтвердите результат контрольной проверкой."));
+  }
+  if (diagnosis.status !== "check_failed" && diagnosis.signal_quality === "warning") {
+    result.append(alert("Запись с помехами. Повторите запись для проверки результата."));
+  }
+  if (view.state.brief_error) result.append(alert(view.state.brief_error, "error"));
+
+  const next = element("section", "first-check");
+  next.dataset.sourceContext = "";
+  const nextTitles = { normal: "Дальнейшее действие", check_failed: "Нужна новая запись", anomaly: "Первая проверка" };
+  next.append(element("h3", "", nextTitles[diagnosis.status]));
   const defaultCheck = {
-    normal: "Продолжайте штатный контроль двигателя.",
+    normal: "Продолжайте эксплуатацию и штатный контроль двигателя.",
     check_failed: "Повторите запись. По этой записи вывод о двигателе невозможен.",
     anomaly: "Уточните симптомы и фактические измерения для дефектовки.",
   };
-  next.append(element("p", "action", brief?.first_check || defaultCheck[diagnosis.status]));
-  if (brief?.references?.length) next.append(references(brief.references));
+  // A failed recording must never inherit a procedure or engine verdict.
+  next.append(element("p", "action", diagnosis.status === "anomaly"
+    ? brief?.first_check || defaultCheck.anomaly : defaultCheck[diagnosis.status]));
+  if (diagnosis.status === "anomaly" && brief?.references?.length) next.append(references(brief.references));
+  if (diagnosis.status === "normal") next.append(element("p", "muted",
+    "Результат относится к выбранной записи и не заменяет штатный осмотр машины."));
   result.append(next);
 
-  if (view.state.draft || (!view.diagnosisError && view.state.draft_available)) {
-    const controls = element("div", "diagnosis-actions");
+  const controls = element("div", "diagnosis-actions");
+  if (diagnosis.status === "anomaly") {
+    const check = button("Посмотреть проверки", "primary");
+    check.id = "diagnosis-checks";
+    check.disabled = Boolean(view.busy);
+    check.addEventListener("click", () => {
+      const cards = ui.messages.querySelectorAll(".check-card");
+      if (cards.length) cards[cards.length - 1].closest(".bubble").scrollIntoView({ block: "start" });
+      else sendQuestion("Что проверить сначала?");
+    });
+    next.insertBefore(check, next.querySelector(".refs"));
+
+    if (brief?.origin === "fixture") result.append(element("p", "context-key", "Тестовая рекомендация"));
+  } else {
+    const select = button(diagnosis.status === "check_failed" ? "Выбрать новую запись" : "Выбрать следующую запись", "primary");
+    select.disabled = Boolean(view.busy);
+    select.addEventListener("click", () => {
+      view.editingContext = true;
+      renderContext();
+      ui["recording-help"].hidden = diagnosis.status !== "check_failed";
+      ui.session.focus();
+      ui.selection.scrollIntoView({ block: "start" });
+    });
+    controls.append(select);
+  }
+  if (diagnosis.status === "anomaly" && (view.state.draft || (!view.diagnosisError && view.state.draft_available))) {
     const draftButton = button(view.state.draft ? "Открыть заявку"
       : view.busy === "prepare" ? "Готовим черновик…" : "Подготовить заявку");
     draftButton.id = "diagnosis-draft";
@@ -238,9 +308,9 @@ function renderDiagnosis() {
       error.setAttribute("role", "alert");
       controls.append(error);
     }
-    result.append(controls);
   }
-  if (!view.state.draft && view.state.draft_unavailable_reason) {
+  result.append(controls);
+  if (diagnosis.status === "anomaly" && !view.state.draft && view.state.draft_unavailable_reason && !view.state.admission?.block_reason) {
     const notice = alert(view.state.draft_unavailable_reason);
     notice.id = "draft-unavailable-reason";
     notice.setAttribute("role", "status");
@@ -265,37 +335,67 @@ function renderDiagnosis() {
   }
   if (view.state.brief_error) result.append(alert(view.state.brief_error, "error"));
 
-  const metrics = element("dl", "metrics");
+  const details = element("details", "diagnosis-details");
+  details.open = wasExpanded;
+  details.append(element("summary", "", "Подробности диагностики"));
+  const facts = element("dl", "technical-facts");
   for (const [label, value] of [
-    ["Уверенность · 0–1", diagnosis.confidence],
-    ["Балл отклонения · 0–1", diagnosis.anomaly_score],
-    ["Качество записи", qualityNames[diagnosis.signal_quality]],
+    ["Сессия", diagnosis.session_id], ["Код отклонения ML", diagnosis.anomaly_type || "Нет"],
+    ["Балл отклонения · 0–1", diagnosis.anomaly_score == null ? "Нет значения" : score.format(diagnosis.anomaly_score)],
+    ["Версия модели", diagnosis.model_version],
   ]) {
-    const cell = element("div", "metric");
-    cell.append(element("dt", "", label), element("dd", "",
-      value == null ? "Нет значения" : typeof value === "number" ? score.format(value) : value));
-    metrics.append(cell);
+    const row = element("div");
+    row.append(element("dt", "", label), element("dd", "", value));
+    facts.append(row);
   }
-  result.append(metrics);
-  const threshold = view.catalog.confidence_threshold;
-  if (diagnosis.confidence != null && diagnosis.confidence < threshold) {
-    result.append(alert("Низкая уверенность (" + score.format(diagnosis.confidence)
-      + "). Порог предупреждения " + score.format(threshold) + ". Подтвердите результат контрольной проверкой."));
-  }
-  if (diagnosis.signal_quality === "warning") {
-    result.append(alert("Запись с помехами. Повторите запись для проверки результата."));
-  }
+  details.append(facts, element("p", "muted", "Балл отклонения и уверенность ML не являются вероятностью поломки."));
+  result.append(details);
 }
 
 function answerBlock(section) {
+  if (section.kind === "checks") {
+    const card = element("section", "answer-block check-card");
+    card.dataset.sourceContext = "";
+    card.append(element("h3", "", section.references?.length ? "Проверка по руководству" : "Что нужно проверить"));
+    card.append(element("p", "check-caption", "Порядок и условия проверки"));
+    // Keep the source text together: splitting a norm can lose its operating conditions.
+    const list = element("ul", "check-instructions");
+    for (const item of section.items) list.append(element("li", "", item));
+    card.append(list);
+    if (section.references?.length) card.append(references(section.references));
+    else card.append(element("p", "muted", "Подтверждённый источник для этой рекомендации не указан. Уточните процедуру перед выполнением."));
+    const report = button("Сообщить результат");
+    report.disabled = Boolean(view.busy);
+    report.addEventListener("click", () => composeAnswer(section.references?.length
+      ? "Результат проверки по руководству (PDF, стр. " + section.references.map((item) => item.pdf_page).join(", ") + "):\n"
+      : "Результат проверки:\n"));
+    card.append(report);
+    return card;
+  }
   const expandable = section.kind === "work";
   const block = element(expandable ? "details" : "section", "answer-block");
+  block.dataset.sourceContext = "";
   block.append(element(expandable ? "summary" : "h3", "", sectionNames[section.kind]));
   const list = element("ul");
   for (const item of section.items) list.append(element("li", "", item));
   block.append(list);
   if (section.references?.length) block.append(references(section.references));
   return block;
+}
+
+function composeAnswer(text, alternatives = []) {
+  let current = ui.question.value;
+  for (const alternative of alternatives) current = current.replace(alternative, "");
+  const combined = current.trimEnd() + (current.trim() ? "\n" : "") + text;
+  if (combined.length > ui.question.maxLength) {
+    announce("Текст слишком длинный. Сократите сообщение перед добавлением результата.");
+    ui.question.focus();
+    return;
+  }
+  ui.question.value = combined;
+  ui.question.dispatchEvent(new Event("input"));
+  ui.question.focus();
+  ui.question.scrollIntoView({ block: "nearest" });
 }
 
 function userMessage(text) {
@@ -333,7 +433,9 @@ function renderChat() {
     const bubble = element("article", "bubble");
     bubble.append(element("p", "message-meta", message.origin === "fixture" ? "Механик · тестовый ответ" : "Механик"),
       element("p", "answer-title", message.summary));
-    for (const section of message.sections || []) bubble.append(answerBlock(section));
+    const order = { signs: 0, causes: 1, risk: 2, checks: 3, work: 4, clarify: 5 };
+    const sections = [...(message.sections || [])].sort((left, right) => order[left.kind] - order[right.kind]);
+    for (const section of sections) bubble.append(answerBlock(section));
     fragment.append(bubble);
   }
   if (view.pendingQuestion) fragment.append(userMessage(view.pendingQuestion));
@@ -346,17 +448,43 @@ function renderChat() {
   suggestions.replaceChildren();
   const diagnosis = view.state?.diagnosis;
   suggestions.hidden = !diagnosis;
+  ui["quick-replies"].hidden = !diagnosis || diagnosis.status !== "anomaly";
   if (!diagnosis) return;
-  const prompts = ["Что проверить сначала?", "Можно ли своим ходом перегнать машину?"];
-  if (diagnosis.status === "anomaly") {
-    if (diagnosis.anomaly_type === "F02") prompts.unshift("Когда замерять давление и почему оно падает?");
+  const prompts = diagnosis.status === "check_failed"
+    ? ["Как повторить запись?"]
+    : diagnosis.status === "normal"
+      ? ["Что проверить сначала?"]
+      : ["Что проверить сначала?", "Можно ли своим ходом перегнать машину?"];
+  if (diagnosis.status === "anomaly" && diagnosis.anomaly_type === "F02") {
+    prompts.unshift("Когда замерять давление и почему оно падает?");
   }
   for (const prompt of prompts) {
-    const chip = element("button", "", prompt);
-    chip.type = "button";
+    const chip = button(prompt);
     chip.disabled = Boolean(view.busy);
     chip.addEventListener("click", () => sendQuestion(prompt));
     suggestions.append(chip);
+  }
+  ui["quick-replies"].hidden = diagnosis.status !== "anomaly";
+  const replies = ui["reply-options"];
+  replies.replaceChildren();
+  if (diagnosis.status !== "anomaly") return;
+  const groups = [
+    [["На холодном", "Двигатель холодный."], ["После прогрева", "Двигатель прогрет."]],
+    [["Пока не измерял", "Фактические значения пока не измерял."]],
+  ];
+  const lastReply = [...(view.state.messages || [])].reverse().find((message) => message.role === "assistant");
+  const clarification = (lastReply?.sections || []).filter((section) => section.kind === "clarify")
+    .flatMap((section) => section.items).join(" ");
+  if (/дым/i.test(clarification) || ["F08", "F09", "F13"].includes(diagnosis.anomaly_type)) {
+    groups.push([["Есть дым", "Наблюдаю дым из выхлопной трубы."], ["Дыма нет", "Дыма из выхлопной трубы не наблюдаю."]]);
+  }
+  for (const group of groups) {
+    for (const [label, text] of group) {
+      const chip = button(label);
+      chip.disabled = Boolean(view.busy);
+      chip.addEventListener("click", () => composeAnswer(text, group.map(([, value]) => value)));
+      replies.append(chip);
+    }
   }
 }
 
@@ -450,27 +578,99 @@ function fieldSummary(draft) {
   return summary;
 }
 
+function admissionNotice(admission) {
+  const reason = admission.block_reason;
+  const notice = element("div", "alert admission-notice");
+  notice.setAttribute("role", "status");
+  notice.append(element("strong", "", reason.message), element("p", "", reason.next_action));
+  const copy = button("Скопировать рекомендацию");
+  copy.addEventListener("click", async () => {
+    const text = (view.pair ? view.pair.vehicle_id + " / " + view.pair.session_id + "\n" : "") + reason.message + "\n" + reason.next_action;
+    try { await navigator.clipboard.writeText(text); announce("Рекомендация скопирована"); }
+    catch { announce(copyThroughSelection(text) ? "Рекомендация скопирована" : "Выделите текст рекомендации и скопируйте вручную."); }
+  });
+  notice.append(copy);
+  return notice;
+}
+
+function operationEvidence(draft, admission) {
+  const group = element("section", "operation-evidence");
+  group.append(element("h3", "", "Основания для работ"));
+  for (const row of admission?.approved_operations || []) {
+    if (!draft.operations.includes(row.operation)) continue;
+    const card = element("article", "check-card");
+    card.dataset.sourceContext = "";
+    card.append(element("h3", "", row.operation));
+    const evidence = row.evidence || [{text:row.quote, source:{manual:row.manual, pdf_page:row.pdf_page}}];
+    card.append(element("blockquote", "evidence-quote", evidence[0].text.split("\n")[0]));
+    for (const condition of row.conditions || []) card.append(element("p", "muted", "Условие: " + condition.text));
+    card.append(references(evidence.map((item) => item.source)));
+    const full = element("details", "evidence-full");
+    full.append(element("summary", "", "Проверенные выдержки полностью"));
+    for (const item of evidence) {
+      full.append(element("p", "ref-title", item.source.manual + " · PDF " + item.source.pdf_page),
+                  element("blockquote", "evidence-quote", item.text));
+    }
+    card.append(full);
+    group.append(card);
+  }
+  return group;
+}
+
 function editableDraft(draft, pending) {
   const key = draftKey();
   const version = pending?.version ?? draftVersion();
   const edits = pending?.edits ?? draft;
   const form = element("form", "ticket-form");
+  const admission = view.state.admission;
   const conclusion = textarea(edits.conclusion, 3, true);
   const operations = textarea(edits.operations.join("\n"), 4, true);
+  operations.readOnly = true;
   const parts = textarea(edits.spare_parts.join("\n"), 2);
   const priority = element("select");
   priority.required = true;
   priority.add(option("", "Выберите приоритет"));
-  for (const [value, label] of Object.entries(urgencyNames)) priority.add(option(value, label));
+  for (const [value, label] of Object.entries(urgencyNames)) priority.add(option(value, label + " — " + urgencyDescriptions[value]));
   priority.value = edits.urgency || "";
   form.append(field("conclusion", "Заключение", conclusion), field("urgency", "Приоритет", priority),
-    field("operations", "Работы, по одной на строку", operations), field("parts", "Запчасти, по одной на строку", parts));
+    field("operations", "Работы по проверенным основаниям", operations), field("parts", "Запчасти, по одной на строку", parts));
   parts.placeholder = "Не определены";
-  form.append(element("h3", "field-hint", "Источники"), references(draft.references));
-
+  form.append(element("p", "priority-explanation", "Предложен: " + (urgencyNames[admission?.suggested_urgency] || "Не определён")
+    + ". Приоритет задаёт срок дефектовки и сам по себе не является запретом на перегон."), operationEvidence(draft, admission));
+  const required = new Map();
+  for (const operation of admission?.approved_operations || []) {
+    if (!draft.operations.includes(operation.operation)) continue;
+    for (const condition of operation.conditions || []) {
+      if (condition.requires_confirmation) required.set(condition.id, condition);
+    }
+  }
+  const conditionChecks = [];
+  for (const [id, condition] of required) {
+    const label = element("label", "priority-confirm");
+    const input = element("input");
+    input.type = "checkbox";
+    input.checked = (view.state.applicability_confirmations || []).includes(id);
+    label.append(input, document.createTextNode("Подтверждаю условие: " + condition.text));
+    conditionChecks.push({id, input});
+    form.append(label);
+  }
+  const warning = element("input");
+  warning.type = "checkbox";
+  warning.id = "warning-acknowledged";
+  if (admission?.warning_ack_required) {
+    const label = element("label", "priority-confirm warning-confirm");
+    label.append(warning, document.createTextNode("Запись с помехами. Предупреждение прочитал, сознательно продолжаю."));
+    form.append(label);
+  }
   const confirm = element("label", "priority-confirm");
   const checkbox = element("input");
   checkbox.type = "checkbox";
+  const consentKey = [key, version.draft_id, version.revision, admission?.diagnosis_revision].join("|");
+  if (view.consents?.key === consentKey) {
+    checkbox.checked = view.consents.priority;
+    warning.checked = view.consents.warning;
+    for (const row of conditionChecks) row.input.checked = view.consents.conditions.includes(row.id);
+  }
   confirm.append(checkbox, document.createTextNode("Подтверждаю выбранный приоритет"));
   const actions = element("div", "ticket-actions");
   const status = draftSaveStatus(changedDraftFields(edits, draft).length > 0);
@@ -478,7 +678,7 @@ function editableDraft(draft, pending) {
   const submit = button("Подтвердить и отправить", "primary", "submit");
   save.disabled = Boolean(view.busy);
   submit.disabled = true;
-  for (const control of [conclusion, operations, parts, priority, checkbox]) control.disabled = Boolean(view.busy);
+  for (const control of [conclusion, operations, parts, priority, checkbox, warning, ...conditionChecks.map((row) => row.input)]) control.disabled = Boolean(view.busy);
   actions.append(status, submit, save);
   form.append(confirm, actions);
 
@@ -496,17 +696,34 @@ function editableDraft(draft, pending) {
       else view.pendingEdits.delete(key);
       setDraftSaveStatus(status, dirty);
       checkbox.checked = false;
-      submit.disabled = true;
+      warning.checked = false;
+      updateSubmit();
     });
   }
-  checkbox.addEventListener("change", () => { submit.disabled = !checkbox.checked; });
+  function acknowledgements() {
+    return { warning_acknowledged: warning.checked,
+      diagnosis_revision: admission?.diagnosis_revision,
+      applicability_confirmations: conditionChecks.filter((row) => row.input.checked).map((row) => row.id) };
+  }
+  function updateSubmit() {
+    view.consents = {key:consentKey, priority:checkbox.checked, warning:warning.checked,
+      conditions:conditionChecks.filter((row) => row.input.checked).map((row) => row.id)};
+    const conditionalBlock = ["warning_ack_required", "applicability_required"].includes(admission?.block_reason?.code);
+    const allowed = admission?.can_submit || (admission?.can_prepare && conditionalBlock);
+    submit.disabled = Boolean(view.busy) || !allowed || !checkbox.checked
+      || (admission.warning_ack_required && !warning.checked) || conditionChecks.some((row) => !row.input.checked);
+  }
+  checkbox.addEventListener("change", updateSubmit);
+  warning.addEventListener("change", updateSubmit);
+  for (const row of conditionChecks) row.input.addEventListener("change", () => { checkbox.checked = false; updateSubmit(); });
   save.addEventListener("click", () => {
-    if (form.reportValidity()) updateDraft(values(true), version, false);
+    if (form.reportValidity()) updateDraft(values(true), version, false, acknowledgements());
   });
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (checkbox.checked) updateDraft(values(true), version, true);
+    if (!submit.disabled) updateDraft(values(true), version, true, acknowledgements());
   });
+  updateSubmit();
   return form;
 }
 
@@ -646,6 +863,8 @@ function renderTicket() {
   header.append(title);
   if (ticket.ticket_id) header.append(ticketReceipt(ticket.ticket_id));
   panel.replaceChildren(header);
+  if (view.state.admission?.block_reason && !["created", "sending", "unknown"].includes(ticket.status)) panel.append(admissionNotice(view.state.admission));
+  if (view.state.confirmed_urgency) panel.append(element("p", "", "Подтверждён механиком: " + urgencyNames[view.state.confirmed_urgency]));
   if (view.state.draft_origin === "fixture") panel.append(element("p", "origin", "Тестовый черновик"));
 
   const ids = element("div", "ticket-ids");
@@ -707,7 +926,7 @@ function renderContext() {
   const collapsed = Boolean(collapsible && !view.editingContext);
   if (collapsed) {
     ui["context-vehicle"].textContent = view.pair.vehicle_id;
-    ui["context-session"].textContent = vehiclePicker.selected.engine_model + " · " + view.pair.session_id;
+    ui["context-session"].textContent = vehiclePicker.selected.engine_model;
   }
   ui["context-summary"].hidden = !collapsed;
   ui.selection.hidden = collapsed;
@@ -844,7 +1063,7 @@ function showSessions(vehicle, selected = "") {
   ui["vehicle-facts"].replaceChildren(element("strong", "", vehicle.engine_model),
     document.createTextNode([vehicle.model || vehicle.make, vehicle.fuel].filter(Boolean).join(" · ")));
   for (const session of [...vehicle.sessions].reverse()) {
-    ui.session.add(option(session.session_id, session.session_id + " · " + formatDate(session.checked_at)));
+    ui.session.add(option(session.session_id, formatDate(session.checked_at) + " МСК · " + session.session_id));
   }
   ui.session.value = selected;
 }
@@ -870,9 +1089,14 @@ async function choose(vehicleId, sessionId, restore = false) {
   const generation = ++view.generation;
   clearTimeout(view.pollTimer);
   ui.question.value = "";
+  ui.question.style.height = "";
+  ui["recording-help"].hidden = true;
   const vehicle = view.catalog.vehicles.find((item) => item.vehicle_id === vehicleId);
   const invalid = faultForSelection(vehicle, sessionId, vehicleId);
-  if (!restore) syncLocation(vehicleId, sessionId);
+  if (!restore) {
+    syncLocation(vehicleId, sessionId);
+    view.consents = null;
+  }
   view.pair = !invalid && vehicle && sessionId ? { vehicle_id: vehicleId, session_id: sessionId } : null;
   Object.assign(view, { state: null, diagnosisError: invalid, chatError: null, ticketError: null,
     needsTicketCheck: false, pendingQuestion: "", busy: view.pair ? "load" : null, editingContext: false });
@@ -891,6 +1115,9 @@ async function choose(vehicleId, sessionId, restore = false) {
       scheduleTicketCheck();
     }
   }
+  if (generation !== view.generation || view.diagnosisError) return;
+  if (view.state && !view.state.diagnosis) await action("diagnose", "diagnose", "POST");
+  else if (!restore && compactLayout.matches) ui.diagnostic.scrollIntoView({ block: "start" });
 }
 
 async function loadCatalog() {
@@ -915,7 +1142,10 @@ async function loadCatalog() {
     ui.vehicle.disabled = false;
     const pendingDraft = history.state?.sourceOrigin?.pendingDraft;
     const key = JSON.stringify({ vehicle_id: vehicleId, session_id: sessionId });
-    if (pendingDraft?.key === key) view.pendingEdits.set(key, pendingDraft.edits);
+    if (pendingDraft?.key === key) {
+      if (pendingDraft.edits) view.pendingEdits.set(key, pendingDraft.edits);
+      view.consents = pendingDraft.consents || null;
+    }
     await choose(vehicleId, sessionId, true);
     requestAnimationFrame(restoreSourceOrigin);
   } catch (error) {
@@ -1010,6 +1240,8 @@ async function action(kind, path, method, payload = {}) {
       }
       return null;
     }
+    if (error.state && ["prepare", "save", "submit"].includes(kind)) view.state = error.state;
+    else if (error.admission && view.state) view.state = {...view.state, admission: error.admission};
     if (kind === "diagnose") view.diagnosisError = error;
     if (kind === "chat") view.chatError = error.message;
     if (kind === "prepare" || kind === "save") view.ticketError = error.message;
@@ -1018,7 +1250,7 @@ async function action(kind, path, method, payload = {}) {
       view.ticketError = error.message;
     }
     if (kind === "submit") {
-      view.needsTicketCheck = error.status === 0 || error.status >= 500 || error.status === 409;
+      view.needsTicketCheck = !error.admission && (error.status === 0 || error.status >= 500 || error.status === 409);
       view.ticketError = view.needsTicketCheck
         ? "Результат отправки неизвестен. Проверьте статус заявки. " + error.message : error.message;
     }
@@ -1043,18 +1275,22 @@ async function sendQuestion(value) {
   const hadDraft = Boolean(view.state?.draft);
   const result = await action("chat", "chat", "POST", { message });
   if (!result || generation !== view.generation) return;
-  ui.question.value = "";
-  if (result.draft && (!hadDraft || /заявк/i.test(message))) revealTicket();
+  if (ui.question.value.trim() === message) {
+    ui.question.value = "";
+    ui.question.dispatchEvent(new Event("input"));
+  }
+  if (result.draft && (!hadDraft || /заявк|наряд|черновик/i.test(message))) revealTicket();
   else ui.messages.lastElementChild?.scrollIntoView({ block: "nearest" });
 }
 
-async function updateDraft(edits, version, submit) {
+async function updateDraft(edits, version, submit, acknowledgements = {}) {
   const kind = submit ? "submit" : "save";
   const generation = view.generation;
   const key = draftKey();
   if (!view.pendingEdits.has(key)) view.pendingEdits.set(key, { edits, version });
   const result = await action(kind, submit ? "ticket" : "draft", submit ? "POST" : "PUT",
-    submit ? { ...version, edits, priority_confirmed: true } : { ...version, edits });
+    submit ? { ...version, edits, ...acknowledgements, priority_confirmed: true }
+      : { ...version, edits, applicability_confirmations: acknowledgements.applicability_confirmations || [] });
   if (!result || generation !== view.generation) return;
   if (submit) {
     announce(result.ticket.ticket_id ? "Заявка " + result.ticket.ticket_id + " зарегистрирована."
@@ -1117,13 +1353,14 @@ ui["ask-question"].addEventListener("click", () => {
   ui.question.focus({ preventScroll: true });
   ui.question.scrollIntoView({ block: "center" });
 });
-ui.selection.addEventListener("submit", (event) => {
-  event.preventDefault();
-  if (!ui.diagnose.disabled) action("diagnose", "diagnose", "POST");
-});
+ui.selection.addEventListener("submit", (event) => event.preventDefault());
 ui.composer.addEventListener("submit", (event) => {
   event.preventDefault();
   sendQuestion(ui.question.value);
+});
+ui.question.addEventListener("input", () => {
+  ui.question.style.height = "auto";
+  ui.question.style.height = ui.question.scrollHeight + "px";
 });
 ui.question.addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
@@ -1136,7 +1373,7 @@ compactLayout.addEventListener("change", updateLayout);
 document.addEventListener("click", (event) => {
   const key = draftKey();
   const edits = view.pendingEdits.get(key);
-  rememberSourceOrigin(event, edits && { key, edits });
+  rememberSourceOrigin(event, { key, edits, consents: view.consents });
 });
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) requestAnimationFrame(restoreSourceOrigin);
