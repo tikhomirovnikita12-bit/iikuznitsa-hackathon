@@ -177,6 +177,9 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
 .first-check h3 { color: var(--muted); font-size: .85rem; }
 .first-check .action { max-width: 74ch; font-weight: 650; }
 .first-check .ref-manual { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: .85rem; }
+.generator-reading { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .25rem; }
+.generator-reading .risk-note { flex-basis: 100%; }
+.generator-reading [aria-pressed="true"] { color: var(--accent); background: var(--accent-wash); opacity: 1; }
 .diagnosis-actions { display: flex; flex-wrap: wrap; align-items: stretch; gap: .4rem .65rem; margin: .8rem 0 .65rem; }
 .diagnosis-actions .alert { flex: 1 1 100%; }
 .diagnosis-actions .progress { margin: 0; }

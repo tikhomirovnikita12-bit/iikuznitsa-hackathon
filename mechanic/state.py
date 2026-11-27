@@ -14,6 +14,7 @@ def empty_state() -> dict:
         "diagnosis": None,
         "brief": None,
         "brief_error": None,
+        "generator_reading": None,
         "messages": [],
         "agent_history": [],
         "draft": None,
@@ -87,6 +88,6 @@ class Store:
 def public_state(state: dict) -> dict:
     ticket = state["ticket"]
     return {
-        **{key: state[key] for key in empty_state() if key != "agent_history"},
+        **{key: state[key] for key in empty_state() if key not in ("agent_history", "generator_reading")},
         "ticket": {name: ticket[name] for name in ("status", "ticket_id", "message")},
     }
