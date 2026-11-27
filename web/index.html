@@ -17,7 +17,11 @@
         <h1>Цифровой механик</h1>
         <p>Пост акустической диагностики</p>
       </div>
-      <span class="mode" id="mode" role="status">Синтетический парк</span>
+      <div class="masthead-actions">
+        <button id="fleet-toggle" class="button secondary" type="button" aria-expanded="false"
+                aria-controls="fleet-panel">Состояние парка</button>
+        <span class="mode" id="mode" role="status">Синтетический парк</span>
+      </div>
     </div>
   </header>
 
@@ -65,11 +69,14 @@
     </aside>
 
     <div class="workarea" id="workarea">
+      <section id="fleet-panel" class="panel fleet-panel" aria-labelledby="fleet-title" hidden></section>
+
       <section id="diagnostic" class="panel diagnostic" aria-labelledby="result-title">
         <p class="section-label">Результат диагностики</p>
         <div id="result" aria-live="polite" aria-atomic="true">
           <h2 id="result-title">Выберите транспорт и сессию</h2>
         </div>
+        <div id="vehicle-history" class="vehicle-history" aria-live="polite" hidden></div>
       </section>
 
       <section id="chat" class="panel chat" aria-labelledby="chat-title">
@@ -82,19 +89,54 @@
         </div>
         <div id="messages" class="messages" role="log" aria-label="История диалога" aria-live="polite"></div>
         <p id="chat-error" class="alert error" role="alert" hidden></p>
-        <form id="composer" class="composer">
-          <div id="suggestions" class="suggestions" role="group" aria-label="Быстрые вопросы" hidden></div>
+        <div class="composer">
+          <div id="suggestions" class="suggestions" role="group" aria-label="Действия по проверке" hidden></div>
           <div id="quick-replies" class="quick-replies" hidden>
             <p class="reply-caption">Добавить к ответу</p>
             <div id="reply-options" class="suggestions" role="group" aria-label="Условия и наблюдения"></div>
             <p class="reply-hint">Дополните фактическими значениями и проверьте текст перед отправкой.</p>
           </div>
-          <label for="question">Вопрос или результат проверки</label>
-          <div class="composer-row">
-            <textarea id="question" rows="1" maxlength="1600" placeholder="Опишите симптом или сообщите результат проверки" disabled></textarea>
-            <button class="button primary" type="submit" id="send" disabled>Отправить</button>
-          </div>
-        </form>
+          <details id="pressure-helper" class="pressure-helper" hidden>
+            <summary>Сравнить замер давления масла</summary>
+            <form id="pressure-form">
+              <fieldset id="pressure-fields" disabled>
+                <legend class="visually-hidden">Условия замера давления масла</legend>
+                <div class="pressure-grid">
+                  <label for="pressure-value">Давление масла, кПа</label>
+                  <input id="pressure-value" name="pressure" type="text" inputmode="decimal" maxlength="10"
+                         pattern="[0-9]+([.,][0-9]+)?" title="Число в кПа, например 350 или 350,5" required>
+                  <label for="pressure-regime">Режим замера</label>
+                  <select id="pressure-regime" name="regime" required>
+                    <option value="">Выберите режим</option>
+                    <option value="2100 об/мин">2100 об/мин</option>
+                    <option value="на минимальном холостом ходу">Минимальный холостой ход</option>
+                  </select>
+                  <label for="pressure-warm">Двигатель при замере</label>
+                  <select id="pressure-warm" name="warm" required>
+                    <option value="">Выберите состояние</option>
+                    <option value="прогрет">Прогрет</option>
+                    <option value="не прогрет">Не прогрет</option>
+                  </select>
+                  <label for="pressure-tolerance">Допуск после длительной эксплуатации</label>
+                  <select id="pressure-tolerance" name="tolerance" required>
+                    <option value="">Выберите допуск</option>
+                    <option value="допуск применим">Применим</option>
+                    <option value="без допуска">Не применим</option>
+                    <option value="допуск неизвестен">Не знаю</option>
+                  </select>
+                </div>
+                <button class="button secondary" type="submit">Сравнить с нормой</button>
+              </fieldset>
+            </form>
+          </details>
+          <form id="composer" class="chat-question-form">
+            <label for="question">Вопрос или результат проверки</label>
+            <div class="composer-row">
+              <textarea id="question" rows="1" maxlength="1600" placeholder="Например, что проверить сначала?" disabled></textarea>
+              <button class="button primary" type="submit" id="send" disabled>Отправить</button>
+            </div>
+          </form>
+        </div>
       </section>
 
       <section id="ticket-panel" class="panel ticket-panel" aria-labelledby="ticket-title" hidden></section>

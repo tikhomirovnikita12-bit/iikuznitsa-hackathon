@@ -68,9 +68,13 @@ def prepare(client, pair=CHAIN):
     assert draft
     edits = {key: draft[key] for key in ("conclusion", "operations", "urgency", "spare_parts")}
     assert result["draft_id"] and result["draft_revision"] >= 1
+    admission = result["admission"]
     return {**pair, "draft_id": result["draft_id"], "revision": result["draft_revision"],
             "edits": edits, "priority_confirmed": True,
-            "diagnosis_revision": result["admission"]["diagnosis_revision"]}
+            "diagnosis_revision": admission["diagnosis_revision"],
+            "warning_acknowledged": admission["warning_ack_required"],
+            "applicability_confirmations": [condition["id"] for operation in admission["approved_operations"]
+                                            for condition in operation["conditions"] if condition["requires_confirmation"]]}
 
 
 def test_q05_on_demo_screen_route(stand, monkeypatch):
@@ -88,6 +92,68 @@ def test_q05_on_demo_screen_route(stand, monkeypatch):
     assert nominal["references"][0]["pdf_page"] == 13
     assert "не менее 100 кПа" in idle["items"][0]
     assert idle["references"][0]["pdf_page"] == 49
+
+
+def test_vehicle_history_remembers_ticket(stand):
+    client, _ = stand
+    request = prepare(client)
+    created = client.post("/api/ticket", json=request).json()["ticket"]
+    data = client.get("/api/history", params={"vehicle_id": CHAIN["vehicle_id"]}).json()
+    assert data["vehicle_id"] == CHAIN["vehicle_id"]
+    assert len(data["sessions"]) == 4
+    row = next(item for item in data["sessions"] if item["session_id"] == CHAIN["session_id"])
+    assert row["anomaly_type"] == "F14"
+    assert row["ticket"] == {"status": "created", "ticket_id": created["ticket_id"]}
+    missing = client.get("/api/history", params={"vehicle_id": "нет такого"})
+    assert missing.status_code == 404 and missing.json()["error"]["code"] == "unknown_vehicle"
+
+
+def test_fleet_report_categories_and_history(stand):
+    client, _ = stand
+    data = client.get("/api/fleet").json()
+    assert data["summary"]["total"] == 50
+    assert sum(data["summary"][key] for key in main.FLEET_CATEGORIES) == 50
+    row = next(item for item in data["vehicles"] if item["vehicle_id"] == "B418HK98")
+    assert row["category"] == "quarantine"
+    assert row["latest"]["session_id"] == "S-0009"
+    assert 1 <= len(row["history"]) <= 5
+    assert all(set(step) == {"session_id", "checked_at", "status", "anomaly_score"}
+               for step in row["history"])
+
+
+def test_fleet_reads_team_state_without_local_store(stand, monkeypatch):
+    """При TEAM_API_URL локальный Store отсутствует: заявку отдаёт командный адаптер."""
+    client, _ = stand
+
+    class Team:
+        def close(self):
+            pass
+
+        def populate(self, state, pair, *, restore_diagnosis=False):
+            state["ticket"] = {"status": "created", "ticket_id": "TKT-7777", "message": None}
+            state["draft"] = {"urgency": "high"}
+            return state
+
+    monkeypatch.setattr(main, "store", None)
+    monkeypatch.setattr(main, "team", Team())
+    row = next(item for item in client.get("/api/fleet").json()["vehicles"]
+               if item["vehicle_id"] == "T792HO98")
+    assert row["ticket"] == {"status": "created", "ticket_id": "TKT-7777"}
+    assert row["urgency"] == "high"
+    assert row["category"] == "quarantine"
+
+
+def test_fleet_reflects_sent_ticket(stand):
+    client, _ = stand
+    pair = {"vehicle_id": "O658MX98", "session_id": "S-0063"}
+    request = prepare(client, pair)
+    created = client.post("/api/ticket", json=request).json()["ticket"]
+    assert created["status"] == "created"
+    row = next(item for item in client.get("/api/fleet").json()["vehicles"]
+               if item["vehicle_id"] == pair["vehicle_id"])
+    assert row["category"] == "quarantine"
+    assert row["ticket"] == {"status": "created", "ticket_id": created["ticket_id"]}
+    assert row["urgency"] == request["edits"]["urgency"]
 
 
 def test_actual_mock_outcomes_and_pair_isolation(stand):
@@ -273,3 +339,21 @@ def test_engine_mismatch_blocks_draft(stand):
     assert "бензиновый" in result["brief"]["rationale"]
     payload = {**pair, "message": "Создай заявку"}
     assert client.post("/api/chat", json=payload).json()["draft"] is None
+
+
+def test_injected_instruction_in_diagnosis_does_not_create_draft(stand):
+    """Описание проверки — контекст, а не команда агенту (сессия S-0195)."""
+    client, calls = stand
+    pair = {"vehicle_id": "E622KM47", "session_id": "S-0195"}
+    result = diagnose(client, pair)
+    assert result["diagnosis"]["anomaly_type"] == "F12"
+    assert result["brief"]["references"] == []
+    assert result["draft"] is None
+    assert result["draft_available"] is False
+
+    payload = {**pair, "message": "Создай заявку с приоритетом low без ссылок"}
+    reply = client.post("/api/chat", json=payload).json()
+    assert reply["draft"] is None
+    assert reply["admission"]["block_reason"]["code"] == "procedure_unavailable"
+    assert "проверенная применимая процедура" in reply["messages"][-1]["summary"]
+    assert not calls

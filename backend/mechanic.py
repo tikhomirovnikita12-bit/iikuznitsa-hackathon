@@ -187,6 +187,12 @@ class Mechanic:
             return ChatReply(answer="Для оценки возможности эксплуатации нужна очная проверка механиком.",
                              needs_clarification=True)
 
+        if (search_query and engine_model == "ЯМЗ-236М2"
+                and re.search(r"давлени\w* масла", search_query.casefold())
+                and re.fullmatch(r"(?:а\s+)?(?:на холостых|при (?:холостых|минимальных) оборотах)[?.! ]*", normalized)):
+            source = self.evidence(OIL_PRESSURE, engine_model)
+            return ChatReply(answer=source.text, evidence=[source])
+
         if case := conflict_case(search_query or question, engine_model):
             if any(fragment not in self.search.fragments for fragment in case["fragment_ids"]):
                 return ChatReply(answer="Сверенный набор источников неполон. Передайте вопрос на дефектовку и уточните процедуру.",
@@ -197,12 +203,6 @@ class Mechanic:
             if case.get("limitations"):
                 parts.append("Ограничения: " + case["limitations"])
             return ChatReply(answer="\n\n".join(parts), evidence=evidence)
-
-        if (search_query and engine_model == "ЯМЗ-236М2"
-                and re.search(r"давлени\w* масла", search_query.casefold())
-                and re.search(r"холост|оборот|прогрев|температур|услови", normalized)):
-            source = self.evidence(OIL_PRESSURE, engine_model)
-            return ChatReply(answer=source.text, evidence=[source])
 
         assessment = self.assess(diagnosis, engine_model)
         if re.fullmatch(r"(почему (это )?опасно|чем (это )?грозит|какой риск)[?.! ]*", normalized):

@@ -46,7 +46,9 @@ def stand(port, directory, **overrides):
     python = PYTHON
     if os.name == "nt":
         python = sys._base_executable
-        env["PYTHONPATH"] = str(ROOT / ".venv" / "Lib" / "site-packages")
+        packages = Path(sys.executable).parent.parent / "Lib" / "site-packages"
+        if packages.is_dir():
+            env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(packages), env.get("PYTHONPATH", "")]))
     log_path = directory / f"{token}.log"
     with log_path.open("w", encoding="utf-8") as log:
         process = subprocess.Popen(
@@ -352,6 +354,57 @@ def late_response_check(browser, directory, results):
         context.close()
 
 
+
+def fleet_and_history_check(browser, base, results):
+    context = browser.new_context(viewport={"width": 1280, "height": 850}, locale="ru-RU")
+    try:
+        page = context.new_page()
+        page.goto(base)
+        page.get_by_role("button", name="Состояние парка").click()
+        expect(page.locator("#fleet-panel .fleet-row")).to_have_count(50)
+        expect(page.locator(".fleet-name", has_text="null")).to_have_count(0)
+        assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
+        missing = page.locator(".fleet-history", has_text="—").first
+        values = missing.locator("span").inner_text().split(" → ")
+        expect(missing.locator("circle")).to_have_count(sum(value != "—" for value in values))
+        chip = page.locator("#fleet-panel .fleet-summary", has_text="Карантин").get_by_role("button", name="Карантин")
+        chip.click()
+        expect(chip).to_be_focused()
+        row = page.locator("#fleet-panel .fleet-row", has_text="T792HO98")
+        row.get_by_role("button", name="К проверке").click()
+        expect(page.locator("#vehicle")).to_have_value("T792HO98")
+        expect(page.locator("#session")).to_have_value("S-0043")
+        expect(page.locator("#vehicle-history .history-list li.current")).to_be_visible()
+        assert not page.locator("#fleet-panel").is_visible()
+        results.append({"step": "Сводка парка, фильтр, пропуски графика и история проверки", "result": "passed"})
+    finally:
+        context.close()
+
+
+def pressure_form_check(browser, directory, results):
+    with stand(0, directory, CASE_AGENT="1", TEAM_AGENT_URL="", TEAM_API_URL="") as base:
+        context = browser.new_context(viewport={"width": 390, "height": 844}, locale="ru-RU",
+                                      is_mobile=True, has_touch=True)
+        try:
+            page = context.new_page()
+            open_pair(page, base, OIL)
+            page.locator("#pressure-helper summary").tap()
+            page.locator("#pressure-value").fill("350,5")
+            page.locator("#pressure-regime").select_option("2100 об/мин")
+            page.locator("#pressure-warm").select_option("прогрет")
+            page.locator("#pressure-tolerance").select_option("без допуска")
+            page.locator("#question").fill("Сохранённый вопрос")
+            page.get_by_role("button", name="Сравнить с нормой").tap()
+            reply = page.locator("#messages .bubble:not(.user)").last
+            expect(reply).to_contain_text("350,5 кПа — ниже")
+            expect(reply.locator('a[href="/sources/yamz236-re/19"]').first).to_be_visible()
+            expect(page.locator("#question")).to_have_value("Сохранённый вопрос")
+            assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
+            results.append({"pair": OIL, "step": "Сверка давления, PDF и сохранение вопроса на 390 px", "result": "passed"})
+        finally:
+            context.close()
+
+
 def record(browser, base, folder):
     context = browser.new_context(viewport={"width": 1280, "height": 810}, locale="ru-RU",
                                   record_video_dir=folder, record_video_size={"width": 1280, "height": 810})
@@ -461,6 +514,8 @@ def main():
                 with stand(0, directory) as mobile_base:
                     admission_checks(browser, mobile_base, out, results, mobile=True)
                 late_response_check(browser, directory, results)
+                fleet_and_history_check(browser, base, results)
+                pressure_form_check(browser, directory, results)
                 (out / "browser-results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
                 print(f"{len(results)} browser checks passed", flush=True)
         browser.close()

@@ -20,7 +20,7 @@ CHAIN = {"vehicle_id": "Y815BM178", "session_id": "S-0152"}
 
 @pytest.fixture
 def stand(tmp_path):
-    vehicles = json.loads((ROOT / "data/vehicles.json").read_text())["vehicles"]
+    vehicles = json.loads((ROOT / "data/vehicles.json").read_text(encoding="utf-8"))["vehicles"]
     sessions = {(vehicle["vehicle_id"], session["session_id"]): session
                 for vehicle in vehicles for session in vehicle["sessions"]}
     overrides, tickets = {}, []

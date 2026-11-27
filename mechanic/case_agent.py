@@ -11,7 +11,7 @@ from backend.admission import AdmissionPolicy, evaluate_admission
 from .sources import BY_NAME
 from .contracts import DraftFields, Reference, Reply, Section
 from .config import MATERIALS
-from .demo_agent import wants_draft
+from agent.tools.ticket import wants_draft
 
 
 class CaseAgent:
@@ -87,22 +87,23 @@ class CaseAgent:
             result = self.agent.turn(diagnosis.vehicle_id, diagnosis.session_id, question, history,
                                      trace_out=trace, diagnosis=context)
         except (URLError, TimeoutError):
+            if question != "Покажи диагностику":
+                raise
             result = describe(context)
             result.update(intent="clarify", clarifying_question="Языковая модель недоступна. Уточните узел и режим измерения.")
-            if question == "Покажи диагностику":
-                started = perf_counter()
-                assessment = self.mechanic.assess(BackendDiagnosis.model_validate(diagnosis.model_dump()), vehicle["engine_model"])
-                for evidence in assessment.evidence:
-                    source = evidence.source
-                    result["references"].append(source.model_dump())
-                    result["checks"].append(dict(text=evidence.text, fragment_id=source.fragment_id))
-                trace["tools"].append(dict(name="search", seconds=perf_counter()-started,
-                                           pages=[(e.source.manual, e.source.pdf_page) for e in assessment.evidence]))
+            started = perf_counter()
+            assessment = self.mechanic.assess(BackendDiagnosis.model_validate(diagnosis.model_dump()), vehicle["engine_model"])
+            for evidence in assessment.evidence:
+                source = evidence.source
+                result["references"].append(source.model_dump())
+                result["checks"].append(dict(text=evidence.text, fragment_id=source.fragment_id))
+            trace.setdefault("tools", []).append(dict(name="search", seconds=perf_counter() - started,
+                                                     pages=[(e.source.manual, e.source.pdf_page) for e in assessment.evidence]))
         calls = []
         for tool in trace["tools"]:
             calls.append(dict(tool="agent." + tool["name"], duration_ms=round(tool.get("seconds", 0) * 1000),
                               status="ok", pages=tool.get("pages", [])))
-        for call in trace["calls"]:
+        for call in trace.get("calls", ()):
             calls.append(dict(tool="ollama.chat", duration_ms=round(call["seconds"] * 1000), status=call.get("status", "ok"),
                               model=call["model"], input_tokens=call["input_tokens"], output_tokens=call["output_tokens"]))
         result["ticket_draft"] = None
@@ -128,5 +129,10 @@ class CaseAgent:
         if result["checks"] and not result["clarifying_question"]:
             sections.append(Section(kind="clarify", items=["Применимость к машине требует сверки исполнения узла и условий проверки."]))
 
-        summary = result.get("explanation") or result["verdict"]
+        summary = result.get("explanation")
+        if not summary and result.get("intent") not in {"diagnosis", "movement"}:
+            lead = next((item["text"] for field in ("checks", "possible_causes", "risk") for item in result[field]), None)
+            if diagnosis.status != "check_failed":
+                summary = lead or result["clarifying_question"]
+        summary = summary or result["verdict"]
         return Reply(summary=summary, sections=sections, analysis=result), None, history_entry(question, result), calls

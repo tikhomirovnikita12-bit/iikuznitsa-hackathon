@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent.dialog import Agent
+from agent.manual_agent import ManualAgent
 from agent.tools.diagnosis import describe
 from agent.tools.manual import Manuals
 from agent.tools.ticket import prepare
@@ -99,18 +100,21 @@ def test_draft_contains_only_sources_of_its_checks():
     assert result["spare_parts"] == []
 
 
-def test_ticket_selection_cannot_write_a_disallowed_field(tmp_path):
+def test_ticket_selection_cannot_write_a_disallowed_field():
     class Provider:
         def ask(self, prompt, format_, trace):
-            source = format_["properties"]["items"]["items"]["properties"]["source"]["enum"][0]
+            properties = format_["properties"]["items"]["items"]["properties"]
+            assert properties["field"]["enum"] == ["checks"]
+            source = properties["source"]["enum"][0]
             return {"items": [{"source": source, "field": "risk"}]}
 
     class Sources:
         def reference(self, fragment, model):
             raise AssertionError("A disallowed selection must not resolve a source")
 
-    agent = Agent(None, Sources(), Provider(), log=tmp_path / "turns.jsonl")
     reply = describe(diagnosis())
+    reply["intent"] = "ticket"
     hit = {"fragment_id": "checked", "text": "Проверить соединения топливопроводов.", "verified": True}
-    agent.select(reply, "ticket", "Подготовь заявку", [hit], {"calls": []})
+    ManualAgent(Sources()).select(reply, "Подготовь заявку", "соединения топливопроводов", [hit],
+                                  Provider(), {"calls": []}, coolant=False, next_step=False, previous=None)
     assert not reply["checks"] and not reply["references"] and not reply["risk"]

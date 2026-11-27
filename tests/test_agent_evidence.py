@@ -55,7 +55,7 @@ def test_f02_without_control_manometer_procedure_is_documentary_only(tmp_path):
     agent = CaseAgent(ROOT / 'artifacts/manual-corpus.json', tmp_path / 'blocked.jsonl')
     agent.agent.provider = NoModel()
     assert not agent.can_prepare(card, Diagnosis.model_validate(ml))
-    reply, proposal, _entry = agent.chat(card, Diagnosis.model_validate(ml), 'Подготовь заявку', [])
+    reply, proposal, _entry, _calls = agent.chat(card, Diagnosis.model_validate(ml), 'Подготовь заявку', [])
     assert proposal is None
     assert 'процедур' in reply.summary
     assert any('дефектовк' in item for section in reply.sections for item in section.items)

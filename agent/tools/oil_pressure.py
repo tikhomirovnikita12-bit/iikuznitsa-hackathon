@@ -4,9 +4,36 @@ from decimal import Decimal
 
 QUERY = "При каких условиях проверять давление масла?"
 SOURCE = "yamz-236-3902150-b-re-p019-oil-pressure"
-PRESSURE = re.compile(r"(?<![\d.,-])(\d+(?:[.,]\d+)?)\s*(?:кпа|kpa)\b", re.I)
-BARE_NUMBER = re.compile(r"(\d+(?:[.,]\d+)?)\s*[.!?]?")
-SPEED = re.compile(r"(?<![\d.,-])(\d+)\s*(?:об\s*/\s*мин|оборотов|rpm)\b", re.I)
+INTEGER = r"(?:\d{1,3}(?: \d{3})+|\d+)"
+NUMBER = rf"{INTEGER}(?:[.,]\d+)?"
+PRESSURE_UNIT = r"(?:кпа|kpa|мпа|mpa|бар(?:а|ов)?|bars?|кгс\s*/\s*см\s*(?:²|\^?\s*2))"
+SPEED_UNIT = r"(?:об\.?\s*/\s*мин|оборот(?:ов|ах)|rpm)"
+BETWEEN = r"\s*(?:[-–—−/…]|\.\.\.|,\s+| (?:до|или|и) )\s*"
+PRESSURE = re.compile(rf"(?<![\w.,])([+-−]?{NUMBER})\s*({PRESSURE_UNIT})(?!\w)", re.I)
+PRESSURE_RANGE = re.compile(
+    rf"(?<![\w.,]){NUMBER}(?:\s*{PRESSURE_UNIT})?{BETWEEN}{NUMBER}\s*{PRESSURE_UNIT}(?!\w)", re.I,
+)
+PRESSURE_ESTIMATE = re.compile(
+    rf"(?:\b(?:около|примерно|порядка|ниже|выше|больше|меньше|до|от)\s+|[~≈≥≤<>]\s*)"
+    rf"{NUMBER}\s*{PRESSURE_UNIT}(?!\w)", re.I,
+)
+BARE_NUMBER = re.compile(rf"({NUMBER})\s*[.!?]?")
+SPEED = re.compile(rf"(?<![\w.,])({INTEGER})\s*{SPEED_UNIT}\b", re.I)
+SPEED_RANGE = re.compile(
+    rf"(?<![\w.,]){INTEGER}(?:\s*{SPEED_UNIT})?{BETWEEN}{INTEGER}\s*{SPEED_UNIT}\b", re.I,
+)
+CONFIRM_UNIT = re.compile(rf"(?:да(?:,?\s*({PRESSURE_UNIT}))?|({PRESSURE_UNIT}))[.!]?")
+
+
+def kilopascals(amount, unit):
+    value = Decimal(amount.replace(" ", "").replace(",", ".").replace("−", "-"))
+    # Compare kgf/cm² using the rounded equivalents printed alongside kPa on page 19.
+    factors = {"кпа": 1, "kpa": 1, "мпа": 1000, "mpa": 1000}
+    return value * factors.get(unit.casefold(), 100)
+
+
+def decimal_text(value):
+    return format(value.normalize(), "f")
 
 
 def readings(question, previous):
@@ -14,31 +41,48 @@ def readings(question, previous):
     text = " ".join(question.casefold().split())
     answer = text.strip(" .!?")
     if values.get("pressure") is not None and answer in {"да", "нет"}:
-        if values.get("warm") is not True:
+        if values.get("warm") is None:
             values["warm"] = answer == "да"
-        elif values.get("regime") and values.get("extended") is None:
+        elif values["warm"] and values.get("regime") and values.get("extended") is None:
             values["extended"] = answer == "да"
-    pressure = set(PRESSURE.findall(text))
-    speed = set(SPEED.findall(text))
+
+    pressure = {kilopascals(amount, unit) for amount, unit in PRESSURE.findall(text)}
     bare = BARE_NUMBER.fullmatch(text)
-    if previous is not None and bare:
-        values["unconfirmed_pressure"] = bare[1].replace(",", ".")
+    if PRESSURE_RANGE.search(text) or PRESSURE_ESTIMATE.search(text) or len(pressure) > 1 or any(amount < 0 for amount in pressure):
         values.pop("pressure", None)
-    elif values.get("unconfirmed_pressure") and re.fullmatch(r"(?:да(?:,? кпа)?|кпа|kpa)[.!]?", text):
-        values["pressure"] = values.pop("unconfirmed_pressure")
-    if pressure:
         values.pop("unconfirmed_pressure", None)
-        values["pressure"] = next(iter(pressure)).replace(",", ".") if len(pressure) == 1 else None
+        values["ambiguous_pressure"] = True
+    elif pressure:
+        values.pop("ambiguous_pressure", None)
+        values.pop("unconfirmed_pressure", None)
+        values["pressure"] = decimal_text(next(iter(pressure)))
+    elif bare:
+        values.pop("ambiguous_pressure", None)
+        values.pop("pressure", None)
+        values["unconfirmed_pressure"] = decimal_text(kilopascals(bare[1], "кпа"))
+    elif values.get("unconfirmed_pressure") and (confirmation := CONFIRM_UNIT.fullmatch(text)):
+        unit = confirmation[1] or confirmation[2] or "кпа"
+        values["pressure"] = decimal_text(kilopascals(values.pop("unconfirmed_pressure"), unit))
+
+    if text.endswith("?") and not pressure:
+        return values
+
+    speed = {amount.replace(" ", "") for amount in SPEED.findall(text)}
     if speed or "холост" in text:
-        if "холост" in text:
-            values["regime"] = "idle" if not speed and re.search(r"минимальн\w+.*холост|холост\w+.*минимальн", text) else None
+        if SPEED_RANGE.search(text) or len(speed) > 1:
+            values["regime"] = None
+        elif "холост" in text:
+            minimal = re.search(r"минимальн\w+.*холост|холост\w+.*минимальн", text)
+            values["regime"] = "idle" if minimal and "2100" not in speed else None
         else:
             values["regime"] = "rated" if speed == {"2100"} else None
     if re.search(r"холодн|не\s*прогрет|не грел", text):
         values["warm"] = False
     elif re.search(r"прогрет|на горячую|(?:двигатель|мотор) (?:был )?горяч", text):
         values["warm"] = True
-    if re.search(r"без допуска|допуск\s+не\s+применим|не\s+после длительной эксплуатации", text):
+    if "допуск неизвестен" in text:
+        values["extended"] = None
+    elif re.search(r"без допуска|допуск\s+не\s+применим|не\s+после длительной эксплуатации", text):
         values["extended"] = False
     elif re.search(r"после длительной эксплуатации|допуск\s+применим", text):
         values["extended"] = True
@@ -46,6 +90,8 @@ def readings(question, previous):
 
 
 def compare(values):
+    if values.get("ambiguous_pressure"):
+        return None, "Укажите одно точное значение давления масла и его единицу."
     if unconfirmed := values.get("unconfirmed_pressure"):
         return None, f"{unconfirmed.replace('.', ',')} — это давление масла в кПа?"
     if values.get("pressure") is None:

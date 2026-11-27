@@ -50,8 +50,6 @@ OIL_FIRST = "Проверьте количество масла в картер�
 CHAIN_FIRST = "Проверьте удлинение цепей ГРМ и состояние гидронатяжителя."
 VALVE_FIRST = "При повторении стука проверьте зазоры клапанов на холодном двигателе (15–20 °C)."
 
-CREATE = re.compile(r"\b(?:созда\w*|оформ\w*|подготов\w*|сдела\w*)\s+"
-                    r"(?:мне\s+)?(?:черновик\s+)?заявк\w*\b|^заявка(?:\s+на\s+дефектовку)?[.!]?$")
 DRIVE = re.compile(r"перег(?:он|нат)|своим ходом|в рейс|можно ли ехать|доед(?:у|ет|ем)")
 FIRST = re.compile(
     r"что (?:сначала )?проверить|что (?:делать|проверять)|с чего (?:начать|начнем|начнём)|"
@@ -66,14 +64,11 @@ OTHER_SPEC = re.compile(r"момент\w*\s+затяж|объем\w*\s+масл|
 MEASUREMENT = re.compile(r"\d+(?:[.,]\d+)?\s*(?:кпа|кгс|бар)\b")
 
 
-def wants_draft(question: str) -> bool:
-    return bool(CREATE.search(question.casefold().strip()))
-
-
 def case_for(vehicle: dict, diagnosis: Diagnosis) -> str:
     engine = vehicle["engine_model"]
     code = diagnosis.anomaly_type
-    if code == "F08" and vehicle["fuel"] == "бензин":
+    fuel = vehicle["fuel"]
+    if (code == "F08" and fuel == "бензин") or (code in {"F12", "F13"} and fuel == "дизель"):
         return "mismatch"
     if code == "F02" and engine == "ЯМЗ-236М2":
         return "oil"
@@ -84,10 +79,11 @@ def case_for(vehicle: dict, diagnosis: Diagnosis) -> str:
     return "unsupported"
 
 
-def mismatch(vehicle: dict) -> str:
+def mismatch(vehicle: dict, diagnosis: Diagnosis) -> str:
+    engine_type = "бензиновый" if vehicle["fuel"] == "бензин" else "дизельный"
     return (
-        f"Mock ML указал F08 «Дизельная топливоподача». В каталоге {vehicle['engine_model']} "
-        "указан как бензиновый двигатель. Уточните фактическую модификацию двигателя "
+        f"Mock ML указал {diagnosis.anomaly_type} «{diagnosis.anomaly_title}». В каталоге {vehicle['engine_model']} "
+        f"указан как {engine_type} двигатель. Уточните фактическую модификацию двигателя "
         "и проверьте, что запись относится к выбранному ТС и сессии."
     )
 
@@ -117,7 +113,7 @@ def brief(vehicle: dict, diagnosis: Diagnosis) -> Brief:
         )
     return Brief(
         risk="unassessed",
-        rationale=mismatch(vehicle) if case == "mismatch" else
+        rationale=mismatch(vehicle, diagnosis) if case == "mismatch" else
         f"В тестовом режиме нет проверенной процедуры для {vehicle['engine_model']} и этого отклонения.",
         first_check="Сверьте модификацию двигателя и выбранную запись." if case == "mismatch" else
         "Уточните узел, симптомы и результаты контрольных измерений для дефектовки.",
@@ -206,7 +202,7 @@ def answer(vehicle: dict, diagnosis: Diagnosis, question: str) -> Reply:
 
     case = case_for(vehicle, diagnosis)
     if case == "mismatch":
-        return Reply(summary=mismatch(vehicle), sections=[signs])
+        return Reply(summary=mismatch(vehicle, diagnosis), sections=[signs])
     if not DRIVE.search(text) and not MEASUREMENT.search(text) and (conflict := conflict_case(question, vehicle["engine_model"])):
         fragments = {item["fragment_id"]: item for item in verified_fragments()}
         if all(fragment in fragments for fragment in conflict["fragment_ids"]):

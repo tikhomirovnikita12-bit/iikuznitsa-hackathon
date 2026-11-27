@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from agent.dialog import Agent, passages
+from agent.dialog import Agent
+from agent.manual_agent import ManualAgent, passages
 from agent.tools.diagnosis import describe
 from agent.tools.manual import Manuals
 from manual_search.corpus import verified_fragments
@@ -86,30 +87,31 @@ class ChoosePassages:
         ]}
 
 
-def chain_select(tmp_path, provider, text=None):
+def chain_select(provider, text=None):
     manuals = Manuals(ROOT / 'artifacts/manual-corpus.json')
-    agent = Agent(None, manuals, provider, log=tmp_path / 'turns.jsonl')
     context = diagnosis('Y815BM178', 'S-0152')
     reply = describe(context)
+    reply['intent'] = 'search'
     hit = next(fragment for fragment in verified_fragments()
                if fragment['fragment_id'] == 'zmz-40904-40905-rk-p107-engine-knock')
     if text is not None:
         hit = {**hit, 'text': text}
-    agent.select(reply, 'search', 'Почему шумит цепь?', [hit], {'calls': []})
+    ManualAgent(manuals).select(reply, 'Почему шумит цепь?', 'цепь', [hit], provider, {'calls': []},
+                                coolant=False, next_step=False, previous=None)
     return reply
 
 
 @pytest.mark.parametrize('cross_field', [False, True])
-def test_chain_selected_passage_is_not_repeated(tmp_path, cross_field):
-    reply = chain_select(tmp_path, ChoosePassages(cross_field=cross_field))
+def test_chain_selected_passage_is_not_repeated(cross_field):
+    reply = chain_select(ChoosePassages(cross_field=cross_field))
     items = [item for field in ('checks', 'risk', 'possible_causes') for item in reply[field]]
     assert len(items) == 1
     assert len(reply['references']) == 1
     assert reply['references'][0]['pdf_page'] == 107
 
 
-def test_distinct_passages_from_one_fragment_are_preserved(tmp_path):
-    reply = chain_select(tmp_path, ChoosePassages(duplicate=False),
+def test_distinct_passages_from_one_fragment_are_preserved():
+    reply = chain_select(ChoosePassages(duplicate=False),
                          text='Проверить увеличение длины цепей.\nПроверить гидронатяжитель цепи.')
     assert len(reply['checks']) == 2
     assert reply['checks'][0]['text'] != reply['checks'][1]['text']
