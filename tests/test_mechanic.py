@@ -157,6 +157,28 @@ def test_fleet_reflects_sent_ticket(stand):
     assert row["urgency"] == request["edits"]["urgency"]
 
 
+def test_f03_first_check_on_demo_screen_route(stand, monkeypatch):
+    client, _ = stand
+    monkeypatch.setattr(main, "case_agent", None)
+    monkeypatch.setattr(main, "TEAM_AGENT_URL", "")
+    pair = {"vehicle_id": "B332BP98", "session_id": "S-0159"}
+
+    result = diagnose(client, pair)
+    assert result["diagnosis"]["anomaly_type"] == "F03"
+    assert result["brief"]["references"][0]["pdf_page"] == 97
+
+    response = client.post("/api/chat", json={**pair, "message": "Что проверить сначала?"})
+    assert response.status_code == 200, response.text
+    reply = response.json()["messages"][-1]
+    assert "на холодном двигателе" in reply["summary"]
+    checks, = (section for section in reply["sections"] if section["kind"] == "checks")
+    source, = checks["references"]
+    manual = next(item for item in client.get("/api/catalog").json()["manuals"] if item["manual"] == source["manual"])
+    assert manual["slug"] == "zmz409" and source["pdf_page"] == 97
+    page = client.get(f"/sources/{manual['slug']}/{source['pdf_page']}/page.pdf")
+    assert page.status_code == 200 and page.headers["content-type"] == "application/pdf"
+
+
 def test_actual_mock_outcomes_and_pair_isolation(stand):
     client, _ = stand
     result = diagnose(client)
