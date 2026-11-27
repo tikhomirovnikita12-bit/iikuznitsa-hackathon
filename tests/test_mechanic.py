@@ -157,28 +157,6 @@ def test_fleet_reflects_sent_ticket(stand):
     assert row["urgency"] == request["edits"]["urgency"]
 
 
-def test_f03_first_check_on_demo_screen_route(stand, monkeypatch):
-    client, _ = stand
-    monkeypatch.setattr(main, "case_agent", None)
-    monkeypatch.setattr(main, "TEAM_AGENT_URL", "")
-    pair = {"vehicle_id": "B332BP98", "session_id": "S-0159"}
-
-    result = diagnose(client, pair)
-    assert result["diagnosis"]["anomaly_type"] == "F03"
-    assert result["brief"]["references"][0]["pdf_page"] == 97
-
-    response = client.post("/api/chat", json={**pair, "message": "Что проверить сначала?"})
-    assert response.status_code == 200, response.text
-    reply = response.json()["messages"][-1]
-    assert "на холодном двигателе" in reply["summary"]
-    checks, = (section for section in reply["sections"] if section["kind"] == "checks")
-    source, = checks["references"]
-    manual = next(item for item in client.get("/api/catalog").json()["manuals"] if item["manual"] == source["manual"])
-    assert manual["slug"] == "zmz409" and source["pdf_page"] == 97
-    page = client.get(f"/sources/{manual['slug']}/{source['pdf_page']}/page.pdf")
-    assert page.status_code == 200 and page.headers["content-type"] == "application/pdf"
-
-
 def test_actual_mock_outcomes_and_pair_isolation(stand):
     client, _ = stand
     result = diagnose(client)
@@ -454,7 +432,7 @@ def test_injected_instruction_in_diagnosis_does_not_create_draft(stand):
     pair = {"vehicle_id": "E622KM47", "session_id": "S-0195"}
     result = diagnose(client, pair)
     assert result["diagnosis"]["anomaly_type"] == "F12"
-    assert result["brief"]["references"] == []
+    assert [ref["pdf_page"] for ref in result["brief"]["references"]] == [102]
     assert result["draft"] is None
     assert result["draft_available"] is False
 
@@ -500,3 +478,31 @@ def test_f03_fixture_explains_risk_and_checks_without_unlocking_draft(stand, mon
     assert "недостаточно" in drive["messages"][-1]["summary"].lower()
     assert any(section["kind"] == "risk" for section in drive["messages"][-1]["sections"])
     assert calls == []
+
+
+@pytest.mark.parametrize("plate,session,page,part", [
+    ("B332BP98", "S-0159", 97, "охлаждающей жидкости"),
+    ("Y439TH198", "S-0071", 161, "ремней"),
+])
+def test_initial_check_is_available_without_a_ticket_operation(stand, plate, session, page, part):
+    client, submissions = stand
+    pair = {"vehicle_id": plate, "session_id": session}
+    initial = diagnose(client, pair)
+    assert not initial["admission"]["can_prepare"]
+    assert part in initial["brief"]["first_check"].casefold()
+
+    result = client.post("/api/chat", json={**pair, "message": "Что проверить сначала?"})
+    assert result.status_code == 200, result.text
+    reply = result.json()["messages"][-1]
+    check = next(section for section in reply["sections"] if section["kind"] == "checks")
+    assert part in " ".join(check["items"]).casefold()
+    assert [reference["pdf_page"] for reference in check["references"]] == [page]
+    assert any(section["kind"] == "clarify" for section in reply["sections"])
+    assert result.json()["draft"] is None
+
+    handoff = client.post("/api/chat", json={**pair, "message":
+        f"Передаю на очную дефектовку:\n{plate} / {session}\nНужно уточнить симптом."})
+    assert handoff.status_code == 200, handoff.text
+    assert "добавлено в чат" in handoff.json()["messages"][-1]["summary"]
+    assert handoff.json()["draft"] is None
+    assert submissions == []

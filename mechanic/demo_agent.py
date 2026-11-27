@@ -2,6 +2,8 @@
 
 import re
 
+from agent.case_context import diagnostic_observation
+from backend.models import Diagnosis as BackendDiagnosis
 from agent.tools import fluid_check, oil_pressure
 from backend.mechanic import conflict_case
 from manual_search.corpus import verified_fragments
@@ -26,7 +28,6 @@ YAMZ536_OIL_PRESSURE = [
     }
 ]
 CHAIN = ZMZ409.reference(107)
-ZMZ_COOLANT_LEVEL = ZMZ409.reference(97)
 VALVE_TEMP = ZMZ5234.reference(20)
 VALVE_CLEARANCE = ZMZ5234.reference(21)
 VALVE_NOISE = ZMZ5234.reference(56)
@@ -55,7 +56,6 @@ OIL_NORMS = [
 ]
 OIL_FIRST = "Проверьте количество масла в картере и охлаждающей жидкости."
 CHAIN_FIRST = "Проверьте удлинение цепей ГРМ и состояние гидронатяжителя."
-ZMZ_COOLANT_FIRST = "Проверьте уровень охлаждающей жидкости в расширительном бачке на холодном двигателе."
 VALVE_FIRST = "При повторении стука проверьте зазоры клапанов на холодном двигателе (15–20 °C)."
 COOLANT_FIRST = ("Осмотреть двигатель на подтекания охлаждающей жидкости и проверить уровень "
                  "масла в картере.")
@@ -100,7 +100,6 @@ FIRST = re.compile(
 TOPICS = {
     "oil": re.compile(r"давлен\w*\s+масл|масл\w*\s+давлен|смазк|манометр|падает давлен|вкладыш|маслопровод"),
     "chain": re.compile(r"цеп[ьи]|цепей|натяжител|гидронатяж|шум|стуч|стук|грм"),
-    "cooling": re.compile(r"охлажд|антифриз|перегрев|расширительн\w*\s+бач|температур"),
     "valves": re.compile(r"клапан|коромысл|зазор|стук"),
     "coolant": re.compile(r"охлажд|перегрев|эмульс|антифриз|вода\s+в\s+масл|масл\w*.*вода"),
 }
@@ -124,8 +123,6 @@ def case_for(vehicle: dict, diagnosis: Diagnosis) -> str:
         return "coolant"
     if code == "F14" and engine in ZMZ409.engines:
         return "chain"
-    if code == "F03" and engine == "ЗМЗ-40905.10":
-        return "cooling"
     if code == "F01" and engine == "ЗМЗ-5234.10":
         return "valves"
     return "unsupported"
@@ -137,6 +134,29 @@ def mismatch(vehicle: dict, diagnosis: Diagnosis) -> str:
         f"Mock ML указал {diagnosis.anomaly_type} «{diagnosis.anomaly_title}». В каталоге {vehicle['engine_model']} "
         f"указан как {engine_type} двигатель. Уточните фактическую модификацию двигателя "
         "и проверьте, что запись относится к выбранному ТС и сессии."
+    )
+
+
+def documented_check(vehicle, diagnosis, mechanic):
+    if mechanic is None or diagnosis.status != "anomaly" or diagnosis.signal_quality == "bad":
+        return None
+    assessment = mechanic.assess(BackendDiagnosis.model_validate(diagnosis.model_dump()), vehicle["engine_model"])
+    if not assessment.checks or len(assessment.evidence) != 1:
+        return None
+    source = assessment.evidence[0].source
+    return source_section("checks", assessment.checks, Reference(manual=source.manual, pdf_page=source.pdf_page))
+
+
+def diagnostic_reply(vehicle, diagnosis, mechanic):
+    check = documented_check(vehicle, diagnosis, mechanic)
+    details = source_section("clarify", [diagnostic_observation(diagnosis.anomaly_type)])
+    signs = source_section("signs", [diagnosis.description])
+    if check:
+        return Reply(summary=check.items[0], sections=[signs, check, details])
+    return Reply(
+        summary=f"Уточните признак «{diagnosis.anomaly_title}» на очной проверке. "
+                f"Для {vehicle['engine_model']} подтверждённая процедура пока не найдена.",
+        sections=[signs, details],
     )
 
 
@@ -157,12 +177,6 @@ def brief(vehicle: dict, diagnosis: Diagnosis) -> Brief:
             risk="medium", rationale="Равномерный шум спереди на средних оборотах совпадает с признаком "
             "удлинения цепи. Руководство также относит неисправный гидронатяжитель к причинам стука.",
             first_check=CHAIN_FIRST, references=[CHAIN],
-        )
-    if case == "cooling":
-        return Brief(
-            risk="unassessed", rationale="ML отметил признаки возможной проблемы с охлаждением. "
-            "Причину роста температуры нужно подтвердить очной проверкой.",
-            first_check=ZMZ_COOLANT_FIRST, references=[ZMZ_COOLANT_LEVEL],
         )
     if case == "valves":
         return Brief(
@@ -331,24 +345,6 @@ def oil_followup_reply(question: str, history) -> Reply | None:
     return Reply(summary=checks[0][1] if checks else clarification, sections=sections, analysis=analysis)
 
 
-def cooling_reply(signs: Section) -> Reply:
-    return Reply(
-        summary=ZMZ_COOLANT_FIRST,
-        sections=[
-            signs,
-            source_section("checks", [
-                "На холодном двигателе перед запуском сверяйте уровень в бачке с руководством "
-                "по эксплуатации автомобиля.",
-                "Если приходится часто доливать охлаждающую жидкость, проверьте герметичность системы.",
-            ], ZMZ_COOLANT_LEVEL),
-            source_section("clarify", [
-                "Если уровень в норме, а температура продолжает расти, передайте машину на очную "
-                "диагностику. Наличие охлаждающей жидкости в масле требует отдельного подтверждения.",
-            ]),
-        ],
-    )
-
-
 def answer(vehicle: dict, diagnosis: Diagnosis, question: str) -> Reply:
     text = question.casefold()
     signs = source_section("signs", [diagnosis.description])
@@ -435,8 +431,6 @@ def answer(vehicle: dict, diagnosis: Diagnosis, question: str) -> Reply:
             return chain_reply(signs)
         if case == "coolant":
             return coolant_reply(signs)
-        if case == "cooling":
-            return cooling_reply(signs)
         return valve_reply(signs, diagnosis.signal_quality)
     return Reply(summary=f"Для этого вопроса в тестовом режиме нет подтверждённой страницы "
                          f"для двигателя {vehicle['engine_model']}. Уточните узел и что именно "

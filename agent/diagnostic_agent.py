@@ -3,6 +3,7 @@
 import re
 import time
 
+from .case_context import diagnostic_observation
 from .tools.diagnosis import describe, diagnose
 
 
@@ -54,6 +55,8 @@ class DiagnosticAgent:
         else:
             return False
         self.manual_agent.cite(reply, "checks", instruction, fragment)
+        if ml["anomaly_type"] in {"F03", "F04"} and not reply["clarifying_question"]:
+            reply["clarifying_question"] = diagnostic_observation(ml["anomaly_type"])
         ref = reply["references"][-1]
         trace["tools"].append(dict(name="diagnostics.first_check", agent="diagnostics",
                                    seconds=time.monotonic() - started,

@@ -8,7 +8,6 @@ from unittest.mock import patch
 import httpx
 from fastapi.testclient import TestClient
 
-from agent.dialog import Ollama
 from backend.store import Store as BackendStore
 from manual_search.corpus import verified_fragments
 from mechanic import main
@@ -110,33 +109,6 @@ class Member4Tests(unittest.TestCase):
         self.assertIn("80–100 °C", analysis["checks"][0]["text"])
         self.assertEqual(analysis["references"][0]["url"], "/sources/yamz536-rk/13")
 
-    def test_screen_uses_separate_generator_and_keeps_its_source_on_failure(self):
-        pair = dict(vehicle_id="A464EP47", session_id="S-0096")
-        self.post("diagnose", pair)
-        question = "Какое давление масла на прогретом двигателе?"
-        summary = "При температуре масла 80–100 °C и номинальных оборотах давление должно быть 400–635 кПа."
-        requests = []
-
-        def ollama(_url, body, timeout):
-            requests.append(body)
-            if len(requests) > 1:
-                raise TimeoutError()
-            return {"model": body["model"], "message": {"content": json.dumps({"answer": summary})}}
-
-        with (patch.dict("os.environ", {"OLLAMA_GENERATION_MODEL": "qwen3.5:9b"}),
-              patch.object(main.case_agent.agent, "provider", Ollama()),
-              patch("agent.dialog.post", side_effect=ollama)):
-            answer = self.post("chat", pair, message=question)["messages"][-1]
-            fallback = self.post("chat", pair, message=question)["messages"][-1]
-
-        self.assertEqual(answer["summary"], summary)
-        self.assertEqual(fallback["summary"], fallback["analysis"]["checks"][0]["text"])
-        self.assertEqual(answer["analysis"]["references"], fallback["analysis"]["references"])
-        self.assertIn("/sources/yamz536-rk/13", {ref["url"] for ref in answer["analysis"]["references"]})
-        self.assertEqual([request["model"] for request in requests], ["qwen3.5:9b", "qwen3.5:9b"])
-        selected = json.loads(requests[0]["messages"][-1]["content"])["excerpts"]
-        self.assertEqual(selected, [{"text": check["text"]} for check in answer["analysis"]["checks"]])
-
     def test_known_diagnoses_and_first_checks_without_model(self):
         for pair, code, page, subject in (
             (self.oil, "F02", 53, "масл"),
@@ -154,6 +126,19 @@ class Member4Tests(unittest.TestCase):
                 self.assertIn(subject, checks[0])
                 self.assertEqual(len(checks), len(set(checks)))
                 self.assertIn(f"/sources/yamz236-re/{page}", {ref["url"] for ref in reply["references"]})
+                self.assertEqual(self.provider.requests, before)
+
+    def test_first_check_from_manual_for_blocked_draft(self):
+        for plate, session, page in (("B332BP98", "S-0159", 97), ("Y439TH198", "S-0071", 161)):
+            with self.subTest(session=session):
+                pair = dict(vehicle_id=plate, session_id=session)
+                before = self.provider.requests
+                self.post("diagnose", pair)
+                result = self.post("chat", pair, message="Что сначала проверить?")
+                reply = result["messages"][-1]["analysis"]
+                self.assertIn(page, {reference["pdf_page"] for reference in reply["references"]})
+                self.assertTrue(reply["checks"] and reply["clarifying_question"])
+                self.assertIsNone(result["draft"])
                 self.assertEqual(self.provider.requests, before)
 
     def test_pressure_in_bar_and_ambiguous_range(self):

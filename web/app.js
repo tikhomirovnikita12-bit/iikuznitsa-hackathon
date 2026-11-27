@@ -769,6 +769,10 @@ function admissionNotice(admission) {
   const reason = admission.block_reason;
   const notice = element("div", "alert admission-notice");
   notice.setAttribute("role", "status");
+  if (reason.code === "procedure_unavailable" && admission.has_documented_first_check) {
+  notice.append(element("strong", "", "Автоматическое оформление заявки недоступно."));
+  return notice;
+  }
   notice.append(element("strong", "", reason.message), element("p", "", reason.next_action));
   const text = (view.pair ? view.pair.vehicle_id + " / " + view.pair.session_id + "\n" : "")
     + reason.message + "\n" + reason.next_action;

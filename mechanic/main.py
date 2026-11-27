@@ -382,6 +382,13 @@ def session_response(pair: Pair, state: dict):
     if check:
         state = {**state, "brief": generator_check.brief(check["value"]), "brief_error": None}
     decision = admission_for(pair, state)
+    brief = state.get("brief") or {}
+    decision = {
+        **decision,
+        "has_documented_first_check": bool(
+            brief.get("first_check") and brief.get("references")
+        ),
+    }
     available = decision["can_prepare"] and not state["draft"]
     reason = None
     if not state["draft"] and not available:
@@ -593,6 +600,9 @@ def overview(vehicle: dict, diagnosis: Diagnosis):
                 rationale="Акустический признак — гипотеза. Риск оценивается по фактическим измерениям и очной проверке.",
                 first_check=approved[0]["operation"] if decision["can_prepare"] else decision["block_reason"]["next_action"],
                 references=list(refs.values()))
+        if case == "unsupported" and (check := demo_agent.documented_check(vehicle, diagnosis, policy_mechanic)):
+            brief = Brief(risk="unassessed", rationale="Причину отклонения нужно подтвердить очной проверкой.",
+                          first_check=check.items[0], references=check.references)
         calls = bind_fixture_sources([brief], vehicle, diagnosis)
         payload = {"origin": "fixture", **brief.model_dump()}
         if analysis := demo_agent.analysis(vehicle, diagnosis):
@@ -671,6 +681,11 @@ def response_to_chat(vehicle, diagnosis, state, question):
     if draft_requested and state["draft"]:
         return Reply(summary="Черновик уже открыт. Проверьте поля и подтвердите приоритет."), None, "fixture", [], None
 
+    if question.casefold().startswith("передаю на очную дефектовку:"):
+        return Reply(summary="Сообщение о дефектовке добавлено в чат. Опишите результаты очной проверки здесь.",
+                     sections=[Section(kind="clarify", items=[case_context.diagnostic_observation(diagnosis.anomaly_type)])]
+                     if diagnosis.status == "anomaly" and diagnosis.signal_quality != "bad" else []), None, "fixture", [], None
+
     check = generator_check.session_check(vehicle, state)
     if check and not draft_requested and generator_check.TOPIC.search(question.casefold()):
         return generator_check.reply(check["value"]), None, "rule", [], None
@@ -713,7 +728,7 @@ def response_to_chat(vehicle, diagnosis, state, question):
         return reply, None, "fixture", [], None
     if retrieval:
         topic = case_context.subject(question, [m["text"] for m in state["messages"] if m["role"] == "user"])
-        index = team.workflow.mechanic.search if team else retrieval.index
+        index = policy_mechanic.search if policy_mechanic else retrieval.index
         matched = case_context.reviewed_oil_pressure(index, vehicle["engine_model"], topic)
         if matched is not None:
             if not matched:
@@ -734,7 +749,11 @@ def response_to_chat(vehicle, diagnosis, state, question):
             Section(kind="clarify", items=["Ограничения и условия: " + " ".join(conditions)]),
         ], analysis={"fluid_check": {}} if demo_case == "oil" else None)
         return reply, None, "fixture", [], None
-    return demo_agent.answer(vehicle, diagnosis, question), None, "fixture", [], None
+    reply = demo_agent.answer(vehicle, diagnosis, question)
+    if (diagnosis.status == "anomaly" and case_context.FIRST_CHECK.fullmatch(question.strip())
+            and not any(section.kind == "checks" for section in reply.sections)):
+        reply = demo_agent.diagnostic_reply(vehicle, diagnosis, policy_mechanic)
+    return reply, None, "fixture", [], None
 
 
 def draft_available(vehicle: dict, state: dict) -> bool:

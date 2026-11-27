@@ -9,6 +9,20 @@ PRESSURE = re.compile(r"давлен\w*\s+масла", re.I)
 MOVE = re.compile(r"перег[но]|своим ходом|можно ли (?:ехать|доехать|продолжать движение)", re.I)
 
 
+FIRST_CHECK = re.compile(
+    r"(?:а\s+)?(?:(?:подскажи|скажи),?\s+)?(?:что (?:сначала проверить|проверить(?: сначала| в первую очередь)?|"
+    r"делать дальше)|с чего начать)[?.! ]*", re.I,
+)
+
+
+def diagnostic_observation(code):
+    """Ask for facts that help distinguish the suspected fault."""
+    return {
+        "F03": "Сообщите уровень охлаждающей жидкости на холодном двигателе, есть ли подтёки и при каком режиме росла температура.",
+        "F04": "Сообщите, какой ремень свистит, в каком режиме слышен свист и есть ли видимые повреждения ремня.",
+    }.get(code, "Сообщите результат проверки и при каком режиме двигателя проявляется симптом.")
+
+
 def subject(question, history):
     if FOLLOW.fullmatch(question.strip()):
         return next((q for q in reversed(history) if not FOLLOW.fullmatch(q.strip())), "")
