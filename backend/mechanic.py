@@ -15,8 +15,15 @@ OIL_PRESSURE = "yamz-236-3902150-b-re-p019-oil-pressure"
 LOW_PRESSURE_CAUSES = "yamz-236-3902150-b-re-p053-low-oil-pressure"
 VALVE_CLEARANCE = "yamz-236-3902150-b-re-p031-valve-clearance"
 CHAIN_NOISE = "zmz-40904-40905-rk-p107-engine-knock"
+CHAIN_CHECK = "zmz-40904-40905-rk-p143-tensioner-check-review"
 COOLANT_IN_OIL = "yamz-236-3902150-b-re-p054-f03-coolant-in-oil"
 COOLANT_TEMPERATURE = "yamz-236-3902150-b-re-p004-coolant-temperature"
+UNKNOWN_RISK = "Степень риска по одной акустической проверке определить нельзя."
+RISK_QUESTION = re.compile(
+    r"^\s*(?:(?:а|так)\s+)?(?:почему\s+(?:это\s+)?опасно|чем\s+(?:это\s+)?(?:опасн\w*|грозит)|"
+    r"каков?\w*\s+(?:уровень\s+)?риск|в\s+ч[её]м\s+риск|насколько\s+(?:это\s+)?опасно)\b",
+    re.I,
+)
 
 
 def conflict_case(question: str, engine_model: str):
@@ -111,8 +118,8 @@ class Mechanic:
             return Assessment(
                 conclusion=conclusion,
                 next_step="Уточнить фактическое давление масла и условия его измерения.",
-                risk="Высокий риск, если измеренное давление ниже применимого допуска. "
-                     "Для оценки нужны фактическое давление и режим работы (стр. 19).",
+                risk="Если давление ниже применимого допуска, трущиеся детали двигателя получают недостаточную смазку. "
+                     "Для оценки нужны давление на прогретом двигателе, обороты и применимость допуска после длительной эксплуатации.",
                 possible_causes=["Неисправность манометра, разжижение масла топливом, загрязнение фильтра и другие причины на стр. 53."],
                 checks=["Сверить уровень масла и охлаждающей жидкости (стр. 53).",
                         "Проверить давление на прогретом двигателе в режимах, указанных на стр. 19."],
@@ -169,11 +176,25 @@ class Mechanic:
             return Assessment(
                 conclusion=conclusion,
                 next_step="Проверить, совпадает ли наблюдаемый шум с описанием в руководстве.",
-                risk="Для оценки риска нужно установить причину шума и состояние привода ГРМ.",
+                risk="При заклинивании плунжера или негерметичности клапана гидронатяжитель может не удерживать "
+                     "натяжение цепи ГРМ. Похожий стук дают вытяжка цепи, износ звёздочек и разрушение успокоителя. "
+                     "Для оценки риска нужно локализовать стук и проверить состояние привода.",
                 possible_causes=["Повышенное удлинение цепи. Неисправность гидронатяжителя указана отдельной причиной."],
                 checks=["Проверить увеличение длины цепей (стр. 107)."],
                 repair_actions=["Руководство предусматривает замену цепей со звёздочками комплектом при необходимости (стр. 107)."],
-                evidence=[self.evidence(CHAIN_NOISE, engine_model)],
+                evidence=[self.evidence(fragment, engine_model) for fragment in (CHAIN_CHECK, CHAIN_NOISE)],
+            )
+
+        from .admission import AdmissionPolicy
+        operation = next((row for row in AdmissionPolicy(self).approved_operations(diagnosis, engine_model)
+                          if row.get("risk")), None)
+        if operation:
+            return Assessment(
+                conclusion=conclusion,
+                next_step=operation["operation"],
+                risk=operation["risk"],
+                checks=[operation["operation"]],
+                evidence=[Evidence.model_validate(item) for item in operation["evidence"]],
             )
 
         if diagnosis.anomaly_type == "F03":
@@ -207,7 +228,7 @@ class Mechanic:
                 conclusion=(f"ML отметил отклонение «{diagnosis.anomaly_title}». "
                             "Применимость кода к комплектации требует сверки." if check_fitment else conclusion),
                 next_step=operation,
-                risk="Степень риска по одной акустической проверке определить нельзя.",
+                risk=UNKNOWN_RISK,
                 checks=[operation],
                 evidence=[self.evidence(fragment, engine_model)],
             )
@@ -218,7 +239,7 @@ class Mechanic:
             conclusion=conclusion,
             next_step=("Механику нужно сверить признаки и применимость найденных разделов."
                        if evidence else "По имеющимся материалам данных для рекомендации недостаточно."),
-            risk="Степень риска по одной акустической проверке определить нельзя.",
+            risk=UNKNOWN_RISK,
             evidence=evidence,
         )
 
@@ -289,7 +310,7 @@ class Mechanic:
             return ChatReply(answer="\n\n".join(parts), evidence=evidence)
 
         assessment = self.assess(diagnosis, engine_model)
-        if re.fullmatch(r"(почему (это )?опасно|чем (это )?грозит|какой риск)[?.! ]*", normalized):
+        if RISK_QUESTION.match(question):
             return ChatReply(answer=assessment.risk or assessment.next_step,
                              needs_clarification=not assessment.evidence, evidence=assessment.evidence)
         if re.fullmatch(r"(что проверить( сначала)?|с чего начать|что делать дальше)[?.! ]*", normalized):

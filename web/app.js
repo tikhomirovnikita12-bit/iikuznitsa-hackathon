@@ -214,6 +214,9 @@ function riskSummary(brief, generatorCheck) {
       ? "По одной записи степень риска не установлена. Нужна очная проверка."
       : "Предварительная оценка по записи и руководству. Степень риска уточнят после очной проверки.");
   if (note) box.append(element("p", "risk-note", note));
+  const riskSources = (brief?.risk_references || []).filter((source) =>
+    !brief.references?.some((ref) => ref.manual === source.manual && ref.pdf_page === source.pdf_page));
+  if (riskSources.length) box.append(references(riskSources));
   return box;
 }
 

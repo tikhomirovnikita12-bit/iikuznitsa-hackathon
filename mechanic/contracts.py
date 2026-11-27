@@ -109,6 +109,7 @@ class Brief(BaseModel):
     rationale: Text
     first_check: Text
     references: list[Reference] = Field(default_factory=list, max_length=20)
+    risk_references: list[Reference] = Field(default_factory=list, max_length=20)
 
 
 class ToolCall(BaseModel):

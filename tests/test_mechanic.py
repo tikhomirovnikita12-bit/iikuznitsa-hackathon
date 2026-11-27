@@ -122,6 +122,21 @@ def test_fleet_report_categories_and_history(stand):
                for step in row["history"])
 
 
+def test_quarantine_is_ranked_by_risk_priority_and_anomaly_score(stand):
+    client, _ = stand
+    rows = client.get("/api/fleet").json()["vehicles"]
+    quarantine = [row for row in rows if row["category"] == "quarantine"]
+    scores = [row["latest"]["anomaly_score"] for row in quarantine]
+    assert scores == sorted(scores, reverse=True)
+    risk, priority = quarantine[-2:]
+    main.store.update((risk["vehicle_id"], risk["latest"]["session_id"]),
+                      lambda state: state.update(brief={"risk": "high"}))
+    main.store.update((priority["vehicle_id"], priority["latest"]["session_id"]),
+                      lambda state: state.update(confirmed_urgency="medium"))
+    ranked = client.get("/api/fleet").json()["vehicles"]
+    assert [row["vehicle_id"] for row in ranked[:2]] == [risk["vehicle_id"], priority["vehicle_id"]]
+
+
 def test_fleet_reads_team_state_without_local_store(stand, monkeypatch):
     """При TEAM_API_URL локальный Store отсутствует: заявку отдаёт командный адаптер."""
     client, _ = stand
@@ -170,8 +185,8 @@ def test_f03_first_check_on_demo_screen_route(stand, monkeypatch):
     response = client.post("/api/chat", json={**pair, "message": "Что проверить сначала?"})
     assert response.status_code == 200, response.text
     reply = response.json()["messages"][-1]
-    assert "на холодном двигателе" in reply["summary"]
     checks, = (section for section in reply["sections"] if section["kind"] == "checks")
+    assert "на холодном двигателе" in checks["items"][0]
     source, = checks["references"]
     manual = next(item for item in client.get("/api/catalog").json()["manuals"] if item["manual"] == source["manual"])
     assert manual["slug"] == "zmz409" and source["pdf_page"] == 97

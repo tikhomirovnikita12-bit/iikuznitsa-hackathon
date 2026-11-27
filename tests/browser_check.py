@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / ".runtime"
 PYTHON = ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 OIL = ("E549YT198", "S-0011")
-UNSUPPORTED = ("O710HH78", "S-0014")
+UNSUPPORTED = ("C933KX98", "S-0163")
 NORMAL = ("E549YT198", "S-0010")
 FAILED = ("P456AT178", "S-0003")
 LOW_CONFIDENCE = ("M739BA198", "S-0103")
@@ -252,7 +252,7 @@ def admission_checks(browser, base, out, results, *, mobile=False):
                 expect(page.locator("#result")).to_contain_text("Запись с помехами")
             if pair == FAILED:
                 expect(page.locator("#result")).to_contain_text("вывод о двигателе невозможен")
-        results.append({"step": "Причины отказа: F04 без процедуры, confidence 0.48, bad и несовместимый F08", "mobile": mobile, "result": "passed"})
+        results.append({"step": "Причины отказа: F09 без процедуры, confidence 0.48, bad и несовместимый F08", "mobile": mobile, "result": "passed"})
 
         open_pair(page, base, OIL)
         ask(page, "Что проверить сначала?", "Проверка по руководству выбранного двигателя.")
