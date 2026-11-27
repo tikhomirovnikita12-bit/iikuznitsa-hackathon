@@ -15,6 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from . import demo_agent, sources
+from agent import case_context
+from agent.dialog import incompatible_fault
 from .case_agent import CaseAgent
 from agent.dialog import history_entry
 from .config import CORPUS, DEFAULT_ML, DEFAULT_TOIR, MOCKS, ROOT, WEB, endpoint
@@ -461,6 +463,15 @@ def diagnose(pair: Pair):
 
 def response_to_chat(vehicle, diagnosis, state, question):
     draft_requested = demo_agent.wants_draft(question)
+    data = dict(diagnosis.model_dump(), fuel=vehicle["fuel"])
+    reason = state.get("draft_unavailable_reason") if draft_requested else None
+    if incompatible_fault(data):
+        reason = f"Код {diagnosis.anomaly_type} «{diagnosis.anomaly_title}» не соответствует топливу «{vehicle['fuel']}»."
+    if reason or data["signal_quality"] == "bad" or diagnosis.status == "check_failed":
+        message = case_context.blocked_message(reason or "", data, vehicle["engine_model"])
+        analysis = dict(ml_observations=data, checks=[], references=[], ticket_draft=None, clarifying_question=message,
+                        verdict=message, possible_causes=[], risk=[], intent="clarify")
+        return Reply(summary=message, analysis=analysis), None, "team", [], None
     if draft_requested and diagnosis.status != "anomaly":
         return Reply(summary="Черновик дефектовки доступен для результата с отклонением."), None, "fixture", [], None
     if draft_requested and state["draft"]:
@@ -488,6 +499,16 @@ def response_to_chat(vehicle, diagnosis, state, question):
             "Уточните узел и результаты проверки перед дефектовкой."
         )
         return Reply(summary=message), None, "fixture", [], None
+    if retrieval:
+        topic = case_context.subject(question, [m["text"] for m in state["messages"] if m["role"] == "user"])
+        index = team.workflow.mechanic.search if team else retrieval.index
+        matched = case_context.reviewed(index, vehicle["engine_model"], topic)
+        if matched is not None:
+            if not matched:
+                return Reply(summary="Уточните исполнение узла и операцию: для сравнения нужны обе страницы."), None, "team", [], None
+            sections = [Section(kind="checks", items=[excerpt], references=[Reference.model_validate(index.resolve_source(fid, vehicle["engine_model"]))])
+                        for fid, excerpt in matched]
+            return Reply(summary=diagnosis.description, sections=sections), None, "team", [], None
     return demo_agent.answer(vehicle, diagnosis, question), None, "fixture", [], None
 
 
@@ -497,9 +518,8 @@ def draft_available(vehicle: dict, state: dict) -> bool:
     diagnosis = Diagnosis.model_validate(state["diagnosis"])
     if diagnosis.status != "anomaly" or demo_agent.case_for(vehicle, diagnosis) == "mismatch":
         return False
-    if state.get("draft_unavailable_reason"):
-        checked = getattr(case_agent, "checked_draft", None)
-        return bool(checked and checked(vehicle, diagnosis))
+    if state.get("draft_unavailable_reason") or diagnosis.signal_quality == "bad":
+        return False
     if case_agent:
         return case_agent.can_prepare(vehicle, diagnosis, state["agent_history"])
     if TEAM_AGENT_URL:
@@ -547,7 +567,8 @@ def prepare_draft(pair: Pair):
         if available:
             reply, draft, origin, calls, entry = response_to_chat(vehicle, diagnosis, snapshot, "Подготовь заявку")
         else:
-            reason = snapshot.get("draft_unavailable_reason") or MISSING_DRAFT_EVIDENCE
+            reason = case_context.blocked_message(snapshot.get("draft_unavailable_reason") or MISSING_DRAFT_EVIDENCE,
+                                                  diagnosis.model_dump(), vehicle["engine_model"])
             reply = Reply(summary="Черновик пока не подготовлен.",
                           sections=[Section(kind="clarify", items=[reason])])
             draft, origin, calls, entry = None, "team", [], None
@@ -634,7 +655,6 @@ def chat(request: ChatRequest):
         ])
         if agent_entry is not None:
             state["agent_history"] = [*state["agent_history"][-5:], agent_entry]
-        state["draft_unavailable_reason"] = None
         state["messages"] = chat_history(state)
         record_call(state, audit(tool, started))
         for call in calls:

@@ -35,7 +35,7 @@ def test_yamz536_pressure_answer_keeps_conditions_units_and_source(tmp_path):
                         diagnosis=diagnosis('A464EP47', 'S-0096'))
     assert result['intent'] == 'search'
     assert result['clarifying_question'] is None
-    assert len(result['checks']) == 1
+    assert [ref['pdf_page'] for ref in result['references']] == [49, 159, 13]
     text = result['checks'][0]['text']
     for term in ['80–100 °C', '400–635 кПа', '4,1–6,5 кгс/см²',
                  'номинальной', 'минимальной', 'не менее 100 кПа', '1,0 кгс/см²']:

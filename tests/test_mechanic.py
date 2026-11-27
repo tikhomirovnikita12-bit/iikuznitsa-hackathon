@@ -155,14 +155,14 @@ def test_case_agent_preserves_measurements_and_requires_confirmation(stand, monk
 
     first = ask("Можно ли перегнать машину?")
     assert first["messages"][-1]["origin"] == "team"
-    assert first["messages"][-1]["sections"][0]["references"][0]["pdf_page"] == 19
+    assert first["messages"][-1]["analysis"]["references"][0]["pdf_page"] == 19
     measurement = ask("350")
-    assert "350" in measurement["messages"][-1]["sections"][0]["items"][0]
+    assert "350" in measurement["messages"][-1]["analysis"]["clarifying_question"]
     assert state(client)["messages"] == measurement["messages"]
     assert "agent_history" not in state(client)
     ask("да, кПа")
     result = ask("Двигатель прогрет, 2100 об/мин, без допуска после длительной эксплуатации")
-    assert "350 кПа — ниже" in result["messages"][-1]["sections"][0]["items"][0]
+    assert "350 кПа — ниже" in result["messages"][-1]["analysis"]["checks"][0]["text"]
 
     result = ask("Подготовь заявку на дефектовку")
     draft = result["draft"]

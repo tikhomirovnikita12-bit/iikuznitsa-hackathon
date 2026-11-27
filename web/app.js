@@ -21,8 +21,8 @@ const vehiclePicker = { selected: null, matches: [], activeIndex: -1 };
 const plateLetters = { а: "a", в: "b", е: "e", к: "k", м: "m", н: "h", о: "o",
   р: "p", с: "c", т: "t", у: "y", х: "x" };
 const sectionNames = {
-  signs: "Признаки", causes: "Возможные причины", checks: "Проверки",
-  work: "Возможные работы", clarify: "Что уточнить", risk: "Риски",
+  signs: "Наблюдения ML", causes: "Возможные причины · гипотезы", checks: "Проверки по руководству",
+  work: "Возможные работы", clarify: "Ограничения и уточнения", risk: "Риски · гипотезы",
 };
 const urgencyNames = { low: "Низкий", medium: "Средний", high: "Высокий" };
 const riskLabels = {

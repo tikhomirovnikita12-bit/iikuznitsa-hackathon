@@ -1,5 +1,9 @@
 """Route the mechanic's chat to the available workflow tools."""
 
+from agent import case_context
+from agent.tools import oil_pressure
+from agent.dialog import incompatible_fault
+
 import logging
 import re
 from typing import Annotated, Literal
@@ -116,6 +120,16 @@ class Agent:
         return ChatReply(answer=answer, evidence=assessment.evidence, diagnostic_result=result)
 
     def create_draft(self, pair: Pair) -> ChatReply:
+        with self.workflow.store.connection() as conn:
+            diagnosis = self.workflow.diagnosis(conn, pair)
+        vehicle = self.workflow.catalog.vehicle(pair.vehicle_id)
+        blocked = self.blocked(diagnosis, vehicle)
+        if blocked:
+            return ChatReply(answer=blocked, needs_clarification=True)
+        fields = self.workflow.mechanic.suggest_draft(diagnosis, vehicle.engine_model)
+        if diagnosis.status != "anomaly" or not fields.operations or not fields.references:
+            return ChatReply(answer=case_context.blocked_message("Нет подтверждённой процедуры.",
+                             diagnosis.model_dump(), vehicle.engine_model), needs_clarification=True)
         draft = self.workflow.create_draft(pair)
         if draft.ticket_id:
             answer = f"По этому отклонению уже зарегистрирована заявка {draft.ticket_id}."
@@ -125,19 +139,53 @@ class Agent:
             answer = "Текущее состояние заявки показано в карточке ТОиР."
         return ChatReply(answer=answer, draft=draft)
 
+    def blocked(self, diagnosis, vehicle):
+        fuel = self.workflow.catalog.fuels[vehicle.vehicle_id]
+        data = dict(diagnosis.model_dump(), fuel=fuel)
+        if data["signal_quality"] == "bad" or data["status"] == "check_failed":
+            return case_context.blocked_message("", data, vehicle.engine_model)
+        if fuel and incompatible_fault(data):
+            reason = f"Код {diagnosis.anomaly_type} «{diagnosis.anomaly_title}» несовместим с топливом «{fuel}»."
+            return case_context.blocked_message(reason, data, vehicle.engine_model)
+        return None
+
     def manual_search(self, pair: Pair, request: ChatRequest, engine: str, plan: Plan | None) -> ChatReply:
         with self.workflow.store.connection() as conn:
             diagnosis = self.workflow.diagnosis(conn, pair)
         question = request.question
+        mechanic = self.workflow.mechanic
+        if blocked := self.blocked(diagnosis, self.workflow.catalog.vehicle(pair.vehicle_id)):
+            return ChatReply(answer=blocked, needs_clarification=True)
+        topic = case_context.subject(question, [turn.question for turn in request.history])
+        reviewed = case_context.reviewed(mechanic.search, engine, topic)
+        if reviewed is not None:
+            if not reviewed:
+                return ChatReply(answer="Уточните исполнение узла и операцию: в индексе отсутствует одна из страниц сопоставления.", needs_clarification=True)
+            evidence = [mechanic.evidence(fid, engine).model_copy(update={"text": excerpt}) for fid, excerpt in reviewed]
+            return ChatReply(answer="\n".join(f"{item.text} [{item.source.manual}, стр. {item.source.pdf_page}]" for item in evidence), evidence=evidence)
+        if case_context.MOVE.search(question):
+            readings = {}
+            if engine == "ЯМЗ-236М2" and diagnosis.anomaly_type == "F02":
+                for utterance in [turn.question for turn in request.history] + [question]:
+                    readings = oil_pressure.readings(utterance, readings)
+                source = mechanic.evidence(oil_pressure.SOURCE, engine)
+                comparison, missing = oil_pressure.compare(readings)
+                measured = readings.get("pressure")
+                facts = f"Со слов механика: {measured} кПа." if measured else "Фактическое давление не сообщено."
+                return ChatReply(answer=" ".join(filter(None, (facts, comparison, missing, source.text,
+                    "Рекомендация: очная дефектовка системы смазки. Прямой запрет перегона этой страницей не установлен; допуск к движению не подтверждён."))),
+                    needs_clarification=True, evidence=[source])
+            return ChatReply(answer=f"Наблюдения ML: {diagnosis.description}. Сообщите показания приборов, режим двигателя и наличие аварийной сигнализации. "
+                             "Рекомендуется очная дефектовка. Прямой запрет для этих условий источником не подтверждён.", needs_clarification=True)
         query = None
         if request.history and FOLLOW_UP.search(question.casefold()):
             topic = next((
                 turn.question for turn in reversed(request.history)
                 if not command(turn.question) and not FOLLOW_UP.search(turn.question.casefold())
             ), None)
-            query = (plan.query if plan and plan.tool == "manual_search" else None)
-            if not query and topic:
-                query = f"{topic[:240]} {question}"
+            query = topic
+            if not topic:
+                return ChatReply(answer="Какой именно узел и какой режим проверки вы имеете в виду?", needs_clarification=True)
             # Standalone wording like «какие причины?» refers to the conversation here.
             if query and re.match(r"^(?:а\s+)?какие (?:возможны )?причины", question.casefold()):
                 question = "Какие причины описаны для этого признака?"

@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
+from . import case_context
 from .backend import post
 from .tools.diagnosis import describe, diagnose
 from .tools import fluid_check, oil_pressure
@@ -71,9 +72,14 @@ class Ollama:
     def ask(self, prompt, format_, trace):
         model = os.getenv("AGENT_MODEL") or os.getenv("OLLAMA_MODEL") or "gemma2:2b"
         start = time.monotonic()
-        result = post((os.getenv("OLLAMA_HOST_URL") or os.getenv("OLLAMA_URL") or "http://127.0.0.1:11434").rstrip("/") + "/api/chat",
-                      dict(model=model, stream=False, format=format_, options={"temperature": 0},
-                           messages=[dict(role="user", content=prompt)]), timeout=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180")))
+        try:
+            result = post((os.getenv("OLLAMA_HOST_URL") or os.getenv("OLLAMA_URL") or "http://127.0.0.1:11434").rstrip("/") + "/api/chat",
+                          dict(model=model, stream=False, format=format_, options={"temperature": 0},
+                               messages=[dict(role="user", content=prompt)]), timeout=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180")))
+        except (OSError, ValueError):
+            trace["calls"].append(dict(model=model, seconds=time.monotonic()-start, status="error",
+                                       input_tokens=None, output_tokens=None))
+            raise
         trace["calls"].append(dict(model=result["model"], seconds=time.monotonic()-start,
                                    input_tokens=result.get("prompt_eval_count"),
                                    output_tokens=result.get("eval_count")))
@@ -99,11 +105,25 @@ class Agent:
             ml = reply["ml_observations"]
             if (ml["vehicle_id"], ml["session_id"]) != (vehicle_id, session_id):
                 raise ValueError("Ответ диагностики относится к другой машине или сессии")
-            if ml["status"] == "check_failed":
+            if ml["status"] == "check_failed" or ml["signal_quality"] == "bad":
+                reply["verdict"] = case_context.blocked_message("", ml, ml["engine_model"])
                 return reply
             if incompatible_fault(ml):
                 reply["clarifying_question"] = (f"ML указала «{ml['anomaly_title']}», а в карточке "
-                    f"{ml['engine_model']} ({ml['fuel']}). Сверьте обозначение двигателя и выбранную запись.")
+                    f"{ml['engine_model']} ({ml['fuel']}). Сверьте обозначение двигателя и повторите проверку. При сохранении расхождения передайте узел на дефектовку.")
+                return reply
+            topic = case_context.subject(question, [turn[0] for turn in history])
+            started = time.monotonic()
+            matched = case_context.reviewed(self.manuals.searcher, ml["engine_model"], topic) if hasattr(self.manuals, "searcher") else None
+            if matched is not None:
+                reply.update(intent="search", explanation=f"Проверка по руководству для {ml['engine_model']}. Разделы ниже относятся к разным условиям.")
+                for fid, excerpt in matched:
+                    reply["checks"].append(dict(text=excerpt, fragment_id=fid))
+                    reply["references"].append(self.manuals.reference(fid, ml["engine_model"]))
+                if not matched:
+                    reply["clarifying_question"] = "Уточните исполнение узла и операцию: одна из требуемых страниц отсутствует."
+                trace["tools"].append(dict(name="search", seconds=time.monotonic()-started, query=topic,
+                                           pages=[(r["manual"], r["pdf_page"]) for r in reply["references"]]))
                 return reply
             wording = question.casefold().strip(" .!?")
             if wording in {"привет", "здравствуйте", "добрый день", "спасибо", "понятно"}:
@@ -144,6 +164,7 @@ class Agent:
                                       (values != previous_pressure or oil_pressure.BARE_NUMBER.fullmatch(question.strip())))):
                 return self.pressure_reply(reply, values, trace)
             if OIL_NORM_QUESTION.match(wording):
+                started = time.monotonic()
                 hits = self.manuals.find(question, ml)
                 source = next((hit for hit in hits if hit.get("verified")
                                and hit["fragment_id"].endswith("-oil-pressure")), None)
@@ -151,7 +172,7 @@ class Agent:
                     reference = self.manuals.reference(source["fragment_id"], ml["engine_model"])
                     reply.update(intent="search", checks=[dict(text=source["text"], fragment_id=source["fragment_id"])],
                                  references=[reference])
-                    trace["tools"].append(dict(name="search", query=question,
+                    trace["tools"].append(dict(name="search", query=question, seconds=time.monotonic()-started,
                         pages=[(source["manual"], source["pdf_page"])]))
                     return reply
             context = json.dumps([ml, [row[:4] for row in history], question], ensure_ascii=False)
@@ -338,7 +359,7 @@ class Agent:
         ml = reply["ml_observations"]
         hits = self.search(oil_pressure.QUERY, ml, trace)
         reply.update(intent="movement", pressure_measurement=values,
-                     verdict="Возможность перегона по этим данным не подтверждена.")
+                     verdict="Возможность перегона по этим данным не подтверждена. Рекомендуется дефектовка системы смазки. Прямой запрет перегона приведённым нормативом не установлен.")
         source = next((hit for hit in hits if hit["fragment_id"] == oil_pressure.SOURCE), None)
         if source is None:
             reply["clarifying_question"] = "Не удалось найти применимый норматив в руководстве."

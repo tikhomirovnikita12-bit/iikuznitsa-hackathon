@@ -1,4 +1,9 @@
-from agent.dialog import Agent, history_entry, incompatible_fault, passages, ticket_query
+from time import perf_counter
+from urllib.error import URLError
+
+from agent.case_context import blocked_message
+from agent.tools.diagnosis import describe
+from agent.dialog import Agent, history_entry, incompatible_fault
 from agent.tools.manual import Manuals
 from backend.mechanic import Mechanic
 from backend.models import Diagnosis as BackendDiagnosis
@@ -16,7 +21,7 @@ class CaseAgent:
 
     def checked_draft(self, vehicle, diagnosis):
         context = {**diagnosis.model_dump(), "engine_model": vehicle["engine_model"], "fuel": vehicle["fuel"]}
-        if diagnosis.status != "anomaly" or incompatible_fault(context):
+        if diagnosis.signal_quality == "bad" or diagnosis.status != "anomaly" or incompatible_fault(context):
             return None
         backend_diagnosis = BackendDiagnosis.model_validate(diagnosis.model_dump())
         fields = self.mechanic.suggest_draft(backend_diagnosis, vehicle["engine_model"])
@@ -49,35 +54,57 @@ class CaseAgent:
 
     def can_prepare(self, vehicle, diagnosis, history=()):
         context = {**diagnosis.model_dump(), "engine_model": vehicle["engine_model"], "fuel": vehicle["fuel"]}
-        if context["status"] != "anomaly" or incompatible_fault(context):
+        if context["signal_quality"] == "bad" or context["status"] != "anomaly" or incompatible_fault(context):
             return False
-        # Match the first ticket search without invoking the model or changing case state.
-        return bool(self.checked_draft(vehicle, diagnosis)) or any(
-            passages(hit) for hit in self.agent.manuals.find(ticket_query(context), context)
-        )
+        return bool(self.checked_draft(vehicle, diagnosis))
 
     def chat(self, vehicle, diagnosis, question, history):
         context = {**diagnosis.model_dump(), "engine_model": vehicle["engine_model"], "fuel": vehicle["fuel"]}
-        if (wants_draft(question) and not any(
-            passages(hit) for hit in self.agent.manuals.find(ticket_query(context), context)
-        )):
-            if fallback := self.checked_draft(vehicle, diagnosis):
-                return *self.checked_reply(question, fallback, vehicle, diagnosis), []
+        if wants_draft(question):
+            started = perf_counter()
+            fields = self.checked_draft(vehicle, diagnosis)
+            elapsed = round((perf_counter() - started) * 1000)
+            if fields and len(fields.references) == 1:
+                pages = [(ref.manual, ref.pdf_page) for ref in fields.references]
+                return *self.checked_reply(question, fields, vehicle, diagnosis), [
+                    dict(tool="agent.search", duration_ms=elapsed, status="ok", pages=pages),
+                    dict(tool="agent.prepare_ticket", duration_ms=0, status="ok"),
+                ]
+            if not fields:
+                message = blocked_message("Нет подтверждённой процедуры.", context, vehicle["engine_model"])
+                return Reply(summary=message, sections=[Section(kind="clarify", items=[message])]), None, None, []
         trace = {}
-        result = self.agent.turn(
-            diagnosis.vehicle_id, diagnosis.session_id, question, history, trace_out=trace,
-            diagnosis=context,
-        )
+        try:
+            result = self.agent.turn(diagnosis.vehicle_id, diagnosis.session_id, question, history,
+                                     trace_out=trace, diagnosis=context)
+        except (URLError, TimeoutError):
+            if wants_draft(question):
+                raise
+            result = describe(context)
+            result.update(intent="clarify", clarifying_question="Языковая модель недоступна. Уточните узел и режим измерения.")
+            if question == "Покажи диагностику":
+                started = perf_counter()
+                assessment = self.mechanic.assess(BackendDiagnosis.model_validate(diagnosis.model_dump()), vehicle["engine_model"])
+                for evidence in assessment.evidence:
+                    source = evidence.source
+                    result["references"].append(source.model_dump())
+                    result["checks"].append(dict(text=evidence.text, fragment_id=source.fragment_id))
+                trace["tools"].append(dict(name="search", seconds=perf_counter()-started,
+                                           pages=[(e.source.manual, e.source.pdf_page) for e in assessment.evidence]))
         calls = []
         for tool in trace["tools"]:
             calls.append(dict(tool="agent." + tool["name"], duration_ms=round(tool["seconds"] * 1000),
                               status="ok", pages=tool.get("pages", [])))
         for call in trace["calls"]:
-            calls.append(dict(tool="ollama.chat", duration_ms=round(call["seconds"] * 1000), status="ok",
+            calls.append(dict(tool="ollama.chat", duration_ms=round(call["seconds"] * 1000), status=call.get("status", "ok"),
                               model=call["model"], input_tokens=call["input_tokens"], output_tokens=call["output_tokens"]))
-        if result.get("intent") == "ticket" and not result["ticket_draft"]:
-            if fallback := self.checked_draft(vehicle, diagnosis):
-                return *self.checked_reply(question, fallback, vehicle, diagnosis), calls
+        if result.get("intent") == "ticket" and wants_draft(question):
+            if fields := self.checked_draft(vehicle, diagnosis):
+                selected = {r["pdf_page"] for r in result["references"]}
+                if selected:
+                    fields.references.sort(key=lambda r: r.pdf_page not in selected)
+                return *self.checked_reply(question, fields, vehicle, diagnosis), calls
+        result["ticket_draft"] = None
 
         references = {
             item["fragment_id"]: Reference(manual=item["manual"], pdf_page=item["pdf_page"])
@@ -86,13 +113,16 @@ class CaseAgent:
         for item in result["references"]:
             manual = BY_NAME[item["manual"]]
             item["url"] = f"/sources/{manual.slug}/{item['pdf_page']}"
-        sections = []
+        sections = [Section(kind="signs", items=[context["description"]])]
         for field, kind in (("possible_causes", "causes"), ("risk", "risk"), ("checks", "checks")):
             for item in result[field]:
-                sections.append(Section(kind=kind, items=[item["text"]], references=[references[item["fragment_id"]]]))
+                text = ("Гипотеза: " if kind in ("risk", "causes") else "") + item["text"]
+                sections.append(Section(kind=kind, items=[text], references=[references[item["fragment_id"]]]))
+        if result["checks"] and not result["clarifying_question"]:
+            sections.append(Section(kind="clarify", items=["Применимость к машине требует сверки исполнения узла и условий проверки."]))
         if question_to_clarify := result["clarifying_question"]:
             sections.append(Section(kind="clarify", items=[question_to_clarify],
-                                    references=[] if sections else list(references.values())))
+                                    references=list(references.values()) if result.get("intent") == "movement" else []))
 
         summary = result.get("explanation") or result["verdict"]
         draft = result["ticket_draft"]
