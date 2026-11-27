@@ -8,6 +8,7 @@ from unittest.mock import patch
 import httpx
 from fastapi.testclient import TestClient
 
+from agent.dialog import Ollama
 from backend.store import Store as BackendStore
 from manual_search.corpus import verified_fragments
 from mechanic import main
@@ -108,6 +109,46 @@ class Member4Tests(unittest.TestCase):
         self.assertIn("400–635 кПа", analysis["checks"][0]["text"])
         self.assertIn("80–100 °C", analysis["checks"][0]["text"])
         self.assertEqual(analysis["references"][0]["url"], "/sources/yamz536-rk/13")
+
+    def test_manual_answer_uses_configured_generator_once_and_keeps_evidence_on_timeout(self):
+        norm = dict(vehicle_id="A464EP47", session_id="S-0096")
+        chain = dict(vehicle_id="Y815BM178", session_id="S-0152")
+        self.post("diagnose", norm)
+        self.post("diagnose", chain)
+        question = "Какое давление масла на прогретом двигателе?"
+        chain_question = "Как проверить гидронатяжитель цепи?"
+        summary = "При температуре масла 80–100 °C и номинальных оборотах давление должно быть 400–635 кПа."
+        requests = []
+        provider = Ollama()
+
+        def ollama(_url, body, timeout):
+            requests.append(body)
+            if len(requests) > 1:
+                raise TimeoutError("Generator unavailable")
+            return {"model": body["model"], "message": {"content": json.dumps({"answer": summary})}}
+
+        with (patch.dict("os.environ", {"AGENT_MODEL": "router", "OLLAMA_GENERATION_MODEL": "writer"}),
+              patch.object(main.case_agent.agent, "provider", provider),
+              patch.object(provider, "ask", side_effect=self.provider.ask),
+              patch("agent.dialog.post", side_effect=ollama)):
+            answer = self.post("chat", norm, message=question)["messages"][-1]
+            norm_fallback = self.post("chat", norm, message=question)["messages"][-1]
+            self.assertEqual(len(requests), 2)
+
+            chain_fallback = self.post("chat", chain, message=chain_question)["messages"][-1]
+            self.assertEqual(len(requests), 3)
+            with patch.dict("os.environ", {"OLLAMA_GENERATION_MODEL": ""}):
+                self.post("chat", chain, message=chain_question)
+
+        self.assertEqual(answer["summary"], summary)
+        self.assertEqual([request["model"] for request in requests], ["writer"] * 3)
+        excerpts = json.loads(requests[0]["messages"][-1]["content"])["excerpts"]
+        self.assertEqual(excerpts, [{"text": check["text"]} for check in answer["analysis"]["checks"]])
+        self.assertEqual(norm_fallback["analysis"]["references"], answer["analysis"]["references"])
+        self.assertIn("/sources/yamz536-rk/13", {ref["url"] for ref in norm_fallback["analysis"]["references"]})
+        for fallback in (norm_fallback, chain_fallback):
+            self.assertTrue(fallback["analysis"]["references"])
+            self.assertEqual(fallback["summary"], fallback["analysis"]["checks"][0]["text"])
 
     def test_known_diagnoses_and_first_checks_without_model(self):
         for pair, code, page, subject in (

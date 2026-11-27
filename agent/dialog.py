@@ -75,12 +75,6 @@ class Ollama:
 
     def summarize(self, model, question, query, engine, excerpts, trace):
         try:
-            from .generation import answer_request, read_answer
-        except ModuleNotFoundError as error:
-            if error.name != f"{__package__}.generation":
-                raise
-            return None
-        try:
             return read_answer(self.request(answer_request(model, question, query, engine, excerpts), trace))
         except (OSError, ValueError, KeyError, TypeError):
             return None
@@ -312,8 +306,6 @@ class Agent:
                 reply, query, question, self.provider, trace, alternate=alternate,
                 coolant=coolant, next_step=next_step, previous=previous if followup else None,
             )
-            if action == "search" and not next_step:
-                self.summarize_manual_search(reply, question, query, trace)
 
         if not reply["references"]:
             reply["clarifying_question"] = (
@@ -335,25 +327,6 @@ class Agent:
             "\nНовая реплика: " + json.dumps(question, ensure_ascii=False),
             PLAN, trace,
         )
-
-    def summarize_manual_search(self, reply, question, query, trace):
-        summarize = getattr(self.provider, "summarize", None)
-        if summarize is None or not reply["references"] or reply.get("explanation"):
-            return
-        sources = {source["fragment_id"]: source for source in reply["references"]}
-        excerpts = [
-            {**sources[item["fragment_id"]], "text": item["text"]}
-            for field in ("checks", "possible_causes", "risk")
-            for item in reply[field]
-            if item["fragment_id"] in sources
-        ]
-        if not excerpts:
-            return
-        model = os.getenv("AGENT_MODEL") or os.getenv("OLLAMA_MODEL") or "gemma2:2b"
-        summary = summarize(model, question, query, reply["ml_observations"]["engine_model"], excerpts, trace)
-        if isinstance(summary, str) and summary.strip():
-            reply["explanation"] = summary.strip()
-
 
     def admission(self, ml):
         if self.mechanic is None:
