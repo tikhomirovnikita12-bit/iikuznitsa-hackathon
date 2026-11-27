@@ -10,7 +10,7 @@ Score = Annotated[float, Field(ge=0, le=1)]
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
 Risk = Literal["low", "medium", "high", "unassessed"]
 Urgency = Literal["low", "medium", "high"]
-Origin = Literal["fixture", "team"]
+Origin = Literal["fixture", "team", "rule"]
 SectionKind = Literal["signs", "causes", "checks", "work", "clarify", "risk"]
 
 
@@ -79,8 +79,17 @@ class TicketReconciliation(Pair):
     verified: Annotated[bool, Field(strict=True)]
 
 
+GeneratorReading = Literal["discharge", "no_discharge", "unknown"]
+
+
+class GeneratorReport(BaseModel):
+    value: GeneratorReading
+    diagnosis_revision: Identifier
+
+
 class ChatRequest(Pair):
     message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1600)]
+    generator_reading: GeneratorReport | None = None
 
 
 class Section(BaseModel):

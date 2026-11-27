@@ -146,7 +146,7 @@ class TeamWorkflow:
             if previous and (not actual or (previous["status"], previous["anomaly_type"]) !=
                              (actual["status"], actual["anomaly_type"])):
                 state.update(messages=[], agent_history=[])
-            state.update(diagnosis=actual, brief=None, brief_error=None,
+            state.update(diagnosis=actual, brief=None, brief_error=None, generator_reading=None,
                          draft_origin=None, draft_unavailable_reason=None)
 
     def populate(self, state, pair, *, restore_diagnosis=False):

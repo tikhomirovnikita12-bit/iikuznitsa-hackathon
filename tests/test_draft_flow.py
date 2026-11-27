@@ -28,6 +28,7 @@ NORMAL = {"vehicle_id": "E549YT198", "session_id": "S-0010"}
 FAILED = {"vehicle_id": "P456AT178", "session_id": "S-0003"}
 MISMATCH = {"vehicle_id": "Y652CK98", "session_id": "S-0132"}
 COOLANT = {"vehicle_id": "A427MA78", "session_id": "S-0032"}
+GENERATOR = {"vehicle_id": "P348EE78", "session_id": "S-0035"}
 
 
 class SourceSelection:
@@ -311,3 +312,53 @@ def test_f03_case_agent_reports_risk_without_reviewed_operation(integrated, monk
     assert any(section["kind"] == "risk" for section in sections("Почему опасно?"))
     assert adapter.workflow.drafts(adapter.Pair(**COOLANT)) == []
     assert sent == []
+
+
+@pytest.mark.parametrize("hybrid", [False, True])
+def test_f05_risk_follows_the_confirmed_reading(integrated, monkeypatch, tmp_path, hybrid):
+    client, adapter, sent = integrated
+    provider = enable_agent(monkeypatch, tmp_path) if hybrid else None
+    first = diagnose(client, GENERATOR)
+    assert first["brief"]["risk"] == "unassessed"
+    assert [ref["pdf_page"] for ref in first["brief"]["references"]] == [55]
+    revision = first["generator_check"]["diagnosis_revision"]
+
+    def chat(message, **extra):
+        return client.post("/api/chat", json={**GENERATOR, "message": message, **extra})
+
+    hypothetical = chat("Если на номинальных оборотах будет разряд, можно ли ехать?")
+    assert hypothetical.status_code == 200, hypothetical.text
+    assert hypothetical.json()["generator_check"]["value"] is None
+    assert hypothetical.json()["brief"]["risk"] == "unassessed"
+
+    def report(value, diagnosis_revision=revision):
+        return chat("Показание амперметра", generator_reading={
+            "value": value, "diagnosis_revision": diagnosis_revision,
+        })
+
+    stale = report("discharge", "0" * 64)
+    assert stale.status_code == 409 and stale.json()["error"]["code"] == "diagnosis_changed"
+    confirmed = report("discharge")
+    assert confirmed.status_code == 200, confirmed.text
+    state = confirmed.json()
+    assert state["brief"]["risk"] == "high"
+    assert "подшипников генератора" in state["brief"]["first_check"]
+    assert state["generator_check"] == {"value": "discharge", "diagnosis_revision": revision}
+    assert state["messages"][-1]["analysis"]["risk_level"] == "high"
+    assert report("discharge").json()["messages"] == state["messages"]
+
+    restored = client.get("/api/state", params=GENERATOR).json()
+    assert restored["brief"] == state["brief"]
+    assert diagnose(client, GENERATOR)["brief"] == state["brief"]
+    followup = chat("Что проверять первым делом?")
+    assert followup.status_code == 200, followup.text
+    assert followup.json()["messages"][-1]["sections"][0]["items"] == [state["brief"]["first_check"]]
+
+    no_discharge = report("no_discharge").json()
+    assert no_discharge["brief"]["risk"] == "unassessed"
+    assert "Разряд на номинальных оборотах не наблюдался" in no_discharge["brief"]["rationale"]
+    unknown = report("unknown").json()
+    assert unknown["brief"]["first_check"] == first["brief"]["first_check"]
+    assert adapter.workflow.drafts(adapter.Pair(**GENERATOR)) == []
+    assert not sent
+    assert not provider or provider.calls == 0

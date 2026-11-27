@@ -197,16 +197,48 @@ function analysisSections(items, refs) {
   }));
 }
 
-function riskSummary(brief) {
+function riskSummary(brief, generatorCheck) {
   const [label, theme] = riskLabels[brief?.risk] || riskLabels.unassessed;
   const box = element("section", "risk-summary");
   box.dataset.tone = theme;
-  box.append(element("span", "flag " + theme, label),
-             element("p", "", brief?.rationale || "Уточните симптомы и результаты контрольной проверки."),
-             element("p", "risk-note", brief?.risk === "unassessed"
-               ? "По одной записи степень риска не установлена. Нужна очная проверка."
-               : "Предварительная оценка по записи и руководству; точная степень — после очной проверки."));
+  if (generatorCheck) {
+    box.id = "generator-risk";
+    box.tabIndex = -1;
+    box.setAttribute("aria-label", "Оценка риска");
+  }
+  box.append(element("span", "flag " + theme, generatorCheck?.value === "discharge" ? "Высокий риск для эксплуатации" : label),
+             element("p", "", brief?.rationale || "Уточните симптомы и результаты контрольной проверки."));
+  const note = generatorCheck
+    ? (generatorCheck.value === "discharge" ? "Предварительная оценка. Решение о выпуске принимают после дефектовки." : "")
+    : (brief?.risk === "unassessed"
+      ? "По одной записи степень риска не установлена. Нужна очная проверка."
+      : "Предварительная оценка по записи и руководству. Степень риска уточнят после очной проверки.");
+  if (note) box.append(element("p", "risk-note", note));
   return box;
+}
+
+function generatorReadingControls(check) {
+  const controls = element("div", "generator-reading");
+  controls.id = "generator-reading";
+  controls.setAttribute("role", "group");
+  const label = "Амперметр на номинальных оборотах";
+  controls.setAttribute("aria-label", label);
+  if (check.value && check.value !== "unknown") controls.append(element("p", "risk-note", label));
+  for (const [value, text] of [["discharge", "Есть разряд"], ["no_discharge", "Разряда нет"], ["unknown", "Не проверено"]]) {
+    const choice = button(text);
+    const selected = value === (check.value ?? "unknown");
+    choice.disabled = Boolean(view.busy) || selected;
+    choice.setAttribute("aria-pressed", String(selected));
+    choice.addEventListener("click", async () => {
+      const result = await action("chat", "chat", "POST", {
+        message: text, generator_reading: { value, diagnosis_revision: check.diagnosis_revision },
+      });
+      if (result) byId("generator-risk")?.focus();
+      else if (!ui["chat-error"].hidden) ui["chat-error"].scrollIntoView({ block: "nearest" });
+    });
+    controls.append(choice);
+  }
+  return controls;
 }
 
 function verdictMeta(diagnosis) {
@@ -297,7 +329,8 @@ function renderDiagnosis() {
   if (meta.textContent) finding.append(meta);
   result.append(finding);
   const brief = view.state.brief;
-  if (diagnosis.status === "anomaly") result.append(riskSummary(brief));
+  const generatorCheck = view.state.generator_check;
+  if (diagnosis.status === "anomaly") result.append(riskSummary(brief, generatorCheck));
   const admission = view.state.admission;
   const blocked = admission?.block_reason;
   if (blocked && !admission.can_prepare && diagnosis.status !== "normal" && !view.state.draft) {
@@ -325,6 +358,7 @@ function renderDiagnosis() {
   next.append(element("p", "action", diagnosis.status === "anomaly"
     ? brief?.first_check || defaultCheck.anomaly : defaultCheck[diagnosis.status]));
   if (diagnosis.status === "anomaly" && brief?.references?.length) next.append(references(brief.references));
+  if (generatorCheck) next.append(generatorReadingControls(generatorCheck));
   result.append(next);
 
   const analysis = brief?.analysis;
@@ -435,7 +469,7 @@ function uniqueAnswerParts(sections) {
   return parts;
 }
 
-function answerBlock(kind, sections, title = sectionNames[kind] || "Рекомендации") {
+function answerBlock(kind, sections, title = sectionNames[kind] || "Рекомендации", reportInDiagnosis = false) {
   const expandable = kind === "work";
   const block = element(expandable ? "details" : "section", "answer-block");
   block.dataset.kind = kind;
@@ -462,9 +496,15 @@ function answerBlock(kind, sections, title = sectionNames[kind] || "Рекоме
     const pages = new Set(parts.flatMap((part) => part.references.map((item) => item.pdf_page)));
     const report = button("Сообщить результат");
     report.disabled = Boolean(view.busy);
-    report.addEventListener("click", () => composeAnswer(pages.size
-      ? "Результат проверки по руководству (PDF, стр. " + [...pages].join(", ") + "):\n"
-      : "Результат проверки:\n"));
+    report.addEventListener("click", () => {
+      if (reportInDiagnosis) {
+        byId("generator-reading")?.querySelector("button:not(:disabled)")?.focus();
+        return;
+      }
+      composeAnswer(pages.size
+        ? "Результат проверки по руководству (PDF, стр. " + [...pages].join(", ") + "):\n"
+        : "Результат проверки:\n");
+    });
     block.append(report);
   }
   return block;
@@ -538,8 +578,11 @@ function renderChat() {
     const measured = Object.keys(message.analysis?.pressure_measurement || {}).length > 0;
     const measurementTitle = measured ? "Сверка с нормативом"
       : message.analysis?.intent === "measurement" ? "Условия замера" : undefined;
+    const reportInDiagnosis = Boolean(view.state.generator_check && message.origin === "rule"
+      && [null, "unknown"].includes(message.analysis?.generator_reading));
     for (const kind of new Set([...Object.keys(sectionNames), ...sections.keys()])) {
-      if (sections.has(kind)) bubble.append(answerBlock(kind, sections.get(kind), kind === "checks" ? measurementTitle : undefined));
+      if (sections.has(kind)) bubble.append(answerBlock(kind, sections.get(kind),
+        kind === "checks" ? measurementTitle : undefined, reportInDiagnosis));
     }
     fragment.append(bubble);
   }
@@ -1673,7 +1716,7 @@ async function action(kind, path, method, payload = {}) {
       }
       return null;
     }
-    if (error.state && ["prepare", "save", "submit"].includes(kind)) view.state = error.state;
+    if (error.state && (["prepare", "save", "submit"].includes(kind) || payload.generator_reading)) view.state = error.state;
     else if (error.admission && view.state) view.state = {...view.state, admission: error.admission};
     if (kind === "diagnose") view.diagnosisError = error;
     if (kind === "chat") view.chatError = error.message;

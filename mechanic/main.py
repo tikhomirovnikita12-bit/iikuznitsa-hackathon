@@ -17,7 +17,7 @@ from pydantic import ValidationError
 from backend.admission import evaluate_admission, diagnosis_revision
 from backend.mechanic import Mechanic as EvidenceMechanic, conflict_case
 
-from . import demo_agent, sources
+from . import demo_agent, generator_check, sources
 from agent import case_context
 from agent.dialog import incompatible_fault
 from .case_agent import CaseAgent
@@ -227,7 +227,8 @@ def fleet_row(vehicle: dict) -> dict:
     state = read_state(pair) if store else (team.populate(empty_state(), pair) if team else empty_state())
     ticket = state["ticket"]
     draft = state["draft"]
-    brief = state["brief"]
+    check = generator_check.session_check(vehicle, state)
+    brief = generator_check.brief(check["value"]) if check else state["brief"]
     result = state["diagnosis"] or latest
     score = result.get("anomaly_score")
 
@@ -358,6 +359,9 @@ def admission_error(decision, pair=None, state=None):
 
 def session_response(pair: Pair, state: dict):
     vehicle = VEHICLE_BY_ID[pair.vehicle_id]
+    check = generator_check.session_check(vehicle, state)
+    if check:
+        state = {**state, "brief": generator_check.brief(check["value"]), "brief_error": None}
     decision = admission_for(pair, state)
     available = decision["can_prepare"] and not state["draft"]
     reason = None
@@ -366,6 +370,7 @@ def session_response(pair: Pair, state: dict):
         reason = (block["message"] + " " + block["next_action"] if block else state.get("draft_unavailable_reason"))
     return {
         **public_state(state),
+        "generator_check": check,
         "messages": chat_history(state),
         "admission": decision,
         "draft_available": available,
@@ -535,6 +540,8 @@ def local_agent_turn(vehicle, diagnosis, question, history):
 
 
 def overview(vehicle: dict, diagnosis: Diagnosis):
+    if generator_check.applies(vehicle, diagnosis.model_dump()):
+        return generator_check.brief(None), [], "agent.generator_check"
     if case_agent:
         reply, _, _, calls = local_agent_turn(vehicle, diagnosis, "Покажи диагностику", [])
         result = reply.analysis
@@ -606,6 +613,9 @@ def diagnose(pair: Pair):
         if requested < state.get("diagnosis_requested", 0):
             return
         saved_diagnosis = state["diagnosis"]
+        diagnosis_data = diagnosis.model_dump()
+        if saved_diagnosis != diagnosis_data:
+            state["generator_reading"] = None
         if saved_diagnosis and (saved_diagnosis["status"], saved_diagnosis["anomaly_type"]) != (
             diagnosis.status, diagnosis.anomaly_type
         ):
@@ -615,16 +625,16 @@ def diagnose(pair: Pair):
                 state.update(draft=None, draft_id=None, draft_revision=None, draft_origin=None,
                              ticket=empty_state()["ticket"], draft_diagnosis_revision=None,
                              applicability_confirmations=[], confirmed_urgency=None)
-        if not team and saved_diagnosis and saved_diagnosis != diagnosis.model_dump() and state["draft"]:
+        if not team and saved_diagnosis and saved_diagnosis != diagnosis_data and state["draft"]:
             state.update(draft_revision=state["draft_revision"] + 1,
-                         draft_diagnosis_revision=diagnosis_revision(diagnosis.model_dump()),
+                         draft_diagnosis_revision=diagnosis_revision(diagnosis_data),
                          applicability_confirmations=[], confirmed_urgency=None)
         if brief and brief.get("analysis") and not state["agent_history"]:
             analysis = brief["analysis"]
             if {"verdict", "clarifying_question", "checks"} <= analysis.keys():
                 if entry := history_entry("Покажи диагностику", analysis):
                     state["agent_history"] = [entry]
-        state.update(diagnosis=diagnosis.model_dump(), brief=brief, brief_error=brief_error,
+        state.update(diagnosis=diagnosis_data, brief=brief, brief_error=brief_error,
                      diagnosis_requested=requested, draft_unavailable_reason=None)
         state["messages"] = chat_history(state)
 
@@ -641,6 +651,10 @@ def response_to_chat(vehicle, diagnosis, state, question):
         return Reply(summary="Черновик дефектовки доступен для результата с отклонением."), None, "fixture", [], None
     if draft_requested and state["draft"]:
         return Reply(summary="Черновик уже открыт. Проверьте поля и подтвердите приоритет."), None, "fixture", [], None
+
+    check = generator_check.session_check(vehicle, state)
+    if check and not draft_requested and generator_check.TOPIC.search(question.casefold()):
+        return generator_check.reply(check["value"]), None, "rule", [], None
 
     demo_case = demo_agent.case_for(vehicle, diagnosis)
     mismatch = demo_case == "mismatch"
@@ -821,18 +835,29 @@ def chat(request: ChatRequest):
     if not snapshot["diagnosis"]:
         raise ApiError(409, "diagnosis_needed", "Сначала получите результат диагностики этой сессии.")
     diagnosis = Diagnosis.model_validate(snapshot["diagnosis"])
+    reading = request.generator_reading
+    message = request.message
     started = perf_counter()
     tool = "agent.chat" if TEAM_AGENT_URL or case_agent else "agent.fixture"
     try:
-        reply, draft, origin, calls, agent_entry = response_to_chat(vehicle, diagnosis, snapshot, request.message)
-        tool = "agent.chat" if origin == "team" else "agent.fixture"
+        if reading:
+            tool = "agent.generator_check"
+            check = generator_check.session_check(vehicle, snapshot)
+            if not check or check["diagnosis_revision"] != reading.diagnosis_revision:
+                raise ApiError(409, "diagnosis_changed", "Проверка изменилась. Сверьте актуальный результат.",
+                               session_response(request, snapshot))
+            message = generator_check.REPORTS[reading.value]
+            reply, draft, origin, calls, agent_entry = generator_check.reply(reading.value), None, "rule", [], None
+        else:
+            reply, draft, origin, calls, agent_entry = response_to_chat(vehicle, diagnosis, snapshot, message)
+            tool = {"team": "agent.chat", "fixture": "agent.fixture", "rule": "agent.generator_check"}[origin]
         for section in reply.sections:
             verify_references(section.references, vehicle, section.kind in ("causes", "checks", "work", "risk"))
         if draft is not None:
             verify_references(draft.references, vehicle, required=True)
         if origin == "fixture":
             items = [*reply.sections, draft] if draft else reply.sections
-            calls.extend(bind_fixture_sources(items, vehicle, diagnosis, request.message))
+            calls.extend(bind_fixture_sources(items, vehicle, diagnosis, message))
     except ApiError as error:
         add_call(request, tool, started, status_for(error))
         raise
@@ -846,13 +871,18 @@ def chat(request: ChatRequest):
             raise ApiError(409, "diagnosis_changed", "Результат изменился. Задайте вопрос по обновлённой проверке.")
         if team:
             team.restore_diagnosis(state, current)
-        if any(state[key] != snapshot[key] for key in ("messages", "agent_history", "draft_origin")):
+        if reading:
+            report = reading.model_dump()
+            if state["generator_reading"] == report:
+                return
+            state["generator_reading"] = report
+        elif any(state[key] != snapshot[key] for key in ("messages", "agent_history", "draft_origin")):
             record_call(state, audit(tool, started, "rejected"))
             for call in calls:
                 record_call(state, call)
             return
         state["messages"].extend([
-            {"role": "user", "text": request.message},
+            {"role": "user", "text": message},
             {"role": "assistant", "origin": origin, **reply.model_dump()},
         ])
         if agent_entry is not None:
