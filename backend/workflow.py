@@ -8,10 +8,11 @@ from uuid import uuid4
 import httpx
 from pydantic import ValidationError
 
+from .admission import diagnosis_revision, evaluate_admission, suggested_urgency
 from .mechanic import Mechanic
 from .models import (
     Confirm, DeliveryError, Diagnosis, DiagnosticResult, DraftFields, DraftPatch,
-    DraftView, Pair, Reconcile, Session, Ticket, TicketReceipt, Vehicle,
+    DraftView, Pair, Reconcile, Reference, Session, Ticket, TicketReceipt, Vehicle,
 )
 from .store import Store
 from .upstream import Problem, post
@@ -69,11 +70,36 @@ class Workflow:
                 INSERT INTO diagnoses (vehicle_id, session_id, payload) VALUES (?, ?, ?)
                 ON CONFLICT (vehicle_id, session_id) DO UPDATE SET payload = excluded.payload
             """, (pair.vehicle_id, pair.session_id, diagnosis.model_dump_json()))
+            # A quality/confidence/model change invalidates both human decisions,
+            # including when the F-code itself stays the same.
+            fingerprint = diagnosis_revision(diagnosis)
+            conn.execute("""
+                UPDATE drafts SET diagnosis_revision = ?, revision = revision + 1,
+                    applicability_confirmations = '[]', confirmed_urgency = NULL
+                WHERE vehicle_id = ? AND session_id = ? AND anomaly_type = ?
+                    AND state IN ('draft', 'delivery_failed')
+                    AND diagnosis_revision IS NOT NULL AND diagnosis_revision IS NOT ?
+            """, (fingerprint, pair.vehicle_id, pair.session_id, diagnosis.anomaly_type, fingerprint))
         return result
+
+    def admission_for(self, pair, fields=None, **kwargs):
+        vehicle = self.catalog.validate_pair(pair)
+        with self.store.connection() as conn:
+            diagnosis = self.diagnosis(conn, pair)
+        return evaluate_admission(vehicle, diagnosis, fields, mechanic=self.mechanic, **kwargs)
+
+    @staticmethod
+    def require_admission(admission, *, prepare=False, draft=None):
+        if admission["can_prepare" if prepare else "can_submit"]:
+            return
+        reason = admission["block_reason"]
+        raise Problem(422, reason["code"], reason["message"] + " " + reason["next_action"],
+                      draft=draft, admission=admission)
 
     def result(self, diagnosis: Diagnosis, vehicle: Vehicle) -> DiagnosticResult:
         return DiagnosticResult(engine_model=vehicle.engine_model, diagnosis=diagnosis,
-                                assessment=self.mechanic.assess(diagnosis, vehicle.engine_model))
+                                assessment=self.mechanic.assess(diagnosis, vehicle.engine_model),
+                                admission=evaluate_admission(vehicle, diagnosis, mechanic=self.mechanic))
 
     def diagnosis(self, conn, pair: Pair) -> Diagnosis:
         row = conn.execute(
@@ -84,17 +110,25 @@ class Workflow:
             raise Problem(409, "diagnosis_required", "Сначала запросите диагностику для этой сессии.")
         return Diagnosis.model_validate_json(row["payload"])
 
-    @staticmethod
-    def view(row) -> DraftView:
+    def view(self, row) -> DraftView:
         error = None
         if row["error_code"]:
             error = DeliveryError(code=row["error_code"], message=row["error_message"])
-        return DraftView(
+        draft = DraftView(
             **json.loads(row["fields"]),
             draft_id=row["draft_id"], vehicle_id=row["vehicle_id"], session_id=row["session_id"],
             anomaly_type=row["anomaly_type"], revision=row["revision"], state=row["state"],
             ticket_id=row["ticket_id"], delivery_error=error,
+            diagnosis_revision=row["diagnosis_revision"], suggested_urgency=row["suggested_urgency"],
+            confirmed_urgency=row["confirmed_urgency"],
+            applicability_confirmations=json.loads(row["applicability_confirmations"]),
         )
+        draft.admission = self.admission_for(
+            draft, DraftFields.model_validate(json.loads(row["fields"])), draft_id=draft.draft_id,
+            draft_revision=draft.revision, diagnosis_revision=draft.diagnosis_revision,
+            applicability_confirmations=draft.applicability_confirmations,
+        )
+        return draft
 
     @staticmethod
     def row(conn, draft_id: str):
@@ -111,14 +145,18 @@ class Workflow:
         vehicle = self.catalog.validate_pair(pair)
         with self.store.connection(write=True) as conn:
             diagnosis = self.diagnosis(conn, pair)
-            if diagnosis.status != "anomaly":
-                raise Problem(409, "anomaly_required", "Черновик создаётся по результату со статусом anomaly.")
+            admission = evaluate_admission(vehicle, diagnosis, mechanic=self.mechanic)
+            self.require_admission(admission, prepare=True)
             fields = self.mechanic.suggest_draft(diagnosis, vehicle.engine_model)
+            fields.operations = [operation["operation"] for operation in admission["approved_operations"]]
+            fields.references = self.operation_references(admission["approved_operations"])
             conn.execute("""
-                INSERT INTO drafts (draft_id, vehicle_id, session_id, anomaly_type, fields)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO drafts (draft_id, vehicle_id, session_id, anomaly_type, fields,
+                    diagnosis_revision, suggested_urgency)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (vehicle_id, session_id, anomaly_type) DO NOTHING
-            """, (uuid4().hex, pair.vehicle_id, pair.session_id, diagnosis.anomaly_type, fields.model_dump_json()))
+            """, (uuid4().hex, pair.vehicle_id, pair.session_id, diagnosis.anomaly_type, fields.model_dump_json(),
+                  diagnosis_revision(diagnosis), suggested_urgency(diagnosis)))
             draft_id = conn.execute("""
                 SELECT draft_id FROM drafts WHERE vehicle_id = ? AND session_id = ? AND anomaly_type = ?
             """, (pair.vehicle_id, pair.session_id, diagnosis.anomaly_type)).fetchone()["draft_id"]
@@ -136,10 +174,33 @@ class Workflow:
                     WHERE draft_id = ? AND state = 'sending' AND started_at < ?
                 """, ("Нет подтверждения от ТОиР. Найдите заявку в ТОиР и внесите её номер.", draft_id, cutoff))
 
+    @staticmethod
+    def operation_references(operations):
+        return [Reference(**reference) for reference in {
+            (reference["manual"], reference["pdf_page"]): reference
+            for operation in operations for reference in operation["references"]
+        }.values()]
+
     def get_draft(self, draft_id: str) -> DraftView:
         self.refresh_delivery(draft_id)
-        with self.store.connection() as conn:
-            return self.view(self.row(conn, draft_id))
+        with self.store.connection(write=True) as conn:
+            row = self.row(conn, draft_id)
+            if row["diagnosis_revision"] is None and row["state"] in ("draft", "delivery_failed"):
+                pair = Pair(vehicle_id=row["vehicle_id"], session_id=row["session_id"])
+                diagnosis = self.diagnosis(conn, pair)
+                vehicle = self.catalog.validate_pair(pair)
+                admission = evaluate_admission(vehicle, diagnosis, mechanic=self.mechanic)
+                if admission["can_prepare"] and row["anomaly_type"] == diagnosis.anomaly_type:
+                    fields = DraftFields.model_validate_json(row["fields"])
+                    fields.operations = [operation["operation"] for operation in admission["approved_operations"]]
+                    fields.references = self.operation_references(admission["approved_operations"])
+                    conn.execute("""
+                        UPDATE drafts SET fields = ?, diagnosis_revision = ?, suggested_urgency = ?,
+                            revision = revision + 1, applicability_confirmations = '[]', confirmed_urgency = NULL
+                        WHERE draft_id = ?
+                    """, (fields.model_dump_json(), diagnosis_revision(diagnosis), suggested_urgency(diagnosis), draft_id))
+                    row = self.row(conn, draft_id)
+            return self.view(row)
 
     def drafts(self, pair: Pair) -> list[DraftView]:
         self.catalog.validate_pair(pair)
@@ -164,13 +225,25 @@ class Workflow:
                 raise Problem(409, "draft_locked", "Черновик закрыт для правок.", draft=draft)
             if draft.revision != patch.revision:
                 raise Problem(409, "stale_draft", "Черновик изменился. Загрузите актуальную версию.", draft=draft)
-            updates = patch.model_dump(exclude_unset=True, exclude={"revision"})
+            updates = patch.model_dump(exclude_unset=True, exclude={"revision", "applicability_confirmations"})
             fields = DraftFields.model_validate({**json.loads(row["fields"]), **updates})
-            self.check_sources(fields, self.catalog.vehicle(draft.vehicle_id))
+            vehicle = self.catalog.vehicle(draft.vehicle_id)
+            self.check_sources(fields, vehicle)
+            confirmations = (patch.applicability_confirmations if "applicability_confirmations" in patch.model_fields_set
+                             else draft.applicability_confirmations)
+            diagnosis = self.diagnosis(conn, draft)
+            admission = evaluate_admission(vehicle, diagnosis, fields, mechanic=self.mechanic,
+                draft_id=draft.draft_id, draft_revision=draft.revision,
+                diagnosis_revision=draft.diagnosis_revision, applicability_confirmations=confirmations)
+            if admission["block_reason"] and admission["block_reason"]["code"] in {
+                "operation_not_approved", "operation_source_mismatch", "diagnosis_changed",
+            }:
+                self.require_admission(admission, draft=draft)
             conn.execute("""
                 UPDATE drafts SET fields = ?, revision = revision + 1, state = 'draft',
+                    applicability_confirmations = ?, confirmed_urgency = NULL,
                     error_code = NULL, error_message = NULL WHERE draft_id = ?
-            """, (fields.model_dump_json(), draft_id))
+            """, (fields.model_dump_json(), json.dumps(confirmations), draft_id))
             return self.view(self.row(conn, draft_id))
 
     def confirm_draft(self, draft_id: str, confirmation: Confirm) -> DraftView:
@@ -195,6 +268,15 @@ class Workflow:
             if diagnosis.status != "anomaly" or draft.anomaly_type != diagnosis.anomaly_type:
                 raise Problem(409, "diagnosis_changed", "Диагностика изменилась. Проверьте результат этой сессии.", draft=draft)
             fields = DraftFields.model_validate({**json.loads(row["fields"]), "urgency": confirmation.urgency})
+            admission = evaluate_admission(vehicle, diagnosis, fields, mechanic=self.mechanic,
+                draft_id=draft.draft_id, draft_revision=draft.revision,
+                diagnosis_revision=confirmation.diagnosis_revision or draft.diagnosis_revision,
+                warning_acknowledged=confirmation.warning_acknowledged,
+                applicability_confirmations=confirmation.applicability_confirmations or draft.applicability_confirmations)
+            if diagnosis.signal_quality == "warning" and confirmation.diagnosis_revision != admission["diagnosis_revision"]:
+                raise Problem(409, "diagnosis_changed", "Откройте актуальный отчёт и заново подтвердите предупреждение.",
+                              draft=draft, admission=admission)
+            self.require_admission(admission, draft=draft)
             try:
                 ticket = Ticket(**pair.model_dump(), anomaly_type=draft.anomaly_type, **fields.model_dump())
             except ValidationError as error:
@@ -204,8 +286,10 @@ class Workflow:
             self.check_sources(ticket, vehicle)
             conn.execute("""
                 UPDATE drafts SET fields = ?, state = 'sending', started_at = ?, attempt_id = ?,
+                    confirmed_urgency = ?, applicability_confirmations = ?,
                     error_code = NULL, error_message = NULL WHERE draft_id = ?
-            """, (fields.model_dump_json(), time.time(), attempt_id, draft_id))
+            """, (fields.model_dump_json(), time.time(), attempt_id, confirmation.urgency,
+                  json.dumps(confirmation.applicability_confirmations or draft.applicability_confirmations), draft_id))
 
         try:
             receipt = post(self.toir, "toir", "/tickets", ticket, TicketReceipt, 201)

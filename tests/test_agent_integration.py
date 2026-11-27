@@ -82,6 +82,8 @@ class Member4Tests(unittest.TestCase):
         self.assertTrue(any(call["tool"] == "agent.search" and call["pages"] for call in proposed["calls"]))
         receipt = self.post("ticket", pair, draft_id=proposed["draft_id"], revision=proposed["draft_revision"],
                             edits={k: draft[k] for k in ("operations", "spare_parts", "urgency", "conclusion")},
+                            diagnosis_revision=proposed["admission"]["diagnosis_revision"],
+                            applicability_confirmations=["initial_start_or_long_storage"],
                             priority_confirmed=True)
         self.assertEqual(receipt["ticket"]["ticket_id"], "TKT-0001")
         self.assertEqual(len(self.sent), 1)
@@ -113,7 +115,8 @@ class Member4Tests(unittest.TestCase):
             self.assertEqual(reply["ml_observations"]["status"], status)
             self.assertFalse(reply["checks"] or reply["ticket_draft"])
             if status == "anomaly":
-                self.assertIn("топливоподача", reply["clarifying_question"].lower())
+                self.assertIn("топливоподача", reply["explanation"].lower())
+                self.assertIn("Сверьте", reply["clarifying_question"])
             else:
                 self.assertIn("Повторите", reply["verdict"])
 

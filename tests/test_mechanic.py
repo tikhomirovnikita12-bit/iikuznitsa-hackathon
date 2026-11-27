@@ -14,6 +14,7 @@ from manual_search.corpus import verified_fragments
 
 
 OIL = {"vehicle_id": "E549YT198", "session_id": "S-0011"}
+CHAIN = {"vehicle_id": "Y815BM178", "session_id": "S-0152"}
 NORMAL = {"vehicle_id": "E549YT198", "session_id": "S-0010"}
 FAILED = {"vehicle_id": "P456AT178", "session_id": "S-0003"}
 
@@ -60,7 +61,7 @@ def verdict(result):
     return message
 
 
-def prepare(client, pair=OIL):
+def prepare(client, pair=CHAIN):
     diagnose(client, pair)
     result = client.post("/api/chat", json={**pair, "message": "Подготовь заявку"}).json()
     draft = result["draft"]
@@ -68,7 +69,8 @@ def prepare(client, pair=OIL):
     edits = {key: draft[key] for key in ("conclusion", "operations", "urgency", "spare_parts")}
     assert result["draft_id"] and result["draft_revision"] >= 1
     return {**pair, "draft_id": result["draft_id"], "revision": result["draft_revision"],
-            "edits": edits, "priority_confirmed": True}
+            "edits": edits, "priority_confirmed": True,
+            "diagnosis_revision": result["admission"]["diagnosis_revision"]}
 
 
 def test_q05_on_demo_screen_route(stand, monkeypatch):
@@ -140,15 +142,15 @@ def test_mock_payload_receipt_and_concurrent_duplicate(stand, monkeypatch):
         ticket = first.result(timeout=5).json()["ticket"]
     assert ticket["status"] == "created" and ticket["ticket_id"].startswith("TKT-")
     assert len(calls) == 1
-    assert calls[0]["anomaly_type"] == "F02"
+    assert calls[0]["anomaly_type"] == "F14"
     assert calls[0]["spare_parts"] == [] and calls[0]["urgency"] == "medium"
     assert all(set(ref) == {"manual", "pdf_page"} for ref in calls[0]["references"])
-    assert state(client)["ticket"] == ticket
+    assert state(client, CHAIN)["ticket"] == ticket
     assert client.post("/api/ticket", json=request).json()["ticket"] == ticket
     assert len(calls) == 1
 
 
-def test_case_agent_preserves_measurements_and_requires_confirmation(stand, monkeypatch, tmp_path):
+def test_case_agent_preserves_measurements_without_inventing_draft_procedure(stand, monkeypatch, tmp_path):
     client, calls = stand
     corpus = tmp_path / "corpus.json"
     corpus.write_text(json.dumps({"fragments": verified_fragments()}), encoding="utf-8")
@@ -172,24 +174,30 @@ def test_case_agent_preserves_measurements_and_requires_confirmation(stand, monk
 
     first = ask("Можно ли перегнать машину?")
     assert first["messages"][-1]["origin"] == "team"
-    assert first["messages"][-1]["sections"][0]["references"][0]["pdf_page"] == 19
+    assert 19 in {ref["pdf_page"] for section in first["messages"][-1]["sections"] for ref in section["references"]}
     measurement = ask("350")
-    assert "350" in measurement["messages"][-1]["sections"][0]["items"][0]
+    assert any("350" in text for section in measurement["messages"][-1]["sections"] for text in section["items"])
     assert state(client)["messages"] == measurement["messages"]
     assert "agent_history" not in state(client)
     ask("да, кПа")
     result = ask("Двигатель прогрет, 2100 об/мин, без допуска после длительной эксплуатации")
-    assert "350 кПа — ниже" in result["messages"][-1]["sections"][0]["items"][0]
+    assert any("350 кПа — ниже" in text for section in result["messages"][-1]["sections"] for text in section["items"])
 
     result = ask("Подготовь заявку на дефектовку")
     draft = result["draft"]
-    assert draft["references"][0]["pdf_page"] == 53
-    assert not calls
+    assert draft["operations"] == [
+        "Проверить достаточность уровня масла в картере и уровня охлаждающей жидкости."
+    ]
+    assert [source["pdf_page"] for source in draft["references"]] == [53]
+    assert not calls, "A reviewed draft still requires confirmation"
     payload = {**OIL, "draft_id": result["draft_id"], "revision": result["draft_revision"],
+               "diagnosis_revision": result["admission"]["diagnosis_revision"],
                "edits": {key: draft[key] for key in ("conclusion", "operations", "urgency", "spare_parts")},
                "priority_confirmed": True}
     receipt = client.post("/api/ticket", json=payload)
+    assert receipt.status_code == 200, receipt.text
     assert receipt.json()["ticket"]["ticket_id"].startswith("TKT-")
+    assert client.post("/api/ticket", json=payload).json()["ticket"] == receipt.json()["ticket"]
     assert len(calls) == 1
 
 
@@ -201,10 +209,10 @@ def test_definite_error_preserves_draft_until_explicit_retry(stand, monkeypatch)
     monkeypatch.setattr(main, "post", lambda *_: httpx.Response(422, json={}))
     result = client.post("/api/ticket", json=request).json()
     assert result["ticket"]["status"] == "error"
-    assert state(client)["draft"]["conclusion"] == request["edits"]["conclusion"]
+    assert state(client, CHAIN)["draft"]["conclusion"] == request["edits"]["conclusion"]
     assert not calls
     monkeypatch.setattr(main, "post", real_post)
-    request["revision"] = state(client)["draft_revision"]
+    request["revision"] = state(client, CHAIN)["draft_revision"]
     assert client.post("/api/ticket", json=request).json()["ticket"]["status"] == "created"
     assert len(calls) == 1
 
@@ -212,23 +220,23 @@ def test_definite_error_preserves_draft_until_explicit_retry(stand, monkeypatch)
 def test_stale_update_and_submit_return_latest_draft(stand):
     client, calls = stand
     original = prepare(client)
-    edits = {**original["edits"], "operations": [*original["edits"]["operations"], "Замер из второй вкладки."]}
+    edits = {**original["edits"], "conclusion": original["edits"]["conclusion"] + " Пометка второй вкладки."}
     saved = client.put("/api/draft", json={**original, "edits": edits})
     assert saved.status_code == 200, saved.text
     latest = saved.json()
     assert latest["draft_id"] == original["draft_id"]
     assert latest["draft_revision"] > original["revision"]
-    assert latest["draft"]["operations"] == edits["operations"]
+    assert latest["draft"]["conclusion"] == edits["conclusion"]
 
-    stale = {**original, "edits": {**original["edits"], "operations": ["Несохранённая пометка."]}}
+    stale = {**original, "edits": {**original["edits"], "conclusion": "Несохранённая пометка."}}
     for changed in (client.put("/api/draft", json=stale), client.post("/api/ticket", json=stale)):
         assert changed.status_code == 409, changed.text
         conflict = changed.json()
         assert conflict["error"]["code"] == "stale_draft"
         assert conflict["state"]["draft_id"] == latest["draft_id"]
         assert conflict["state"]["draft_revision"] == latest["draft_revision"]
-        assert conflict["state"]["draft"]["operations"] == edits["operations"]
-    assert state(client)["draft"]["operations"] == edits["operations"]
+        assert conflict["state"]["draft"]["conclusion"] == edits["conclusion"]
+    assert state(client, CHAIN)["draft"]["conclusion"] == edits["conclusion"]
     assert not calls
 
 
@@ -243,7 +251,7 @@ def test_timeout_after_dispatch_locks_retry_across_store_restart(stand, monkeypa
     monkeypatch.setattr(main, "post", timeout)
     assert client.post("/api/ticket", json=request).json()["ticket"]["status"] == "unknown"
     monkeypatch.setattr(main, "store", Store(main.store.path, send_deadline=1))
-    assert state(client)["ticket"]["status"] == "unknown"
+    assert state(client, CHAIN)["ticket"]["status"] == "unknown"
     assert client.post("/api/ticket", json=request).json()["ticket"]["status"] == "unknown"
     assert len(calls) == 1
 

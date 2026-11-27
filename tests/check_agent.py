@@ -83,18 +83,31 @@ def main():
         assert failed["ml_observations"]["confidence"] is None and not failed["references"]
         assert "Повторите" in failed["verdict"] and "микрофона" in failed["ml_observations"]["description"]
         conflict = ask("S-0132", "Что проверить?", "Y652CK98")
-        assert "топливоподача" in conflict["clarifying_question"].lower()
-        draft = ask("S-0011", "Подготовь заявку на дефектовку")
+        assert conflict["admission"]["block_reason"]["code"] == "fault_engine_mismatch"
+        assert "F08" in conflict["explanation"] and "маркировку" in conflict["clarifying_question"]
+        oil_draft = ask("S-0011", "Подготовь заявку на дефектовку")
+        assert oil_draft["admission"]["can_prepare"] and not oil_draft["admission"]["can_submit"], oil_draft
+        assert oil_draft["ticket_draft"]["operations"] == [
+            "Проверить достаточность уровня масла в картере и уровня охлаждающей жидкости."
+        ], oil_draft
+        assert [item["pdf_page"] for item in oil_draft["references"]] == [53], oil_draft
+        for question, pages in (
+            ("Какие тепловые зазоры клапанного механизма?", {31, 269, 276}),
+            ("Какое давление масла на прогретом двигателе?", {19, 12}),
+            ("Какой момент затяжки болтов крышек коренных подшипников?", {41, 248}),
+        ):
+            response = ask("S-0011", question)
+            assert {item["pdf_page"] for item in response["references"]} == pages, response
+        draft = ask("S-0152", "Подготовь заявку на дефектовку", "Y815BM178")
         assert draft["ticket_draft"] and draft["ticket_draft"]["operations"], draft
-        payload = dict(vehicle_id=v, session_id="S-0010", draft_id=draft["draft_id"])
-        assert client.post("/api/confirm", json=payload).status_code == 409
-        payload["session_id"] = "S-0011"
+        assert draft["references"][0]["pdf_page"] == 143, draft
+        # The legacy dialogue sandbox has no alternate route around Workflow admission.
+        payload = dict(vehicle_id="Y815BM178", session_id="S-0152", draft_id=draft["draft_id"])
         result = client.post("/api/confirm", json=payload)
-        assert result.status_code == 200 and result.json["ticket_id"], result.data
-        assert client.post("/api/confirm", json=payload).status_code == 409
+        assert result.status_code == 409 and "основной экран" in result.json["error"], result.data
         url = draft["references"][0]["url"].split("#")[0]
         assert client.get(url).mimetype == "application/pdf"
-        print("Перегон, переключение, конфликт F08, ссылки, форма и подтверждение:", result.json)
+        print("Перегон, конфликты руководств, проверенный черновик F14 и закрытый обход отправки: OK")
 
 
 if __name__ == "__main__":

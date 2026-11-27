@@ -22,7 +22,11 @@ MOCK_FILES = (
     "data/vehicles.json", "data/fault_types.json", "mock_ml/__init__.py", "mock_ml/app.py",
     "mock_toir/__init__.py", "mock_toir/app.py", "tests/test_mocks.py",
 )
-PREVIEW_PAGES = {"yamz236-re": (19, 53), "zmz409": (107,), "zmz5234": (20, 21, 56)}
+PREVIEW_PAGES = {
+    "yamz236-re": (16, 19, 31, 53), "yamz236-rk": (12, 41, 248, 269, 276),
+    "yamz536-re": (49, 173, 174, 175, 176),
+    "zmz409": (107, 143, 144, 145, 146, 147), "zmz5234": (20, 21, 56),
+}
 ARCHIVE_NAME = "007_хакатон_ИИ.zip"
 
 
@@ -49,6 +53,7 @@ def atomic_json(path: Path, value):
 
 
 def discover_archive(explicit: Path | None = None) -> Path | None:
+    """Find an outer ZIP or an unpacked customer bundle relative to the project."""
     configured = explicit or os.environ.get("CUSTOMER_ARCHIVE_PATH")
     location = Path(configured).expanduser() if configured else ROOT
     if not location.is_absolute():
@@ -63,6 +68,9 @@ def discover_archive(explicit: Path | None = None) -> Path | None:
     preferred = location / ARCHIVE_NAME
     if preferred.is_file():
         return preferred
+    for directory in (location, location / Path(ARCHIVE_NAME).stem):
+        if directory.is_dir() and all((directory / manual.filename).is_file() for manual in MANUALS):
+            return directory
     archives = sorted(path for path in location.iterdir() if path.is_file() and path.suffix.lower() == ".zip")
     if len(archives) > 1:
         raise PreparationError(
@@ -109,6 +117,30 @@ def extract(archive, member, destination: Path):
 
 
 def unpack(path: Path):
+    if path.is_dir():
+        nested = path / CUSTOMER_ARCHIVE
+        if not nested.is_file():
+            raise PreparationError(
+                f"В каталоге материалов {path} не найден {CUSTOMER_ARCHIVE}.\n"
+                "Как исправить: поместите архив заглушек рядом с шестью PDF или используйте полный ZIP заказчика."
+            )
+        with ZipFile(nested) as mocks:
+            members = [(find(mocks, name), MOCKS / name) for name in MOCK_FILES]
+            for manual in MANUALS:
+                destination = MATERIALS / manual.filename
+                source = path / manual.filename
+                if source.resolve() == destination.resolve():
+                    continue
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                temporary = destination.with_name(destination.name + ".part")
+                try:
+                    shutil.copyfile(source, temporary)
+                    temporary.replace(destination)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            for member, destination in members:
+                extract(mocks, member, destination)
+        return
     with ZipFile(path) as archive:
         with ZipFile(BytesIO(archive.read(find(archive, CUSTOMER_ARCHIVE, basename=True)))) as mocks:
             # Resolve the complete allowlist before replacing any prepared files.
@@ -176,19 +208,30 @@ def _ensure_ready(archive: Path | None, *, force):
         state = {}
 
     archive = discover_archive(archive)
-    signature = {"sha256": digest(archive)} if archive else None
+    signature = None
+    if archive:
+        if archive.is_dir():
+            inputs = [archive / manual.filename for manual in MANUALS] + [archive / CUSTOMER_ARCHIVE]
+            if not inputs[-1].is_file():
+                raise PreparationError(f"В каталоге {archive} не хватает {CUSTOMER_ARCHIVE}. "
+                                       "Поместите архив заглушек рядом с PDF.")
+            signature = {"sha256": hashlib.sha256("\n".join(digest(path) for path in inputs).encode()).hexdigest()}
+        else:
+            signature = {"sha256": digest(archive)}
     required = [MATERIALS / manual.filename for manual in MANUALS]
     required.extend(MOCKS / name for name in MOCK_FILES)
     missing = [path for path in required if not path.is_file()]
     if archive and (force or missing or signature != state.get("archive")):
-        print(f"[Подготовка] Распаковка {archive.name}…", flush=True)
+        print(f"[Подготовка] Загрузка материалов из {archive}…", flush=True)
         unpack(archive)
         missing = [path for path in required if not path.is_file()]
     if missing:
         raise PreparationError(
             "Не хватает материалов заказчика:\n" + "\n".join(f"  • {path}" for path in missing[:8]) + "\n"
-            f"Как исправить: поместите полный {ARCHIVE_NAME} в корень проекта и запустите python run.py.\n"
-            "Распаковывать архив вручную не нужно. Другой путь: python run.py --archive ПУТЬ_К_ZIP."
+            f"Как исправить: поместите {ARCHIVE_NAME} или распакованную папку {Path(ARCHIVE_NAME).stem} "
+            "в корень проекта рядом с run.py и запустите python run.py.\n"
+            "Поддерживаются также шесть PDF с архивом заглушек прямо в корне. "
+            "Другой путь: python run.py --archive ПУТЬ_К_КОМПЛЕКТУ."
         )
 
     # A content fingerprint also invalidates the cache after changes to parsing or curated data.
@@ -231,7 +274,7 @@ def _ensure_ready(archive: Path | None, *, force):
 
 def main():
     parser = argparse.ArgumentParser(description="Подготовка локальных материалов «Цифрового механика»")
-    parser.add_argument("archive", type=Path, nargs="?", help="Путь к внешнему ZIP заказчика")
+    parser.add_argument("archive", type=Path, nargs="?", help="Путь к ZIP или распакованному каталогу заказчика")
     parser.add_argument("--rebuild", action="store_true", help="Пересобрать индекс и изображения, сохранив SQLite")
     args = parser.parse_args()
     try:

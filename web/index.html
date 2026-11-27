@@ -22,7 +22,7 @@
   </header>
 
   <main class="layout" id="workspace" tabindex="-1">
-    <aside class="context" id="context" aria-label="Транспорт и сессия">
+    <aside class="context" id="context" aria-label="Машина и запись">
       <div class="panel context-summary" id="context-summary" hidden>
         <p class="context-choice">
           <strong id="context-vehicle"></strong>
@@ -32,7 +32,7 @@
       </div>
       <form class="panel context-card" id="selection">
         <div class="context-heading">
-          <h2 id="context-title" tabindex="-1">Транспорт и сессия</h2>
+          <h2 id="context-title" tabindex="-1">Машина и запись</h2>
           <button id="collapse-context" type="button" class="button secondary" hidden>Свернуть</button>
         </div>
         <p id="catalog-size" class="context-caption">Каталог загружается…</p>
@@ -50,12 +50,11 @@
         </div>
         <div class="vehicle-facts" id="vehicle-facts" hidden></div>
         <div class="field">
-          <label for="session">Сессия диагностики</label>
+          <label for="session">Запись диагностики</label>
           <select id="session" disabled><option value="">Сначала выберите ТС</option></select>
         </div>
-        <button class="button primary diagnose-button" id="diagnose" type="submit" disabled>
-          Получить результат диагностики
-        </button>
+        <p class="selection-hint">Выберите запись — отчёт откроется автоматически.</p>
+        <p id="recording-help" class="alert info" hidden>Сделайте новую запись на посту диагностики и выберите её сессию. На этом стенде доступны готовые записи из каталога; запись звука в браузере не выполняется.</p>
         <p id="selection-error" class="alert error" role="alert" hidden></p>
         <button class="button secondary" id="retry-catalog" type="button" hidden>Повторить загрузку каталога</button>
       </form>
@@ -85,10 +84,15 @@
         <p id="chat-error" class="alert error" role="alert" hidden></p>
         <form id="composer" class="composer">
           <div id="suggestions" class="suggestions" role="group" aria-label="Быстрые вопросы" hidden></div>
-          <label for="question">Ваш вопрос</label>
+          <div id="quick-replies" class="quick-replies" hidden>
+            <p class="reply-caption">Добавить к ответу</p>
+            <div id="reply-options" class="suggestions" role="group" aria-label="Условия и наблюдения"></div>
+            <p class="reply-hint">Дополните фактическими значениями и проверьте текст перед отправкой.</p>
+          </div>
+          <label for="question">Вопрос или результат проверки</label>
           <div class="composer-row">
-            <textarea id="question" rows="1" maxlength="1600" placeholder="Например, что проверить сначала?" disabled></textarea>
-            <button class="button primary" type="submit" id="send" disabled>Спросить</button>
+            <textarea id="question" rows="1" maxlength="1600" placeholder="Опишите симптом или сообщите результат проверки" disabled></textarea>
+            <button class="button primary" type="submit" id="send" disabled>Отправить</button>
           </div>
         </form>
       </section>

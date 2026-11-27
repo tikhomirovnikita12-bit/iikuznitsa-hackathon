@@ -6,6 +6,8 @@ from manual_search.corpus import verified_fragments
 
 from .contracts import Brief, Diagnosis, DraftFields, Reference, Reply, Section
 from .sources import YAMZ236, ZMZ409, ZMZ5234
+from backend.mechanic import conflict_case
+from manual_search.corpus import verified_fragments
 
 
 OIL_LEVELS = YAMZ236.reference(53)
@@ -123,6 +125,8 @@ def brief(vehicle: dict, diagnosis: Diagnosis) -> Brief:
 
 
 def source_section(kind, items, *references) -> Section:
+    if kind in {"causes", "risk"}:
+        items = ["Гипотеза: " + item for item in items]
     return Section(kind=kind, items=items, references=list(references))
 
 
@@ -203,6 +207,18 @@ def answer(vehicle: dict, diagnosis: Diagnosis, question: str) -> Reply:
     case = case_for(vehicle, diagnosis)
     if case == "mismatch":
         return Reply(summary=mismatch(vehicle), sections=[signs])
+    if not DRIVE.search(text) and not MEASUREMENT.search(text) and (conflict := conflict_case(question, vehicle["engine_model"])):
+        fragments = {item["fragment_id"]: item for item in verified_fragments()}
+        if all(fragment in fragments for fragment in conflict["fragment_ids"]):
+            sections = [signs]
+            for fragment in conflict["fragment_ids"]:
+                item = fragments[fragment]
+                sections.append(source_section("checks", [item["text"]],
+                    YAMZ236.reference(item["pdf_page"]) if item["manual_id"] == "yamz-236-3902150-b-re" else
+                    {"manual": item["manual"], "pdf_page": item["pdf_page"]}))
+            if conflict.get("limitations"):
+                sections.append(source_section("clarify", ["Ограничения: " + conflict["limitations"]]))
+            return Reply(summary=conflict["explanation"], sections=sections)
     if DRIVE.search(text):
         sections = [signs]
         if case == "oil":
@@ -218,7 +234,7 @@ def answer(vehicle: dict, diagnosis: Diagnosis, question: str) -> Reply:
         else:
             sections.append(source_section("clarify", ["Уточните симптомы и результаты очной проверки."]))
         return Reply(summary="Данных для допуска к перегону своим ходом недостаточно. "
-                             "Перед решением нужна очная проверка.", sections=sections)
+                             "Перед решением нужна очная проверка. Высокий приоритет заявки не является прямым запретом из руководства.", sections=sections)
 
     if case == "oil" and MEASUREMENT.search(text):
         return Reply(
