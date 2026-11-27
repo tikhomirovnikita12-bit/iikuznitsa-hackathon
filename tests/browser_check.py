@@ -263,6 +263,16 @@ def admission_checks(browser, base, out, results, *, mobile=False):
         ask(page, prompt + "уровень масла в норме, уровень охлаждающей жидкости в норме", "Оба уровня в норме")
         expect(last_reply).to_contain_text("Проверьте исправность манометра")
         expect(last_reply.locator('a[href="/sources/yamz236-re/53"]')).to_be_visible()
+        ask(page, "Он в норме", "давления масла замером")
+        page.reload()
+        diagnose(page, "Низкое давление масла")
+        for question in ("Что проверять первым делом?", "Какую гипотезу проверять?"):
+            ask(page, question, "давления масла замером")
+            expect(last_reply).to_contain_text("манометр исправен")
+            expect(last_reply.locator('a[href="/sources/yamz236-re/19"]')).to_be_visible()
+        ask(page, "350 кПа, прогрет, 2100 об/мин, без допуска", "350 кПа — ниже")
+        expect(last_reply).to_contain_text("загрязнение фильтра грубой очистки масла")
+        expect(last_reply.locator('a[href="/sources/yamz236-re/53"]')).to_be_visible()
         assert page_state(page, base, OIL)["draft"] is None
         draft(page, from_result=True)
         state = page_state(page, base, OIL)
@@ -272,7 +282,7 @@ def admission_checks(browser, base, out, results, *, mobile=False):
         expect(page.locator('#ticket-panel a[href="/sources/yamz236-re/53"]').first).to_be_visible()
         submit(page)
         expect(page.locator(".ticket-badge")).to_be_visible()
-        results.append({"pair": OIL, "step": "Результат проверки уровней F02 по PDF 53 и подтверждение заявки",
+        results.append({"pair": OIL, "step": "Цепочка F02 от уровней и манометра до сверки давления и заявки",
                         "mobile": mobile, "result": "passed"})
 
         # F08 has a real but conditional startup operation; choosing a priority isn't enough.

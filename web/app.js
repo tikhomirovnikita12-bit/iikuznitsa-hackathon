@@ -535,7 +535,8 @@ function renderChat() {
       if (!sections.has(part.kind)) sections.set(part.kind, []);
       sections.get(part.kind).push(part);
     }
-    const measurementTitle = message.analysis?.pressure_measurement ? "Сверка с нормативом"
+    const measured = Object.keys(message.analysis?.pressure_measurement || {}).length > 0;
+    const measurementTitle = measured ? "Сверка с нормативом"
       : message.analysis?.intent === "measurement" ? "Условия замера" : undefined;
     for (const kind of new Set([...Object.keys(sectionNames), ...sections.keys()])) {
       if (sections.has(kind)) bubble.append(answerBlock(kind, sections.get(kind), kind === "checks" ? measurementTitle : undefined));

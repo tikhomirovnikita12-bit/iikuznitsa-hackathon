@@ -150,6 +150,26 @@ class Member4Tests(unittest.TestCase):
         self.assertIn(53, {ref["pdf_page"] for ref in report["references"]})
         self.assertIsNone(state["draft"])
 
+    def test_f02_agent_continues_after_manometer_check(self):
+        self.post("diagnose", self.oil)
+        before = self.provider.requests
+        first = self.post("chat", self.oil, message="Масло и охл. жидкость в норме")["messages"][-1]
+        self.assertIn("Проверьте исправность манометра", first["summary"])
+        for message in ("Он в норме, что дальше?", "Что проверять первым делом?", "Какую гипотезу проверять?"):
+            state = self.post("chat", self.oil, message=message)
+            analysis = state["messages"][-1]["analysis"]
+            self.assertEqual(analysis["fluid_check"], {"oil": "ok", "coolant": "ok", "gauge": "ok"})
+            self.assertIn("давления масла замером", analysis["checks"][0]["text"])
+            self.assertEqual([ref["pdf_page"] for ref in analysis["references"]], [19])
+            self.assertIsNone(state["draft"])
+        result = self.post("chat", self.oil, message="350 кПа, прогрет, 2100 об/мин, без допуска")
+        analysis = result["messages"][-1]["analysis"]
+        self.assertIn("350 кПа — ниже", analysis["checks"][0]["text"])
+        self.assertIn("загрязнение фильтра грубой очистки", analysis["checks"][1]["text"])
+        self.assertEqual([ref["pdf_page"] for ref in analysis["references"]], [19, 53])
+        self.assertEqual(self.provider.requests, before)
+        self.assertFalse(self.sent)
+
     def test_movement_question_does_not_create_a_draft(self):
         self.post("diagnose", self.fuel)
         movement = self.post("chat", self.fuel, message="Можно ли ехать?")

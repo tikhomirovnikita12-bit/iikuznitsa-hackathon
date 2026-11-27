@@ -245,6 +245,50 @@ def test_demo_f02_continues_after_fluid_check(stand, monkeypatch, reports):
     assert result["draft"] is None
     assert deliveries == []
 
+    for question in ("Он в норме", "Что проверять первым делом?", "Какую гипотезу проверять?"):
+        result = ask(question)
+        reply = result["messages"][-1]
+        assert "манометр исправен" in reply["summary"]
+        assert "давления масла замером" in reply["summary"]
+        assert reply["analysis"]["fluid_check"] == {"oil": "ok", "coolant": "ok", "gauge": "ok"}
+        assert {ref["pdf_page"] for section in reply["sections"] for ref in section["references"]} == {19}
+
+    result = ask("350 кПа, прогрет, 2100 об/мин, без допуска")
+    assert "350 кПа — ниже" in result["messages"][-1]["summary"]
+    result = ask("Какую гипотезу проверять первой?")
+    reply = result["messages"][-1]
+    assert reply["analysis"]["pressure_measurement"]["pressure"] == "350"
+    assert any("загрязнение фильтра грубой очистки" in item for section in reply["sections"] for item in section["items"])
+    assert {ref["pdf_page"] for section in reply["sections"] for ref in section["references"]} == {19, 53}
+    assert state(client)["messages"][-1] == reply
+    assert result["draft"] is None and deliveries == []
+    assert "Манометр неисправен" in ask("Манометр неисправен")["messages"][-1]["summary"]
+    restored = ask("Манометр исправен")["messages"][-1]
+    assert "давления масла замером" in restored["summary"]
+    assert not restored["analysis"].get("pressure_measurement")
+
+
+def test_demo_f02_recovers_manometer_report_from_old_chat(stand, monkeypatch):
+    client, _ = stand
+    monkeypatch.setattr(main, "case_agent", None)
+    diagnose(client)
+
+    def seed(state):
+        state["messages"].extend([
+            {"role": "user", "text": "Масло и охл. жидкость в норме"},
+            {"role": "assistant", "summary": "Оба уровня в норме. Проверьте исправность манометра.",
+             "sections": [], "analysis": {"fluid_check": {"oil": "ok", "coolant": "ok"}}},
+            {"role": "user", "text": "Он в норме"},
+            {"role": "assistant", "summary": "Проверьте количество масла и охлаждающей жидкости.", "sections": []},
+        ])
+
+    main.store.update((OIL["vehicle_id"], OIL["session_id"]), seed)
+    response = client.post("/api/chat", json={**OIL, "message": "Какую гипотезу проверять?"})
+    assert response.status_code == 200, response.text
+    reply = response.json()["messages"][-1]
+    assert "манометр исправен" in reply["summary"]
+    assert "давления масла замером" in reply["summary"]
+
 
 def test_case_agent_preserves_measurements_without_inventing_draft_procedure(stand, monkeypatch, tmp_path):
     client, calls = stand

@@ -2,7 +2,7 @@
 
 import re
 
-from agent.tools import fluid_check
+from agent.tools import fluid_check, oil_pressure
 from backend.mechanic import conflict_case
 from manual_search.corpus import verified_fragments
 
@@ -282,21 +282,45 @@ def valve_reply(signs: Section, signal_quality: str) -> Reply:
     )
 
 
-def fluid_report_reply(question: str, history) -> Reply | None:
-    previous = next((analysis["fluid_check"] for message in reversed(history)
-                     if message["role"] == "assistant" and (analysis := message.get("analysis"))
-                     and isinstance(analysis.get("fluid_check"), dict)), None)
-    levels = fluid_check.report(question, previous)
-    if levels is None:
+def oil_followup_reply(question: str, history) -> Reply | None:
+    if DRIVE.search(question.casefold()):
         return None
-    action, clarification = fluid_check.next_action(levels)
-    guidance = action or clarification
-    return Reply(summary=guidance,
-                 sections=[source_section("checks" if action else "clarify", [guidance], OIL_LEVELS)],
-                 analysis={"fluid_check": levels})
+    turns = (
+        (user["text"], assistant["summary"], (assistant.get("analysis") or {}).get("fluid_check"))
+        for user, assistant in zip(history, history[1:])
+        if user["role"] == "user" and assistant["role"] == "assistant"
+    )
+    previous, gauge_expected = fluid_check.restore(turns)
+    reported = fluid_check.report(question, previous, gauge_expected=gauge_expected)
+    guide = fluid_check.wants_next_check(question)
+    if reported is None and previous is None and FIRST.search(question.casefold()):
+        return None
+
+    state = reported if reported is not None else previous or {}
+    old_pressure = next((analysis["pressure_measurement"] for message in reversed(history)
+                         if message["role"] == "assistant" and (analysis := message.get("analysis"))
+                         and analysis.get("pressure_measurement") is not None), {})
+    explicit_reading = oil_pressure.reports_value(question)
+    values = oil_pressure.readings(question, old_pressure) if explicit_reading or "?" not in question else old_pressure
+    measured = state.get("gauge") and (explicit_reading or values != old_pressure)
+    if reported is None and not guide and not measured:
+        return None
+    if state.get("gauge") == "faulty" or ((previous or {}).get("gauge") == "faulty" and not explicit_reading):
+        values = {}
+
+    checks, clarification = fluid_check.next_action(state, values)
+    sections = [source_section("checks", [text], OIL_PRESSURE if fragment == oil_pressure.SOURCE else OIL_LEVELS)
+                for fragment, text in checks]
+    if clarification:
+        refs = () if sections else (OIL_LEVELS,)
+        sections.append(source_section("clarify", [clarification], *refs))
+    analysis = {"fluid_check": state}
+    if values or state.get("gauge") == "faulty":
+        analysis["pressure_measurement"] = values
+    return Reply(summary=checks[0][1] if checks else clarification, sections=sections, analysis=analysis)
 
 
-def answer(vehicle: dict, diagnosis: Diagnosis, question: str, *, history=()) -> Reply:
+def answer(vehicle: dict, diagnosis: Diagnosis, question: str) -> Reply:
     text = question.casefold()
     signs = source_section("signs", [diagnosis.description])
     if diagnosis.status == "check_failed":
@@ -316,9 +340,6 @@ def answer(vehicle: dict, diagnosis: Diagnosis, question: str, *, history=()) ->
     case = case_for(vehicle, diagnosis)
     if case == "mismatch":
         return Reply(summary=mismatch(vehicle, diagnosis), sections=[signs])
-    if case == "oil" and not (DRIVE.search(text) or MEASUREMENT.search(text)):
-        if reply := fluid_report_reply(question, history):
-            return reply
     if case == "coolant" and NORM.search(text):
         return Reply(
             summary=COOLANT_NORM,

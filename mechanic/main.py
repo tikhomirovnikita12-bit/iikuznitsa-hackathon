@@ -642,7 +642,8 @@ def response_to_chat(vehicle, diagnosis, state, question):
     if draft_requested and state["draft"]:
         return Reply(summary="Черновик уже открыт. Проверьте поля и подтвердите приоритет."), None, "fixture", [], None
 
-    mismatch = demo_agent.case_for(vehicle, diagnosis) == "mismatch"
+    demo_case = demo_agent.case_for(vehicle, diagnosis)
+    mismatch = demo_case == "mismatch"
     if case_agent:
         reply, proposal, entry, calls = local_agent_turn(vehicle, diagnosis, question, state["agent_history"])
         if proposal is not None and (not draft_requested or diagnosis.status != "anomaly" or mismatch):
@@ -675,6 +676,8 @@ def response_to_chat(vehicle, diagnosis, state, question):
         reason = (decision.get("block_reason") or {}).get("message", "")
         message = case_context.blocked_message(reason, data, vehicle["engine_model"])
         return Reply(summary=message), None, "fixture", [], None
+    if demo_case == "oil" and (reply := demo_agent.oil_followup_reply(question, state["messages"])):
+        return reply, None, "fixture", [], None
     if retrieval:
         topic = case_context.subject(question, [m["text"] for m in state["messages"] if m["role"] == "user"])
         index = team.workflow.mechanic.search if team else retrieval.index
@@ -696,9 +699,9 @@ def response_to_chat(vehicle, diagnosis, state, question):
             Section(kind="signs", items=[diagnosis.description]),
             Section(kind="checks", items=checks, references=refs),
             Section(kind="clarify", items=["Ограничения и условия: " + " ".join(conditions)]),
-        ])
+        ], analysis={"fluid_check": {}} if demo_case == "oil" else None)
         return reply, None, "fixture", [], None
-    return demo_agent.answer(vehicle, diagnosis, question, history=state["messages"]), None, "fixture", [], None
+    return demo_agent.answer(vehicle, diagnosis, question), None, "fixture", [], None
 
 
 def draft_available(vehicle: dict, state: dict) -> bool:

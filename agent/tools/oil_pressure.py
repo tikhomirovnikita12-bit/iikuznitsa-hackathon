@@ -23,6 +23,7 @@ SPEED_RANGE = re.compile(
     rf"(?<![\w.,]){INTEGER}(?:\s*{SPEED_UNIT})?{BETWEEN}{INTEGER}\s*{SPEED_UNIT}\b", re.I,
 )
 CONFIRM_UNIT = re.compile(rf"(?:да(?:,?\s*({PRESSURE_UNIT}))?|({PRESSURE_UNIT}))[.!]?")
+OBSERVATION = re.compile(r"\b(?:измерил\w*|замерил\w*|показал\w*|показывает|у меня)\b", re.I)
 
 
 def kilopascals(amount, unit):
@@ -34,6 +35,13 @@ def kilopascals(amount, unit):
 
 def decimal_text(value):
     return format(value.normalize(), "f")
+
+
+def reports_value(question):
+    text = " ".join(question.split())
+    if "?" in text and not (PRESSURE.match(text) or OBSERVATION.search(text)):
+        return False
+    return bool(PRESSURE.search(text) or BARE_NUMBER.fullmatch(text))
 
 
 def readings(question, previous):
@@ -89,25 +97,26 @@ def readings(question, previous):
     return values
 
 
-def compare(values):
+def assess(values):
+    """Return the comparison, the next clarification, and the assessed range."""
     if values.get("ambiguous_pressure"):
-        return None, "Укажите одно точное значение давления масла и его единицу."
+        return None, "Укажите одно точное значение давления масла и его единицу.", None
     if unconfirmed := values.get("unconfirmed_pressure"):
-        return None, f"{unconfirmed.replace('.', ',')} — это давление масла в кПа?"
+        return None, f"{unconfirmed.replace('.', ',')} — это давление масла в кПа?", None
     if values.get("pressure") is None:
-        return None, "Какое давление масла показал прибор? Укажите значение и единицу."
+        return None, "Какое давление масла показал прибор? Укажите значение и единицу.", None
     if values.get("warm") is False:
-        return None, "Этот замер сделан на холодном двигателе. Есть показание, снятое после прогрева?"
+        return None, "Этот замер сделан на холодном двигателе. Есть показание, снятое после прогрева?", None
     pressure = Decimal(values["pressure"])
     displayed = str(pressure).replace(".", ",")
     if not values.get("warm") and not values.get("regime"):
-        return None, f"Записал {displayed} кПа. Двигатель был прогрет? На каких оборотах измеряли?"
+        return None, f"Записал {displayed} кПа. Двигатель был прогрет? На каких оборотах измеряли?", None
     if not values.get("warm"):
-        return None, f"{displayed} кПа. Двигатель был прогрет, когда снимали показание?"
+        return None, f"{displayed} кПа. Двигатель был прогрет, когда снимали показание?", None
     if not values.get("regime"):
-        return None, f"При каких оборотах получили {displayed} кПа — на 2100 об/мин или на минимальном холостом ходу?"
+        return None, f"При каких оборотах получили {displayed} кПа — на 2100 об/мин или на минимальном холостом ходу?", None
     if values.get("extended") is None:
-        return None, "Для этого двигателя применяется допуск после длительной эксплуатации?"
+        return None, "Для этого двигателя применяется допуск после длительной эксплуатации?", None
 
     # 236-3902150-Б РЭ, стр. 19. Для длительной эксплуатации указан только минимум.
     lower, upper = {
@@ -118,9 +127,15 @@ def compare(values):
     }[values["regime"], values["extended"]]
     limit = f"{lower}–{upper} кПа" if upper else f"не менее {lower} кПа"
     if pressure < lower:
-        return f"{displayed} кПа — ниже норматива ({limit}).", None
+        return f"{displayed} кПа — ниже норматива ({limit}).", None, "low"
     if upper and pressure > upper:
-        return f"{displayed} кПа — выше норматива ({limit}).", None
+        return f"{displayed} кПа — выше норматива ({limit}).", None, "high"
     if values["extended"] and values["regime"] == "rated" and pressure > 700:
-        return f"{displayed} кПа — выше указанного рабочего диапазона 400–700 кПа. Допуск после длительной эксплуатации задаёт только нижнюю границу.", None
-    return f"{displayed} кПа соответствует указанному нормативу для этого замера ({limit}).", None
+        return (f"{displayed} кПа — выше указанного рабочего диапазона 400–700 кПа. "
+                "Допуск после длительной эксплуатации задаёт только нижнюю границу."), None, "high"
+    return f"{displayed} кПа соответствует указанному нормативу для этого замера ({limit}).", None, "normal"
+
+
+def compare(values):
+    comparison, clarification, _ = assess(values)
+    return comparison, clarification
