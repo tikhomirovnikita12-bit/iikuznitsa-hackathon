@@ -183,7 +183,8 @@ class Member4Tests(unittest.TestCase):
             self.assertEqual(reply["ml_observations"]["status"], status)
             self.assertFalse(reply["checks"] or reply["ticket_draft"])
             if status == "anomaly":
-                self.assertIn("топливоподача", reply["clarifying_question"].lower())
+                self.assertIn("топливоподача", reply["explanation"].lower())
+                self.assertIn("Сверьте", reply["clarifying_question"])
             else:
                 self.assertIn("Повторите", reply["verdict"])
 

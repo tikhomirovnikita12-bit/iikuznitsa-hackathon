@@ -152,10 +152,6 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
 .first-check h3 { color: var(--muted); font-size: .9rem; }
 .first-check > .button { justify-self: start; margin-block: .25rem; }
 .first-check .action { font-size: 1.05rem; font-weight: 690; }
-.risk-line { margin-top: .7rem; padding: .65rem .8rem; background: #fffaee; border-inline-start: 3px solid var(--warn); display: flex; flex-wrap: wrap; gap: .35rem .6rem; align-items: baseline; }
-.risk-line[data-risk="high"] { border-color: var(--danger); }
-.risk-line[data-risk="unassessed"] { border-color: var(--control-line); background: var(--surface); }
-.risk-line p { flex: 1 1 16rem; }
 .diagnosis-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; margin: .85rem 0; }
 .diagnosis-actions .alert { flex: 1 1 100%; }
 .diagnosis-actions .progress { margin: 0; }

@@ -69,19 +69,26 @@ class CaseAgent:
                                         "clarifying_question": next_action, "checks": []})
         return reply, None, entry
 
+    def draft_reply(self, question, vehicle, diagnosis):
+        fields = self.checked_draft(vehicle, diagnosis)
+        if fields:
+            return self.checked_reply(question, fields, vehicle, diagnosis)
+        return self.blocked_reply(question, vehicle, diagnosis)
+
     def chat(self, vehicle, diagnosis, question, history):
         context = {**diagnosis.model_dump(), "engine_model": vehicle["engine_model"], "fuel": vehicle["fuel"]}
         if wants_draft(question):
             started = perf_counter()
-            fields = self.checked_draft(vehicle, diagnosis)
+            reply, fields, entry = self.draft_reply(question, vehicle, diagnosis)
             elapsed = round((perf_counter() - started) * 1000)
+            calls = []
             if fields:
                 pages = [(ref.manual, ref.pdf_page) for ref in fields.references]
-                return *self.checked_reply(question, fields, vehicle, diagnosis), [
+                calls = [
                     dict(tool="agent.search", duration_ms=elapsed, status="ok", pages=pages),
                     dict(tool="agent.prepare_ticket", duration_ms=0, status="ok"),
                 ]
-            return *self.blocked_reply(question, vehicle, diagnosis), []
+            return reply, fields, entry, calls
         trace = {}
         try:
             result = self.agent.turn(diagnosis.vehicle_id, diagnosis.session_id, question, history,
@@ -107,7 +114,6 @@ class CaseAgent:
             calls.append(dict(tool="ollama.chat", duration_ms=round(call["seconds"] * 1000), status=call.get("status", "ok"),
                               model=call["model"], input_tokens=call["input_tokens"], output_tokens=call["output_tokens"]))
         result["ticket_draft"] = None
-
         references = {
             item["fragment_id"]: Reference(manual=item["manual"], pdf_page=item["pdf_page"])
             for item in result["references"]
@@ -117,8 +123,8 @@ class CaseAgent:
             item["url"] = f"/sources/{manual.slug}/{item['pdf_page']}"
         sections = [Section(kind="signs", items=[diagnosis.description])]
         for field, kind in (("possible_causes", "causes"), ("risk", "risk"), ("checks", "checks")):
+            prefix = "Гипотеза: " if kind in {"causes", "risk"} else ""
             for item in result[field]:
-                prefix = "Гипотеза: " if kind in {"causes", "risk"} else ""
                 sections.append(Section(kind=kind, items=[prefix + item["text"]],
                                         references=[references[item["fragment_id"]]]))
         if result.get("movement_limitations"):

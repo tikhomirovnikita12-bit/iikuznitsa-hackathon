@@ -386,9 +386,13 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(reply["needs_clarification"])
         self.assertEqual(reply["evidence"], [])
 
-        denied = self.client.post("/api/chat", json={**ANOMALY, "question": "Создай заявку"})
-        self.assertEqual(denied.status_code, 422)
-        self.assertEqual(denied.json()["error"]["code"], "procedure_unavailable")
+        proposal = self.client.post("/api/chat", json={**ANOMALY, "question": "Создай заявку"})
+        self.assertEqual(proposal.status_code, 200, proposal.text)
+        draft = self.client.get("/api/drafts", params=ANOMALY).json()[0]
+        self.assertEqual(draft["operations"], [
+            "Проверить достаточность уровня масла в картере и уровня охлаждающей жидкости."
+        ])
+        self.assertEqual([source["pdf_page"] for source in draft["references"]], [53])
         self.assertEqual(self.toir_requests, [])
 
     def test_chat_keeps_explicit_valve_topic_despite_oil_diagnosis(self):

@@ -23,7 +23,9 @@ def test_approved_work_and_conflicts_resolve_reviewed_engine_sources():
         'text': 'Это подготовка к первичному пуску нового двигателя или к пуску после длительной стоянки.',
         'requires_confirmation': True,
     }]
-    assert not any(row['engine_model'] == 'ЯМЗ-236М2' and row['anomaly_type'] == 'F02' for row in operations)
+    fluid_check, = [row for row in operations if row['engine_model'] == 'ЯМЗ-236М2' and row['anomaly_type'] == 'F02']
+    assert fluid_check['fragment_id'] == 'yamz-236-3902150-b-re-p053-f02-fluid-levels'
+    assert fluid_check['operation'] == fragments[fluid_check['fragment_id']]['work']['operation']
     search = ManualSearch({'fragments': list(fragments.values())})
     expected = {
         'yamz236-valve-clearance': [31, 269, 276],

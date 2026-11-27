@@ -85,8 +85,12 @@ def main():
         conflict = ask("S-0132", "Что проверить?", "Y652CK98")
         assert conflict["admission"]["block_reason"]["code"] == "fault_engine_mismatch"
         assert "F08" in conflict["explanation"] and "маркировку" in conflict["clarifying_question"]
-        blocked = ask("S-0011", "Подготовь заявку на дефектовку")
-        assert blocked["ticket_draft"] is None and blocked["admission"]["block_reason"]["code"] == "procedure_unavailable", blocked
+        oil_draft = ask("S-0011", "Подготовь заявку на дефектовку")
+        assert oil_draft["admission"]["can_prepare"] and not oil_draft["admission"]["can_submit"], oil_draft
+        assert oil_draft["ticket_draft"]["operations"] == [
+            "Проверить достаточность уровня масла в картере и уровня охлаждающей жидкости."
+        ], oil_draft
+        assert [item["pdf_page"] for item in oil_draft["references"]] == [53], oil_draft
         for question, pages in (
             ("Какие тепловые зазоры клапанного механизма?", {31, 269, 276}),
             ("Какое давление масла на прогретом двигателе?", {19, 12}),

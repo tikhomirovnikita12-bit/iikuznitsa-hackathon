@@ -253,10 +253,21 @@ def test_case_agent_preserves_measurements_without_inventing_draft_procedure(sta
     assert "350 кПа — ниже" in result["messages"][-1]["analysis"]["checks"][0]["text"]
 
     result = ask("Подготовь заявку на дефектовку")
-    assert result["draft"] is None
-    assert result["admission"]["block_reason"]["code"] == "procedure_unavailable"
-    assert "процедур" in result["messages"][-1]["summary"]
-    assert not calls, "Measurements alone cannot invent a reviewed control-manometer procedure"
+    draft = result["draft"]
+    assert draft["operations"] == [
+        "Проверить достаточность уровня масла в картере и уровня охлаждающей жидкости."
+    ]
+    assert [source["pdf_page"] for source in draft["references"]] == [53]
+    assert not calls, "A reviewed draft still requires confirmation"
+    payload = {**OIL, "draft_id": result["draft_id"], "revision": result["draft_revision"],
+               "diagnosis_revision": result["admission"]["diagnosis_revision"],
+               "edits": {key: draft[key] for key in ("conclusion", "operations", "urgency", "spare_parts")},
+               "priority_confirmed": True}
+    receipt = client.post("/api/ticket", json=payload)
+    assert receipt.status_code == 200, receipt.text
+    assert receipt.json()["ticket"]["ticket_id"].startswith("TKT-")
+    assert client.post("/api/ticket", json=payload).json()["ticket"] == receipt.json()["ticket"]
+    assert len(calls) == 1
 
 
 def test_definite_error_preserves_draft_until_explicit_retry(stand, monkeypatch):

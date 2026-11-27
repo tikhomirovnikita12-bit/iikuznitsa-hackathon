@@ -23,7 +23,7 @@ def prepare(client, pair):
     ({'vehicle_id':'M739BA198','session_id':'S-0103'},'confidence_too_low'),
     ({'vehicle_id':'P456AT178','session_id':'S-0003'},'recording_invalid'),
     ({'vehicle_id':'Y652CK98','session_id':'S-0132'},'fault_engine_mismatch'),
-    ({'vehicle_id':'E549YT198','session_id':'S-0011'},'procedure_unavailable'),
+    ({'vehicle_id':'O710HH78','session_id':'S-0014'},'procedure_unavailable'),
 ])
 def test_screen_blocks_unsafe_drafts_and_chat_without_delivery(integrated, pair, code):
     api, _adapter, sent = integrated

@@ -1,5 +1,24 @@
 [
   {
+    "id": "yamz236-f02-fluid-levels",
+    "engine_model": "ЯМЗ-236М2",
+    "anomaly_type": "F02",
+    "node": "Система смазки, контроль уровней рабочих жидкостей",
+    "manual_id": "yamz-236-3902150-b-re",
+    "fragment_id": "yamz-236-3902150-b-re-p053-f02-fluid-levels",
+    "pdf_page": 53,
+    "quote": "Прежде чем искать причину неисправности, убедиться в наличии достаточного количества масла в картере и охлаждающей жидкости",
+    "conditions": [
+      {
+        "id": "initial_fluid_level_check",
+        "text": "Первичная проверка при признаке пониженного давления масла по РЭ, PDF 53.",
+        "requires_confirmation": false
+      }
+    ],
+    "operation": "Проверить достаточность уровня масла в картере и уровня охлаждающей жидкости.",
+    "supporting_fragment_ids": []
+  },
+  {
     "id": "yamz236-f08-fuel-lines-start",
     "engine_model": "ЯМЗ-236М2",
     "anomaly_type": "F08",

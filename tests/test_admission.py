@@ -13,7 +13,7 @@ WARNING = {"vehicle_id": "O658MX98", "session_id": "S-0063"}
 LOW = {"vehicle_id": "M739BA198", "session_id": "S-0103"}
 FAILED = {"vehicle_id": "P456AT178", "session_id": "S-0003"}
 MISMATCH = {"vehicle_id": "Y652CK98", "session_id": "S-0132"}
-OIL = {"vehicle_id": "E549YT198", "session_id": "S-0011"}
+UNSUPPORTED = {"vehicle_id": "O710HH78", "session_id": "S-0014"}
 FUEL = {"vehicle_id": "M333YK47", "session_id": "S-0005"}
 CHAIN = {"vehicle_id": "Y815BM178", "session_id": "S-0152"}
 
@@ -63,7 +63,7 @@ def confirmation(value, **updates):
 
 @pytest.mark.parametrize(("pair", "reason", "warning"), [
     (LOW, "confidence_too_low", True), (FAILED, "recording_invalid", False),
-    (MISMATCH, "fault_engine_mismatch", False), (OIL, "procedure_unavailable", False),
+    (MISMATCH, "fault_engine_mismatch", False), (UNSUPPORTED, "procedure_unavailable", False),
 ])
 def test_blocked_diagnostics_never_create_or_deliver_ticket(stand, pair, reason, warning):
     api, _, tickets = stand

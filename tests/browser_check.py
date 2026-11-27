@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / ".runtime"
 PYTHON = ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 OIL = ("E549YT198", "S-0011")
+UNSUPPORTED = ("O710HH78", "S-0014")
 NORMAL = ("E549YT198", "S-0010")
 FAILED = ("P456AT178", "S-0003")
 LOW_CONFIDENCE = ("M739BA198", "S-0103")
@@ -241,8 +242,7 @@ def admission_checks(browser, base, out, results, *, mobile=False):
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     try:
-        # F02 remains a documentation case; bad/low confidence/mismatch never open a ticket form.
-        for pair, code in ((OIL, "procedure_unavailable"), (LOW_CONFIDENCE, "confidence_too_low"),
+        for pair, code in ((UNSUPPORTED, "procedure_unavailable"), (LOW_CONFIDENCE, "confidence_too_low"),
                            (FAILED, "recording_invalid"), (MISMATCH, "fault_engine_mismatch")):
             open_pair(page, base, pair)
             state = page_state(page, base, pair)
@@ -254,7 +254,19 @@ def admission_checks(browser, base, out, results, *, mobile=False):
                 expect(page.locator("#result")).to_contain_text("Запись с помехами")
             if pair == FAILED:
                 expect(page.locator("#result")).to_contain_text("вывод о двигателе невозможен")
-        results.append({"step": "Причины отказа: F02 без процедуры, confidence 0.48, bad и несовместимый F08", "mobile": mobile, "result": "passed"})
+        results.append({"step": "Причины отказа: F04 без процедуры, confidence 0.48, bad и несовместимый F08", "mobile": mobile, "result": "passed"})
+
+        open_pair(page, base, OIL)
+        draft(page, from_result=True)
+        state = page_state(page, base, OIL)
+        assert state["draft"]["operations"] == [
+            "Проверить достаточность уровня масла в картере и уровня охлаждающей жидкости."
+        ]
+        expect(page.locator('#ticket-panel a[href="/sources/yamz236-re/53"]').first).to_be_visible()
+        submit(page)
+        expect(page.locator(".ticket-badge")).to_be_visible()
+        results.append({"pair": OIL, "step": "Первичная проверка F02 по PDF 53 и подтверждение",
+                        "mobile": mobile, "result": "passed"})
 
         # F08 has a real but conditional startup operation; choosing a priority isn't enough.
         open_pair(page, base, FUEL)

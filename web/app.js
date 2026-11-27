@@ -337,24 +337,15 @@ function renderDiagnosis() {
     result.append(notice);
   }
 
-  if (brief && diagnosis.status === "anomaly") {
-    const risk = element("div", "risk-line");
-    const [label, theme] = riskLabels[brief.risk] || riskLabels.unassessed;
-    risk.append(element("span", "flag " + theme, label), element("p", "", brief.rationale));
-    result.append(risk);
-    if (brief.origin === "fixture") result.append(element("p", "context-key", "Тестовая рекомендация"));
-  }
   if (brief?.analysis?.possible_causes?.length) {
-    const details = element("details", "answer-block");
-    details.append(element("summary", "", "Возможные причины"));
+    const causes = element("details", "answer-block");
+    causes.append(element("summary", "", "Возможные причины"));
     for (const item of brief.analysis.possible_causes) {
-      details.append(element("p", "", item.text));
-      details.append(references(brief.analysis.references.filter(ref => ref.fragment_id === item.fragment_id)));
+      causes.append(element("p", "", item.text));
+      causes.append(references(brief.analysis.references.filter(ref => ref.fragment_id === item.fragment_id)));
     }
-    result.append(details);
+    result.append(causes);
   }
-  if (view.state.brief_error) result.append(alert(view.state.brief_error, "error"));
-
   const details = element("details", "diagnosis-details");
   details.open = wasExpanded;
   details.append(element("summary", "", "Подробности диагностики"));
@@ -1577,7 +1568,7 @@ async function sendQuestion(value, fromComposer = false) {
     if (fromComposer) ui.question.focus({ preventScroll: true });
     return;
   }
-  if (fromComposer) {
+  if (fromComposer && ui.question.value.trim() === message) {
     ui.question.value = "";
     ui.question.dispatchEvent(new Event("input"));
   }

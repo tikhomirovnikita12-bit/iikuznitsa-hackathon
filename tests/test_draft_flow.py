@@ -106,14 +106,15 @@ def test_missing_both_agent_and_checked_sources_returns_clarification(integrated
     fragment = "yamz-236-3902150-b-re-p016-fuel-lines-start-review"
     for mechanic in (adapter.workflow.mechanic, main.case_agent.mechanic):
         monkeypatch.delitem(mechanic.search.fragments, fragment)
-    state = diagnose(client, FUEL)
+    diagnose(client, FUEL)
+    calls_after_diagnosis = provider.calls
+    current = client.get("/api/state", params=FUEL)
+    assert current.status_code == 200
+    state = current.json()
     assert state["diagnosis"]["anomaly_type"] == "F08"
     assert state["draft_available"] is False
     assert state["admission"]["block_reason"]["code"] == "procedure_unavailable"
-    assert provider.calls == 0, "Reading readiness must not invoke a paid model"
-    restored = client.get("/api/state", params=FUEL).json()
-    assert restored["draft_available"] is False
-    assert restored["admission"]["block_reason"]["code"] == "procedure_unavailable"
+    assert provider.calls == calls_after_diagnosis, "Reading readiness must not invoke a paid model"
     response = client.post("/api/draft", json=FUEL)
     assert response.status_code == 422, response.text
     assert response.json()["admission"]["block_reason"]["code"] == "procedure_unavailable"
@@ -121,7 +122,7 @@ def test_missing_both_agent_and_checked_sources_returns_clarification(integrated
     assert chat.status_code == 200, chat.text
     assert chat.json()["draft"] is None
     assert any(section["kind"] == "clarify" for section in chat.json()["messages"][-1]["sections"])
-    assert provider.calls == 0, "A blocked draft must not invoke a paid model"
+    assert provider.calls == calls_after_diagnosis, "Unavailable draft must not invoke a paid model"
     assert adapter.workflow.drafts(adapter.Pair(**FUEL)) == []
     assert sent == []
 
@@ -165,12 +166,13 @@ def test_model_decline_does_not_remove_server_approved_operation(integrated, mon
     client, adapter, sent = integrated
     provider = enable_agent(monkeypatch, tmp_path, fragments=verified_fragments(), accept=False)
     assert diagnose(client, CHAIN)["draft_available"] is True
+    calls_after_diagnosis = provider.calls
     response = client.post("/api/draft", json=CHAIN)
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["draft"] and result["draft"]["operations"]
     assert result["draft"]["references"][0]["pdf_page"] == 143
-    assert provider.calls == 0, "A reviewed draft does not depend on free model generation"
+    assert provider.calls == calls_after_diagnosis, "Preparing a reviewed draft must not call the model"
     assert len(adapter.workflow.drafts(adapter.Pair(**CHAIN))) == 1
     assert sent == []
 

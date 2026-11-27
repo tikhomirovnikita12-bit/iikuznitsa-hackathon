@@ -60,8 +60,9 @@ def test_capability_matches_ticket_sources_without_calling_model(tmp_path):
     agent.agent.provider = NoCalls()
     fleet = json.loads((ROOT / "data/vehicles.json").read_text(encoding="utf-8"))["vehicles"]
     for plate, session, expected in [("M333YK47", "S-0005", True),
-                                     ("E549YT198", "S-0011", False),
+                                     ("E549YT198", "S-0011", True),
                                      ("E549YT198", "S-0010", False),
+                                     ("O710HH78", "S-0014", False),
                                      ("Y652CK98", "S-0132", False),
                                      ("P456AT178", "S-0003", False)]:
         vehicle = next(item for item in fleet if item["vehicle_id"] == plate)

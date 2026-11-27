@@ -9,8 +9,8 @@ from pathlib import Path
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "manuals"
 SHARED_ZMZ = "zmz-40904-40905-rk"
 VERIFIED_FILES = ("yamz-236m2-oil-pressure.json", "zmz-timing-chain.json", "yamz-236m2-valves.json",
-                  "yamz-536-oil-pressure.json", "reviewed-procedures.json", "yamz-236m2-repair.json",
-                  "work-evidence.json")
+                  "yamz-536-oil-pressure.json", "yamz-236m2-repair.json", "work-evidence.json",
+                  "reviewed-procedures.json")
 YAMZ_MODEL = re.compile(r"ЯМЗ\s*[-–]\s*(\d{3}(?:[А-Яа-яЁё]*\d*)?)", re.I)
 ZMZ_MODEL = re.compile(r"(?<!\d)(4090[45])(?:\.10(?!\d)|\.1000400-\d+)")
 CONTINUATION = re.compile(r"^(?:продолжение\s+табл|продолжение\s+рис)", re.I)

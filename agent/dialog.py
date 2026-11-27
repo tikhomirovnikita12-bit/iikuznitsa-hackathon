@@ -91,12 +91,16 @@ class Agent:
         try:
             reply = self.diagnostics.observe(vehicle_id, session_id, diagnosis, trace)
             ml = reply["ml_observations"]
+            admission_started = time.monotonic()
             decision = self.admission(ml)
+            trace["tools"].append(dict(name="admission", seconds=time.monotonic() - admission_started,
+                                       can_prepare=decision["can_prepare"],
+                                       block_code=(decision.get("block_reason") or {}).get("code")))
             reply["admission"] = decision
             if ml["status"] == "check_failed" or ml["signal_quality"] == "bad" or incompatible_fault(ml):
                 reason = decision["block_reason"]
                 message = case_context.blocked_message(reason["message"], ml, ml["engine_model"])
-                reply.update(explanation=message, clarifying_question=message)
+                reply.update(explanation=message, clarifying_question=reason["next_action"])
                 return reply
             return self.respond(reply, question, history, trace)
         except Exception as exc:
@@ -259,12 +263,11 @@ class Agent:
 
         ml = reply["ml_observations"]
         admission = reply["admission"]
-        trace["tools"].append(dict(name="admission", can_prepare=admission["can_prepare"],
-                                    block_code=(admission.get("block_reason") or {}).get("code")))
         if not admission["can_prepare"]:
             reason = admission["block_reason"]
             reply.update(intent="clarify", explanation=reason["message"], clarifying_question=reason["next_action"])
             return reply
+        started = time.monotonic()
         fields = self.mechanic.suggest_draft(Diagnosis.model_validate(ml), ml["engine_model"])
         operations = admission["approved_operations"]
         fragments = dict.fromkeys(fragment for item in operations
@@ -275,10 +278,12 @@ class Agent:
             ticket_draft=dict(vehicle_id=ml["vehicle_id"], session_id=ml["session_id"],
                               anomaly_type=ml["anomaly_type"], **fields.model_dump()))
         reply["clarifying_question"] = "Проверьте условия применимости работ и подтвердите приоритет в основном экране."
-        trace["tools"].append(dict(name="prepare_ticket", operation_ids=[item["id"] for item in operations]))
+        trace["tools"].append(dict(name="prepare_ticket", seconds=time.monotonic() - started,
+                                   operation_ids=[item["id"] for item in operations]))
         return reply
 
     def conflict_reply(self, reply, question, trace):
+        started = time.monotonic()
         ml = reply["ml_observations"]
         case = conflict_case(question, ml["engine_model"])
         if not case:
@@ -293,6 +298,7 @@ class Agent:
                              for fragment in case["fragment_ids"]], references=references,
                      clarifying_question=("Ограничения: " + case["limitations"]) if case.get("limitations") else None)
         trace["tools"].append(dict(name="reviewed_conflict", query=question, conflict_id=case["id"],
+            seconds=time.monotonic() - started,
             pages=[(item["manual"], item["pdf_page"]) for item in references]))
         return True
 

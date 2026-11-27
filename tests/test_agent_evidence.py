@@ -50,15 +50,19 @@ def test_known_conflicts_return_every_reviewed_source(question, pages, tmp_path)
     assert 'Ограничения:' in result['clarifying_question']
 
 
-def test_f02_without_control_manometer_procedure_is_documentary_only(tmp_path):
+def test_f02_draft_contains_only_the_reviewed_fluid_check(tmp_path):
     card, ml = context()
-    agent = CaseAgent(ROOT / 'artifacts/manual-corpus.json', tmp_path / 'blocked.jsonl')
+    agent = CaseAgent(ROOT / 'artifacts/manual-corpus.json', tmp_path / 'draft.jsonl')
     agent.agent.provider = NoModel()
-    assert not agent.can_prepare(card, Diagnosis.model_validate(ml))
-    reply, proposal, _entry, _calls = agent.chat(card, Diagnosis.model_validate(ml), 'Подготовь заявку', [])
-    assert proposal is None
-    assert 'процедур' in reply.summary
-    assert any('дефектовк' in item for section in reply.sections for item in section.items)
+    diagnosis = Diagnosis.model_validate(ml)
+    assert agent.can_prepare(card, diagnosis)
+    reply, proposal, _entry, calls = agent.chat(card, diagnosis, 'Подготовь заявку', [])
+    assert 'Черновик подготовлен' in reply.summary
+    assert proposal.operations == [
+        'Проверить достаточность уровня масла в картере и уровня охлаждающей жидкости.'
+    ]
+    assert [source.pdf_page for source in proposal.references] == [53]
+    assert [call['tool'] for call in calls] == ['agent.search', 'agent.prepare_ticket']
 
 
 def test_agent_uses_same_engine_compatibility_rule_as_server():

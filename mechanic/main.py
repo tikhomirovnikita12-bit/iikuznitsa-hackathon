@@ -552,12 +552,15 @@ def overview(vehicle: dict, diagnosis: Diagnosis):
         decision = evaluate_admission(vehicle, diagnosis, mechanic=policy_mechanic)
         if decision["approved_operations"]:
             approved = decision["approved_operations"]
-            refs = list({(ref["manual"], ref["pdf_page"]): ref
-                         for operation in approved for ref in operation["references"]}.values())
+            refs = {(ref.manual, ref.pdf_page): ref for ref in brief.references}
+            for operation in approved:
+                for source in operation["references"]:
+                    ref = Reference.model_validate(source)
+                    refs[(ref.manual, ref.pdf_page)] = ref
             brief = Brief(risk="unassessed",
                 rationale="Акустический признак — гипотеза. Риск оценивается по фактическим измерениям и очной проверке.",
                 first_check=approved[0]["operation"] if decision["can_prepare"] else decision["block_reason"]["next_action"],
-                references=refs)
+                references=list(refs.values()))
         calls = bind_fixture_sources([brief], vehicle, diagnosis)
         return {"origin": "fixture", **brief.model_dump()}, calls, "agent.fixture"
     body, calls = agent_call("overview", vehicle, diagnosis, empty_state())
