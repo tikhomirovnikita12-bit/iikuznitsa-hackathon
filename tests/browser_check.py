@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / ".runtime"
 PYTHON = ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 OIL = ("E549YT198", "S-0011")
+FUEL = ("M333YK47", "S-0005")
 NORMAL = ("E549YT198", "S-0010")
 FAILED = ("P456AT178", "S-0003")
 WARNING = ("M739BA198", "S-0103")
@@ -41,10 +42,12 @@ def stand(port, directory, **overrides):
     base = f"http://127.0.0.1:{port}"
     env = {**os.environ, "PYTHONUTF8": "1", "MECHANIC_DB": str(directory / f"{port}.sqlite3"),
            "TEAM_DB_PATH": str(directory / f"{port}-team.sqlite3"), **overrides}
-    python = PYTHON
-    if os.name == "nt":
-        python = sys._base_executable
-        env["PYTHONPATH"] = str(ROOT / ".venv" / "Lib" / "site-packages")
+    # Use the interpreter that started the checks, so a clean copy without
+    # a local .venv still sees the same site-packages (Playwright, uvicorn).
+    python = Path(sys.executable)
+    site_packages = python.parent.parent / "Lib" / "site-packages" if os.name == "nt" else python.parent.parent / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    if site_packages.exists():
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(site_packages), env.get("PYTHONPATH", "")]))
     log_path = directory / f"{port}.log"
     with log_path.open("w", encoding="utf-8") as log:
         process = subprocess.Popen(
@@ -161,6 +164,8 @@ def draft(page, *, from_result=False):
 
 
 def submit(page):
+    if not page.locator("#urgency").input_value():
+        page.locator("#urgency").select_option("medium")
     page.get_by_label("Подтверждаю выбранный приоритет").check()
     page.get_by_role("button", name="Подтвердить и отправить").click()
 
@@ -284,6 +289,7 @@ def desktop_checks(browser, base, out, results):
     ticket = page.locator(".ticket-badge")
     expect(ticket).to_be_visible()
     number = ticket.inner_text()
+    expect(page.locator("#vehicle-history .history-list li.current")).to_contain_text(number)
     page.reload()
     expect(ticket).to_have_text(number)
     page.locator("#result").get_by_role("button", name="Открыть заявку", exact=True).click()
@@ -362,6 +368,41 @@ def desktop_checks(browser, base, out, results):
     viewer.wait_for_url(base + "/")
     expect(viewer.locator("#vehicle")).to_have_value("")
     viewer.close()
+
+    page.get_by_role("button", name="Состояние парка").click()
+    expect(page.locator("#fleet-panel")).to_be_visible()
+    expect(page.locator("#fleet-panel .fleet-row")).to_have_count(50)
+    expect(page.locator("#fleet-panel .sparkline")).to_have_count(50)
+    assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
+    expect(page.locator(".fleet-name", has_text="null")).to_have_count(0)
+    missing = page.locator(".fleet-history", has_text="—").first
+    scores = missing.locator("span").inner_text().split(" → ")
+    expect(missing.locator("circle")).to_have_count(sum(score != "—" for score in scores))
+    page.locator("#fleet-panel .fleet-summary button", has_text="Карантин").click()
+    expect(page.locator("#fleet-panel .fleet-summary button", has_text="Карантин")).to_be_focused()
+    expect(page.locator("#fleet-panel .fleet-row")).to_have_count(14)
+    fleet_row = page.locator("#fleet-panel .fleet-row", has_text="T792HO98")
+    expect(fleet_row).to_have_count(1)
+    page.screenshot(path=out / "fleet.png")
+    fleet_row.get_by_role("button", name="К проверке").click()
+    expect(page.locator("#vehicle")).to_have_value("T792HO98")
+    expect(page.locator("#session")).to_have_value("S-0043")
+    expect(page.locator("#fleet-panel")).to_be_hidden()
+    page.locator("#diagnose").click()
+    expect(page.locator("#result-title")).to_have_text("Обнаружено отклонение")
+    expect(page.locator("#vehicle-history")).to_be_visible()
+    expect(page.locator("#vehicle-history .history-list li")).to_have_count(4)
+    results.append({"pair": ("T792HO98", "S-0043"),
+                    "step": "Сводка парка, фильтр карантина, переход и история машины", "result": "passed"})
+
+    pick(page, *FUEL)
+    diagnose(page, "Обнаружено отклонение")
+    draft(page, from_result=True)
+    expect(page.locator("#operations")).to_have_value("Проверить соединения и надёжность крепления топливопроводов.")
+    expect(page.locator('#ticket-panel a[href="/sources/yamz236-re/16"]')).to_be_visible()
+    expect(page.locator("#urgency")).to_have_value("")
+    results.append({"pair": FUEL, "step": "F08, черновик из Workflow и PDF до выбора приоритета", "result": "passed"})
+
     assert not errors, errors
     context.close()
 
@@ -378,6 +419,8 @@ def mobile_and_race(playwright, browser, base, directory, out, results):
         expect(page.locator("#context-summary")).to_contain_text(OIL[0])
         expect(page.locator("#context-summary")).to_contain_text(OIL[1])
         expect(page.locator("#context-summary")).to_contain_text("ЯМЗ-236М2")
+        expect(page.locator("#vehicle-history")).to_be_visible()
+        expect(page.locator("#vehicle-history .history-list li").first).to_be_visible()
         expect(page.locator("#selection")).to_be_hidden()
         expect(page.locator("#workarea > #journal-panel:last-child")).to_be_visible()
         page.screenshot(path=out / "mobile.png")
@@ -420,6 +463,17 @@ def mobile_and_race(playwright, browser, base, directory, out, results):
     expect(page.locator("#chat-context")).to_contain_text(NORMAL[1])
     assert OIL[1] not in page.locator("#result").inner_text()
     results.append({"pair": OIL, "step": "Опоздавший HTTP-ответ после перехода к S-0010", "result": "passed"})
+
+    history_route = "**/api/history?vehicle_id=" + OIL[0]
+    page.route(history_route, lambda route: delayed.append(route))
+    with page.expect_request(history_route):
+        pick(page, *OIL)
+    pick(page, *FUEL)
+    expect(page.locator("#vehicle-history .history-list li.current")).to_contain_text("Дизельная топливоподача")
+    with page.expect_response(history_route):
+        delayed.pop().continue_()
+    expect(page.locator("#vehicle-history .history-list li.current")).to_contain_text("Дизельная топливоподача")
+    results.append({"pair": FUEL, "step": "Поздний ответ истории другой машины", "result": "passed"})
     context.close()
 
 
@@ -431,6 +485,9 @@ def stale_draft_across_tabs(browser, directory, results):
         pick(editor, *OIL)
         diagnose(editor, "Обнаружено отклонение")
         draft(editor, from_result=True)
+        editor.locator("#urgency").select_option("medium")
+        editor.get_by_role("button", name="Сохранить изменения").click()
+        expect(editor.locator("#draft-save-status")).to_have_text("Сохранено")
 
         peer = context.new_page()
         peer.goto(editor.url)
@@ -607,6 +664,8 @@ def record(browser, base, folder):
         draft(page, from_result=True)
         checkpoint("draft")
         until(34)
+        if not page.locator("#urgency").input_value():
+            page.locator("#urgency").select_option("medium")
         page.get_by_label("Подтверждаю выбранный приоритет").check()
         until(37)
         page.get_by_role("button", name="Подтвердить и отправить").click()
@@ -657,9 +716,11 @@ def main():
                     [str(PYTHON), "-c", "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"],
                     text=True,
                 ).strip()
+                temp_video = destination / "demo-latest.mp4"
                 subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-i", str(video), "-an",
                                 "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                                str(destination / "Цифровой механик — демо.mp4")], check=True)
+                                str(temp_video)], check=True)
+                temp_video.replace(destination / "Цифровой механик — демо.mp4")
                 (out / "video-timings.json").write_text(json.dumps(timings, ensure_ascii=False, indent=2), encoding="utf-8")
                 print(timings, flush=True)
             else:

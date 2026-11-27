@@ -6,8 +6,8 @@ from .contracts import DraftFields, Reference, Reply, Section
 
 
 class CaseAgent:
-    def __init__(self, corpus, log):
-        self.agent = Agent(backend=None, manuals=Manuals(corpus), log=log)
+    def __init__(self, corpus, log, *, assessment=None):
+        self.agent = Agent(backend=None, manuals=Manuals(corpus), log=log, assessment=assessment)
 
     def chat(self, vehicle, diagnosis, question, history):
         trace = {}
@@ -30,7 +30,12 @@ class CaseAgent:
             sections.append(Section(kind="clarify", items=[question_to_clarify],
                                     references=[] if sections else list(references.values())))
 
-        summary = result.get("explanation") or result["verdict"]
+        summary = result.get("explanation")
+        if not summary and result.get("intent") not in {"diagnosis", "movement"}:
+            lead = next((item["text"] for field in ("checks", "possible_causes", "risk") for item in result[field]), None)
+            if diagnosis.status != "check_failed":
+                summary = lead or result["clarifying_question"]
+        summary = summary or result["verdict"]
         draft = result["ticket_draft"]
         proposal = None
         if draft:

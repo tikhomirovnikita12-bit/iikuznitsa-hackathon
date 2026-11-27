@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from . import demo_agent, sources
 from .case_agent import CaseAgent
 from agent.dialog import history_entry
+from agent.tools.ticket import wants_draft
 from .config import CORPUS, DEFAULT_ML, DEFAULT_TOIR, MOCKS, ROOT, WEB, endpoint
 from .contracts import (
     Brief, ChatRequest, Diagnosis, DraftFields, DraftUpdate, Identifier, Pair, Reference, Reply, TicketReceipt,
@@ -68,7 +69,7 @@ case_agent = None
 if os.environ.get("CASE_AGENT") == "1" and not (TEAM_API_URL or TEAM_AGENT_URL):
     if not CORPUS.is_file():
         raise ValueError("Сначала подготовьте индекс командой python -m mechanic.prepare.")
-    case_agent = CaseAgent(CORPUS, db_path.parent / "agent-turns.jsonl")
+    case_agent = CaseAgent(CORPUS, db_path.parent / "agent-turns.jsonl", assessment=team.assess if team else None)
 
 
 @asynccontextmanager
@@ -178,6 +179,7 @@ def catalog():
         "manuals": sources.catalog(),
         "fault_types": FAULTS,
         "mode": "hybrid" if TEAM_AGENT_URL or case_agent else "demo",
+        "pressure_comparison": case_agent is not None,
         "manual_search": "team" if retrieval else "fixture",
         "backend": "team" if team else "local",
         "confidence_threshold": LOW_CONFIDENCE,
@@ -191,6 +193,110 @@ def vehicle_for(pair: Pair) -> dict:
     if pair.key() not in SESSION_KEYS:
         raise ApiError(404, "invalid_pair", "Сессия не принадлежит выбранному ТС. Выберите его сессию.")
     return vehicle
+
+
+FLEET_CATEGORIES = ("quarantine", "attention", "recheck", "ready")
+
+
+def fleet_row(vehicle: dict) -> dict:
+    """Сводка по машине: последняя проверка, история и состояние заявки.
+
+    Порогов нет в ТЗ v6, поэтому категории — локальное правило стенда:
+    высокая оценка аномалии, высокий риск или зарегистрированная заявка
+    означают «карантин»; сбой проверки — «повторить запись».
+    """
+    sessions = sorted(vehicle["sessions"], key=lambda session: session["checked_at"])
+    latest = sessions[-1]
+    pair = Pair(vehicle_id=vehicle["vehicle_id"], session_id=latest["session_id"])
+    state = read_state(pair) if store else (team.populate(empty_state(), pair) if team else empty_state())
+    ticket = state["ticket"]
+    draft = state["draft"]
+    brief = state["brief"]
+    result = state["diagnosis"] or latest
+    score = result.get("anomaly_score")
+
+    if ticket["status"] in ("sending", "created", "unknown") or (brief and brief["risk"] == "high") \
+            or (score is not None and score >= 0.8):
+        category = "quarantine"
+        reason = "Высокая оценка отклонения, высокий риск или заявка в работе"
+    elif result["status"] == "check_failed":
+        category = "recheck"
+        reason = "Сбой проверки: нужна повторная запись"
+    elif result["status"] == "anomaly":
+        category = "attention"
+        reason = "Отклонение требует контроля"
+    else:
+        category = "ready"
+        reason = "Значимых отклонений не обнаружено"
+
+    return {
+        "vehicle_id": vehicle["vehicle_id"],
+        "make": vehicle["make"],
+        "model": vehicle["model"],
+        "engine_model": vehicle["engine_model"],
+        "category": category,
+        "reason": reason,
+        "urgency": draft["urgency"] if draft else None,
+        "ticket": {key: ticket.get(key) for key in ("status", "ticket_id")},
+        "latest": {
+            "session_id": latest["session_id"],
+            "checked_at": latest["checked_at"],
+            "status": result["status"],
+            "anomaly_type": result.get("anomaly_type"),
+            "anomaly_title": FAULTS.get(result.get("anomaly_type")),
+            "anomaly_score": score,
+        },
+        "history": [
+            {
+                "session_id": session["session_id"],
+                "checked_at": session["checked_at"],
+                "status": result["status"] if session == latest else session["status"],
+                "anomaly_score": score if session == latest else session.get("anomaly_score"),
+            }
+            for session in sessions[-5:]
+        ],
+    }
+
+
+@app.get("/api/fleet")
+def fleet():
+    rows = [fleet_row(vehicle) for vehicle in VEHICLES]
+    return {
+        "summary": {**{name: sum(row["category"] == name for row in rows) for name in FLEET_CATEGORIES},
+                    "total": len(rows)},
+        "vehicles": sorted(rows, key=lambda row: (FLEET_CATEGORIES.index(row["category"]), row["vehicle_id"])),
+        "criteria": {
+            "quarantine": "оценка аномалии >= 0,8, высокий риск или заявка в работе",
+            "recheck": "последняя проверка закончилась сбоем записи",
+            "attention": "последняя проверка показала отклонение",
+            "ready": "последняя проверка — норма",
+        },
+    }
+
+
+@app.get("/api/history")
+def vehicle_history(vehicle_id: Annotated[str, Query()]):
+    """Последние проверки машины и состояния её заявок — память по vehicle_id."""
+    vehicle = VEHICLE_BY_ID.get(vehicle_id)
+    if vehicle is None:
+        raise ApiError(404, "unknown_vehicle", "Транспортное средство не найдено. Выберите его из каталога.")
+    sessions = sorted(vehicle["sessions"], key=lambda session: session["checked_at"])[-5:]
+    rows = []
+    for session in sessions:
+        pair = Pair(vehicle_id=vehicle_id, session_id=session["session_id"])
+        state = read_state(pair) if store else (team.populate(empty_state(), pair) if team else empty_state())
+        diagnosis = state["diagnosis"] or session
+        ticket = state["ticket"]
+        rows.append({
+            "session_id": session["session_id"],
+            "checked_at": session["checked_at"],
+            "status": diagnosis["status"],
+            "anomaly_type": diagnosis.get("anomaly_type"),
+            "anomaly_title": FAULTS.get(diagnosis.get("anomaly_type")),
+            "anomaly_score": diagnosis.get("anomaly_score"),
+            "ticket": {key: ticket.get(key) for key in ("status", "ticket_id")},
+        })
+    return {"vehicle_id": vehicle_id, "sessions": rows}
 
 
 @app.get("/api/state")
@@ -214,6 +320,7 @@ def session_response(pair: Pair, state: dict):
     return {
         **public_state(state),
         "messages": chat_history(state),
+        "previous_drafts": state.get("previous_drafts", []),
         "draft_available": draft_available(VEHICLE_BY_ID[pair.vehicle_id], state),
         "reconcile_available": bool(team and team.can_reconcile and state["ticket"]["status"] == "unknown"),
     }
@@ -390,8 +497,18 @@ def overview(vehicle: dict, diagnosis: Diagnosis):
                       first_check=first or result["clarifying_question"] or reply.summary,
                       references=references)
         return {"origin": "team", **brief.model_dump(), "analysis": result}, calls, "agent.overview"
-    if not TEAM_AGENT_URL or demo_agent.case_for(vehicle, diagnosis) == "mismatch":
+    case = demo_agent.case_for(vehicle, diagnosis)
+    if not TEAM_AGENT_URL or case == "mismatch":
         brief = demo_agent.brief(vehicle, diagnosis)
+        if case == "unsupported":
+            if fields := workflow_proposal(vehicle, diagnosis):
+                brief = Brief(
+                    risk="unassessed",
+                    rationale="Результат акустической диагностики требует подтверждения механиком.",
+                    first_check=fields.operations[0],
+                    references=[Reference(**reference.model_dump()) for reference in fields.references],
+                )
+                return {"origin": "workflow", **brief.model_dump()}, [], "backend.drafts.suggest"
         calls = bind_fixture_sources([brief], vehicle, diagnosis)
         return {"origin": "fixture", **brief.model_dump()}, calls, "agent.fixture"
     body, calls = agent_call("overview", vehicle, diagnosis, empty_state())
@@ -432,9 +549,10 @@ def diagnose(pair: Pair):
             diagnosis.status, diagnosis.anomaly_type
         ):
             state["agent_history"] = []
-            if state["ticket"]["status"] in ("idle", "draft", "error"):
+            state["messages"] = []
+            if team or state["ticket"]["status"] in ("idle", "draft", "error"):
                 state.update(draft=None, draft_id=None, draft_revision=None, draft_origin=None,
-                             messages=[], ticket=empty_state()["ticket"])
+                             ticket=empty_state()["ticket"])
         if brief and brief.get("analysis") and not state["agent_history"]:
             state["agent_history"] = [history_entry("Покажи диагностику", brief["analysis"])]
         state.update(diagnosis=diagnosis.model_dump(), brief=brief, brief_error=brief_error,
@@ -445,30 +563,36 @@ def diagnose(pair: Pair):
 
 
 def response_to_chat(vehicle, diagnosis, state, question):
-    draft_requested = demo_agent.wants_draft(question)
+    draft_requested = wants_draft(question)
     if draft_requested and diagnosis.status != "anomaly":
         return Reply(summary="Черновик дефектовки доступен для результата с отклонением."), None, "fixture", [], None
     if draft_requested and state["draft"]:
         return Reply(summary="Черновик уже открыт. Проверьте поля и подтвердите приоритет."), None, "fixture", [], None
 
     mismatch = demo_agent.case_for(vehicle, diagnosis) == "mismatch"
+    if draft_requested and not mismatch and not TEAM_AGENT_URL:
+        if proposal := workflow_proposal(vehicle, diagnosis):
+            return Reply(summary="Черновик подготовлен. Проверьте работы и выберите приоритет."), proposal, "workflow", [], None
+
     if case_agent:
         reply, proposal, entry, calls = local_agent_turn(vehicle, diagnosis, question, state["agent_history"])
+        if proposal is not None and (not draft_requested or diagnosis.status != "anomaly" or mismatch):
+            raise ApiError(502, "agent_invalid_draft", "Черновик возможен только для совместимого отклонения.")
         return reply, proposal, "team", calls, entry
 
     if TEAM_AGENT_URL and diagnosis.status != "check_failed" and not mismatch:
         body, calls = agent_call("chat", vehicle, diagnosis, state, question)
         reply = Reply.model_validate(body.get("reply"))
         proposal = DraftFields.model_validate(body["draft"]) if body.get("draft") is not None else None
-        if proposal is not None and diagnosis.status != "anomaly":
-            raise ApiError(502, "agent_invalid_draft", "Черновик возможен только для результата с отклонением.")
+        if proposal is not None and (not draft_requested or diagnosis.status != "anomaly"):
+            raise ApiError(502, "agent_invalid_draft", "Черновик возможен по явному запросу для результата с отклонением.")
         return reply, proposal, "team", calls, None
 
     if draft_requested:
         proposal = demo_agent.draft(vehicle, diagnosis)
         if proposal:
             return Reply(summary="Черновик подготовлен. Проверьте поля и подтвердите приоритет."), proposal, "fixture", [], None
-        message = demo_agent.mismatch(vehicle) if mismatch else (
+        message = demo_agent.mismatch(vehicle, diagnosis) if mismatch else (
             "Для черновика нужна подтверждённая страница по этому двигателю. "
             "Уточните узел и результаты проверки перед дефектовкой."
         )
@@ -476,28 +600,44 @@ def response_to_chat(vehicle, diagnosis, state, question):
     return demo_agent.answer(vehicle, diagnosis, question), None, "fixture", [], None
 
 
+def workflow_proposal(vehicle: dict, diagnosis: Diagnosis):
+    if not team:
+        return None
+    fields = team.suggest(diagnosis, vehicle["engine_model"])
+    if fields.conclusion and fields.operations and fields.references and all(
+        sources.valid_reference(reference, vehicle["engine_model"]) for reference in fields.references
+    ):
+        return fields
+    return None
+
+
 def draft_available(vehicle: dict, state: dict) -> bool:
-    if not state["diagnosis"] or state["draft"] or state["brief_error"]:
+    if not state["diagnosis"] or state["draft"]:
         return False
     diagnosis = Diagnosis.model_validate(state["diagnosis"])
     if diagnosis.status != "anomaly" or demo_agent.case_for(vehicle, diagnosis) == "mismatch":
         return False
-    if case_agent:
-        return True
     if TEAM_AGENT_URL:
-        return bool(state["brief"] and state["brief"].get("references"))
+        return bool(not state["brief_error"] and state["brief"] and state["brief"].get("references"))
+    if workflow_proposal(vehicle, diagnosis):
+        return True
+    if state["brief_error"]:
+        return False
+    if case_agent:
+        return bool((state["brief"] or {}).get("analysis", {}).get("checks"))
     proposal = demo_agent.draft(vehicle, diagnosis)
     return bool(proposal and all(
         sources.valid_reference(reference, vehicle["engine_model"]) for reference in proposal.references
     ))
 
 
-def save_proposal(state: dict, pair: Pair, diagnosis: Diagnosis, draft: DraftFields, origin: str):
-    if state["draft"] is not None:
+def save_proposal(state: dict, pair: Pair, diagnosis: Diagnosis, draft, origin: str):
+    if not team and state["draft"] is not None:
         return
     if team:
         draft_started = perf_counter()
-        team.prepare(pair, draft)
+        current = team.prepare(pair, diagnosis, None if origin == "workflow" else draft)
+        state["draft_id"] = current.draft_id
         record_call(state, audit("backend.drafts.create", draft_started))
     else:
         state["draft"] = TicketRequest(
@@ -522,7 +662,7 @@ def prepare_draft(pair: Pair):
     started = perf_counter()
     tool = "agent.chat" if TEAM_AGENT_URL or case_agent else "agent.fixture"
     try:
-        reply, draft, origin, calls, _entry = response_to_chat(vehicle, diagnosis, snapshot, "Подготовь заявку")
+        reply, draft, origin, calls, agent_entry = response_to_chat(vehicle, diagnosis, snapshot, "Подготовь заявку")
         if draft is None:
             raise ApiError(422, "draft_unavailable", reply.summary)
         verify_references(draft.references, vehicle, required=True)
@@ -539,9 +679,14 @@ def prepare_draft(pair: Pair):
         current = team.stored_diagnosis(pair) if team else state["diagnosis"]
         if current != snapshot["diagnosis"]:
             raise ApiError(409, "diagnosis_changed", "Результат проверки изменился. Обновите сессию.")
-        record_call(state, audit(tool, started))
+        if team:
+            team.restore_diagnosis(state, current)
+        if origin != "workflow":
+            record_call(state, audit(tool, started))
         for call in calls:
             record_call(state, call)
+        if agent_entry is not None:
+            state["agent_history"] = [*state["agent_history"][-5:], agent_entry]
         save_proposal(state, pair, diagnosis, draft, origin)
 
     return present(pair, store.update(pair.key(), save))
@@ -577,6 +722,8 @@ def chat(request: ChatRequest):
         current = team.stored_diagnosis(request) if team else state["diagnosis"]
         if current != snapshot["diagnosis"]:
             raise ApiError(409, "diagnosis_changed", "Результат изменился. Задайте вопрос по обновлённой проверке.")
+        if team:
+            team.restore_diagnosis(state, current)
         state["messages"].extend([
             {"role": "user", "text": request.message},
             {"role": "assistant", "origin": origin, **reply.model_dump()},
@@ -584,7 +731,8 @@ def chat(request: ChatRequest):
         if agent_entry is not None:
             state["agent_history"] = [*state["agent_history"][-5:], agent_entry]
         state["messages"] = chat_history(state)
-        record_call(state, audit(tool, started))
+        if origin != "workflow":
+            record_call(state, audit(tool, started))
         for call in calls:
             record_call(state, call)
         if draft is not None:
@@ -611,10 +759,18 @@ def same_submission(request: TicketSubmit, draft_id: str, revision: int, fields:
 
 
 @contextmanager
-def selected_team_draft(pair: Pair, draft_id: str, revision: int, *, submission: TicketSubmit | None = None):
-    draft = team.current_draft(pair)
-    if not draft:
-        raise stale_draft(pair)
+def selected_team_draft(pair: Pair, draft_id: str, revision: int, *, submission: TicketSubmit | None = None,
+                        require_current: bool = False):
+    try:
+        draft = team.draft_for_pair(pair, draft_id)
+    except team.Problem as error:
+        if error.code == "draft_not_found":
+            raise stale_draft(pair) from error
+        raise
+    if require_current or (submission is not None and draft.state in ("draft", "delivery_failed")):
+        diagnosis = team.stored_diagnosis(pair)
+        if not diagnosis or diagnosis["status"] != "anomaly" or diagnosis["anomaly_type"] != draft.anomaly_type:
+            raise stale_draft(pair)
     if submission is not None and draft.state in ("sending", "sent", "delivery_unknown"):
         matches = same_submission(submission, draft.draft_id, draft.revision, draft.model_dump())
     else:
@@ -637,7 +793,7 @@ def edit_draft(state: dict, request: DraftUpdate, vehicle: dict):
     if diagnosis.status != "anomaly" or diagnosis.anomaly_type != draft.anomaly_type:
         raise ApiError(409, "diagnosis_changed", "Код или статус диагностики изменился. Обновите черновик.")
     if demo_agent.case_for(vehicle, diagnosis) == "mismatch":
-        raise ApiError(409, "engine_mismatch", demo_agent.mismatch(vehicle))
+        raise ApiError(409, "engine_mismatch", demo_agent.mismatch(vehicle, diagnosis))
     verify_references(draft.references, vehicle, required=True)
     updated = draft.model_dump()
     if updated != state["draft"]:
@@ -648,7 +804,7 @@ def edit_draft(state: dict, request: DraftUpdate, vehicle: dict):
 def save_draft(request: DraftUpdate):
     vehicle = vehicle_for(request)
     if team:
-        with selected_team_draft(request, request.draft_id, request.revision) as draft:
+        with selected_team_draft(request, request.draft_id, request.revision, require_current=True) as draft:
             team.patch(draft, request)
         return session_response(request, read_state(request))
 
@@ -703,7 +859,7 @@ def submit(request: TicketSubmit):
                     raise ApiError(409, "diagnosis_changed", "Запустите проверку этой сессии.")
                 diagnosis = Diagnosis.model_validate(stored)
                 if demo_agent.case_for(vehicle, diagnosis) == "mismatch":
-                    raise ApiError(409, "engine_mismatch", demo_agent.mismatch(vehicle))
+                    raise ApiError(409, "engine_mismatch", demo_agent.mismatch(vehicle, diagnosis))
             started = perf_counter()
             result = team.submit(draft, request)
         if draft.state in ("draft", "delivery_failed"):

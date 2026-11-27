@@ -34,7 +34,7 @@ class TeamWorkflow:
         sys.path.insert(0, str(checkout.resolve()))
         from backend import models
         from backend.mechanic import Mechanic
-        from backend.models import Confirm, DraftPatch, Pair
+        from backend.models import Confirm, Diagnosis, DraftPatch, Pair
         from backend.store import Store
         from backend.upstream import Problem
         from backend.workflow import Catalog, Workflow
@@ -42,6 +42,7 @@ class TeamWorkflow:
         database = ROOT / os.environ.get("TEAM_DB_PATH",
                                          os.environ.get("MECHANIC_DB_PATH", "artifacts/mechanic.sqlite3"))
         self.Pair, self.Patch, self.Confirm, self.Problem = Pair, DraftPatch, Confirm, Problem
+        self.Diagnosis = Diagnosis
         self.Reconcile = getattr(models, "Reconcile", None)
         self.ml = httpx.Client(base_url=ml_url, timeout=timeout, trust_env=False)
         self.toir = httpx.Client(base_url=toir_url, timeout=timeout, trust_env=False)
@@ -76,19 +77,31 @@ class TeamWorkflow:
                 raise
             return None
 
-    def current_draft(self, pair):
-        drafts = self.workflow.drafts(self.pair(pair))
-        return drafts[-1] if drafts else None
+    def draft_for_pair(self, pair, draft_id):
+        draft = self.workflow.get_draft(draft_id)
+        if (draft.vehicle_id, draft.session_id) != pair.key():
+            raise self.Problem(404, "draft_not_found", "Черновик не найден для выбранной сессии.")
+        return draft
 
-    def prepare(self, pair, fields):
-        draft = self.workflow.create_draft(self.pair(pair))
-        if draft.state != "draft" or draft.revision != 1:
-            return
+    def suggest(self, diagnosis, engine_model):
+        native = self.Diagnosis.model_validate(diagnosis.model_dump())
+        return self.workflow.mechanic.suggest_draft(native, engine_model)
+
+    def assess(self, observations):
+        diagnosis = self.Diagnosis.model_validate({key: observations[key] for key in self.Diagnosis.model_fields})
+        return self.workflow.mechanic.assess(diagnosis, observations["engine_model"])
+
+    def prepare(self, pair, diagnosis, fields):
+        expected = self.Diagnosis.model_validate(diagnosis.model_dump())
+        draft = self.workflow.create_draft(self.pair(pair), expected_diagnosis=expected)
+        if fields is None or draft.state != "draft" or draft.revision != 1:
+            return draft
         try:
-            self.workflow.patch_draft(draft.draft_id, self.Patch(revision=draft.revision, **fields.model_dump()))
+            return self.workflow.patch_draft(draft.draft_id, self.Patch(revision=draft.revision, **fields.model_dump()))
         except self.Problem as error:
             if error.code not in ("stale_draft", "draft_locked"):
                 raise
+            return self.workflow.get_draft(draft.draft_id)
 
     def patch(self, draft, request):
         edits = request.edits.model_dump()
@@ -119,12 +132,29 @@ class TeamWorkflow:
         fields = request.model_dump(include={"revision", "ticket_id", "verified"})
         return self.workflow.reconcile_draft(draft.draft_id, self.Reconcile(**fields))
 
+    @staticmethod
+    def restore_diagnosis(state, actual):
+        previous = state["diagnosis"]
+        if actual != previous:
+            if previous and (not actual or (previous["status"], previous["anomaly_type"]) !=
+                             (actual["status"], actual["anomaly_type"])):
+                state.update(messages=[], agent_history=[])
+            state.update(diagnosis=actual, brief=None, brief_error=None)
+
     def populate(self, state, pair, *, restore_diagnosis=False):
         if restore_diagnosis:
-            actual = self.stored_diagnosis(pair)
-            if actual != state["diagnosis"]:
-                state.update(diagnosis=actual, brief=None, brief_error=None)
-        draft = self.current_draft(pair)
+            self.restore_diagnosis(state, self.stored_diagnosis(pair))
+        diagnosis = state["diagnosis"]
+        code = diagnosis["anomaly_type"] if diagnosis and diagnosis["status"] == "anomaly" else None
+        drafts = self.workflow.drafts(self.pair(pair))
+        draft = next((item for item in drafts if item.anomaly_type == code), None)
+        state["previous_drafts"] = [
+            {"draft_id": item.draft_id, "revision": item.revision, "anomaly_type": item.anomaly_type,
+             "status": TICKET_STATES[item.state], "ticket_id": item.ticket_id}
+            for item in reversed(drafts) if item.anomaly_type != code
+        ]
+        if not draft or draft.draft_id != state["draft_id"]:
+            state["draft_origin"] = None
         if draft:
             error = draft.delivery_error
             message = error.message if error else None
@@ -136,4 +166,7 @@ class TeamWorkflow:
                 "status": TICKET_STATES[draft.state], "ticket_id": draft.ticket_id,
                 "message": message,
             }
+        else:
+            state.update(draft=None, draft_id=None, draft_revision=None,
+                         ticket={"status": "idle", "ticket_id": None, "message": None})
         return state

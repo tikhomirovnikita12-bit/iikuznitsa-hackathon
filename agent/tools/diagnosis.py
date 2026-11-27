@@ -4,7 +4,7 @@ def diagnose(backend, vehicle_id, session_id):
 
 def describe(result):
     verdict = {
-        "normal": "По записи признаков отклонения нет. Продолжайте штатную эксплуатацию.",
+        "normal": "По записи признаков отклонения нет. Если осталась жалоба, уточните симптом.",
         "check_failed": f"Проверка не состоялась. {result['description']} Повторите запись.",
         "anomaly": f"Обнаружено отклонение: {result['anomaly_title']}.",
     }[result["status"]]
