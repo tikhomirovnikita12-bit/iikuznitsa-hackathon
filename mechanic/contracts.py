@@ -64,10 +64,13 @@ class DraftUpdate(Pair):
     draft_id: Identifier
     revision: Revision
     edits: DraftEdits
+    applicability_confirmations: list[Identifier] = Field(default_factory=list, max_length=20)
 
 
 class TicketSubmit(DraftUpdate):
     priority_confirmed: Annotated[bool, Field(strict=True)]
+    warning_acknowledged: Annotated[bool, Field(strict=True)] = False
+    diagnosis_revision: str | None = None
 
 
 class TicketReconciliation(Pair):

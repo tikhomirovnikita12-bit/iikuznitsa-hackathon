@@ -1,7 +1,7 @@
-"""The integrated screen must agree with the real draft workflow about readiness.
+"""Screen readiness follows the server's reviewed-operation registry.
 
-The F08 success fixture below is deliberately synthetic: it verifies transport and
-confirmation when evidence exists, not real F08 knowledge coverage.
+A deliberately unreviewed agent-index fixture must not replace the approved work.
+Delivery tests use the real F14 operation; F02 remains documentation-only.
 """
 
 import json
@@ -23,7 +23,7 @@ from manual_search.corpus import verified_fragments
 
 
 FUEL = {"vehicle_id": "M333YK47", "session_id": "S-0005"}
-OIL = {"vehicle_id": "E549YT198", "session_id": "S-0011"}
+CHAIN = {"vehicle_id": "Y815BM178", "session_id": "S-0152"}
 NORMAL = {"vehicle_id": "E549YT198", "session_id": "S-0010"}
 FAILED = {"vehicle_id": "P456AT178", "session_id": "S-0003"}
 MISMATCH = {"vehicle_id": "Y652CK98", "session_id": "S-0132"}
@@ -56,6 +56,7 @@ def integrated(tmp_path, monkeypatch):
     monkeypatch.setenv("TEAM_DB_PATH", str(tmp_path / "workflow.sqlite3"))
     adapter = TeamWorkflow(ROOT, main.CATALOG_PATH, main.ML_URL, main.TOIR_URL, main.MOCK_TIMEOUT)
     monkeypatch.setattr(main, "team", adapter)
+    monkeypatch.setattr(main, "policy_mechanic", adapter.workflow.mechanic)
     monkeypatch.setattr(main, "store", Store(tmp_path / "screen.sqlite3", send_deadline=1))
     monkeypatch.setattr(main, "TEAM_API_URL", "")
     monkeypatch.setattr(main, "TEAM_AGENT_URL", "")
@@ -101,25 +102,27 @@ def diagnose(client, pair):
 def test_missing_both_agent_and_checked_sources_returns_clarification(integrated, monkeypatch, tmp_path):
     client, adapter, sent = integrated
     provider = enable_agent(monkeypatch, tmp_path)
-    monkeypatch.setattr(main.case_agent.mechanic, "defect_checks", {})
+    # Remove the actual reviewed fragment from both server and agent sources.
+    fragment = "yamz-236-3902150-b-re-p016-fuel-lines-start-review"
+    for mechanic in (adapter.workflow.mechanic, main.case_agent.mechanic):
+        monkeypatch.delitem(mechanic.search.fragments, fragment)
     state = diagnose(client, FUEL)
     assert state["diagnosis"]["anomaly_type"] == "F08"
     assert state["draft_available"] is False
-    assert state["draft_unavailable_reason"]
+    assert state["admission"]["block_reason"]["code"] == "procedure_unavailable"
     assert provider.calls == 0, "Reading readiness must not invoke a paid model"
-
     response = client.post("/api/draft", json=FUEL)
-    assert response.status_code == 200, response.text
-    result = response.json()
-    assert result["draft"] is None
-    assert result["draft_available"] is False
-    assert result["draft_unavailable_reason"]
-    assert any(section["kind"] == "clarify" for section in result["messages"][-1]["sections"])
+    assert response.status_code == 422, response.text
+    assert response.json()["admission"]["block_reason"]["code"] == "procedure_unavailable"
+    chat = client.post("/api/chat", json={**FUEL, "message": "Подготовь заявку"})
+    assert chat.status_code == 200, chat.text
+    assert chat.json()["draft"] is None
+    assert any(section["kind"] == "clarify" for section in chat.json()["messages"][-1]["sections"])
     assert adapter.workflow.drafts(adapter.Pair(**FUEL)) == []
     assert sent == []
 
 
-def test_f08_with_test_evidence_creates_one_draft_then_requires_confirmation(integrated, monkeypatch, tmp_path):
+def test_unreviewed_agent_index_cannot_override_reviewed_operation(integrated, monkeypatch, tmp_path):
     client, adapter, sent = integrated
     fixture = {**verified_fragments()[0], "fragment_id": "fixture-f08-p037", "pdf_page": 37,
                "section": "Тестовая проверка топливоподачи",
@@ -132,8 +135,8 @@ def test_f08_with_test_evidence_creates_one_draft_then_requires_confirmation(int
     state = response.json()
     draft = state["draft"]
     assert draft and draft["anomaly_type"] == "F08"
-    assert draft["operations"] == [fixture["text"]]
-    assert draft["references"][0]["pdf_page"] == 37
+    assert fixture["text"] not in draft["operations"]
+    assert draft["references"][0]["pdf_page"] == 16
     assert draft["spare_parts"] == []
     assert sent == []
 
@@ -142,7 +145,8 @@ def test_f08_with_test_evidence_creates_one_draft_then_requires_confirmation(int
     assert len(adapter.workflow.drafts(adapter.Pair(**FUEL))) == 1
     payload = {**FUEL, "draft_id": state["draft_id"], "revision": state["draft_revision"],
                "edits": {key: draft[key] for key in ("conclusion", "urgency", "operations", "spare_parts")},
-               "priority_confirmed": False}
+               "priority_confirmed": False, "diagnosis_revision": state["admission"]["diagnosis_revision"],
+               "applicability_confirmations": ["initial_start_or_long_storage"]}
     assert client.post("/api/ticket", json=payload).status_code == 422
     assert sent == []
     payload["priority_confirmed"] = True
@@ -153,33 +157,31 @@ def test_f08_with_test_evidence_creates_one_draft_then_requires_confirmation(int
     assert len(sent) == 1
 
 
-def test_model_declining_existing_evidence_returns_clarification_not_422(integrated, monkeypatch, tmp_path):
+def test_model_decline_does_not_remove_server_approved_operation(integrated, monkeypatch, tmp_path):
     client, adapter, sent = integrated
-    enable_agent(monkeypatch, tmp_path, fragments=verified_fragments(), accept=False)
-    monkeypatch.setattr(main.case_agent, "checked_draft", lambda *_args: None)
-    assert diagnose(client, OIL)["draft_available"] is True
-    response = client.post("/api/draft", json=OIL)
+    provider = enable_agent(monkeypatch, tmp_path, fragments=verified_fragments(), accept=False)
+    assert diagnose(client, CHAIN)["draft_available"] is True
+    response = client.post("/api/draft", json=CHAIN)
     assert response.status_code == 200, response.text
     result = response.json()
-    assert result["draft"] is None
-    assert result["draft_available"] is False
-    assert result["draft_unavailable_reason"]
-    assert client.get("/api/state", params=OIL).json()["draft_available"] is False
-    assert adapter.workflow.drafts(adapter.Pair(**OIL)) == []
+    assert result["draft"] and result["draft"]["operations"]
+    assert result["draft"]["references"][0]["pdf_page"] == 143
+    assert provider.calls == 0, "A reviewed draft does not depend on free model generation"
+    assert len(adapter.workflow.drafts(adapter.Pair(**CHAIN))) == 1
     assert sent == []
 
 
-def test_verified_oil_draft_still_works_through_team_workflow(integrated, monkeypatch, tmp_path):
+def test_verified_chain_draft_works_through_team_workflow(integrated, monkeypatch, tmp_path):
     client, _adapter, sent = integrated
     enable_agent(monkeypatch, tmp_path, fragments=verified_fragments())
-    assert diagnose(client, OIL)["draft_available"] is True
-    response = client.post("/api/draft", json=OIL)
+    assert diagnose(client, CHAIN)["draft_available"] is True
+    response = client.post("/api/draft", json=CHAIN)
     assert response.status_code == 200, response.text
     state = response.json()
     assert state["draft"]["operations"]
     assert state["draft"]["references"]
     assert state["ticket"]["status"] == "draft"
-    assert client.post("/api/draft", json=OIL).json()["draft_id"] == state["draft_id"]
+    assert client.post("/api/draft", json=CHAIN).json()["draft_id"] == state["draft_id"]
     assert sent == []
 
 
@@ -197,8 +199,8 @@ def test_non_actionable_diagnosis_never_offers_draft(integrated, monkeypatch, tm
 def test_late_preparation_keeps_newer_case_facts(integrated, monkeypatch, tmp_path, with_proposal):
     client, adapter, sent = integrated
     enable_agent(monkeypatch, tmp_path, fragments=verified_fragments())
-    initial = diagnose(client, OIL)
-    proposal = main.demo_agent.draft(main.VEHICLE_BY_ID[OIL["vehicle_id"]],
+    initial = diagnose(client, CHAIN)
+    proposal = main.demo_agent.draft(main.VEHICLE_BY_ID[CHAIN["vehicle_id"]],
                                      Diagnosis.model_validate(initial["diagnosis"]))
     entered, finish = Event(), Event()
     fresh_entry = ["Новые измерения", "anomaly", None, [], {"kpa": 90}, None]
@@ -215,10 +217,10 @@ def test_late_preparation_keeps_newer_case_facts(integrated, monkeypatch, tmp_pa
 
     monkeypatch.setattr(main, "response_to_chat", respond)
     with ThreadPoolExecutor(max_workers=2) as executor:
-        pending = executor.submit(client.post, "/api/draft", json=OIL)
+        pending = executor.submit(client.post, "/api/draft", json=CHAIN)
         try:
             assert entered.wait(5)
-            fresh = client.post("/api/chat", json={**OIL, "message": "Новые измерения"})
+            fresh = client.post("/api/chat", json={**CHAIN, "message": "Новые измерения"})
             assert fresh.status_code == 200, fresh.text
             assert fresh.json()["draft_available"] is True
         finally:
@@ -226,13 +228,13 @@ def test_late_preparation_keeps_newer_case_facts(integrated, monkeypatch, tmp_pa
         late = pending.result(timeout=10)
 
     assert late.status_code == 200, late.text
-    latest = client.get("/api/state", params=OIL).json()
+    latest = client.get("/api/state", params=CHAIN).json()
     assert late.json()["messages"] == fresh.json()["messages"] == latest["messages"]
     assert latest["draft"] is None
     assert latest["draft_available"] is True
     assert latest["draft_unavailable_reason"] is None
-    assert main.store.read((OIL["vehicle_id"], OIL["session_id"]))["agent_history"][-1] == fresh_entry
-    assert adapter.workflow.drafts(adapter.Pair(**OIL)) == []
+    assert main.store.read((CHAIN["vehicle_id"], CHAIN["session_id"]))["agent_history"][-1] == fresh_entry
+    assert adapter.workflow.drafts(adapter.Pair(**CHAIN)) == []
     assert sent == []
 
 
@@ -243,18 +245,18 @@ def test_late_preparation_keeps_newer_case_facts(integrated, monkeypatch, tmp_pa
 def test_actual_agent_failure_is_not_missing_evidence(integrated, monkeypatch, tmp_path, failure, status, code):
     client, adapter, sent = integrated
     provider = enable_agent(monkeypatch, tmp_path, fragments=verified_fragments())
-    assert diagnose(client, OIL)["draft_available"] is True
+    assert diagnose(client, CHAIN)["draft_available"] is True
 
     def fail(*_args):
         raise failure
 
     monkeypatch.setattr(provider, "ask", fail)
-    response = client.post("/api/draft", json=OIL)
+    response = client.post("/api/chat", json={**CHAIN, "message": "Как проверить состояние цепи в приводе ГРМ?"})
     assert response.status_code == status, response.text
     assert response.json()["error"]["code"] == code
-    state = client.get("/api/state", params=OIL).json()
+    state = client.get("/api/state", params=CHAIN).json()
     assert state["draft"] is None
     assert state["draft_available"] is True
     assert state["draft_unavailable_reason"] is None
-    assert adapter.workflow.drafts(adapter.Pair(**OIL)) == []
+    assert adapter.workflow.drafts(adapter.Pair(**CHAIN)) == []
     assert sent == []

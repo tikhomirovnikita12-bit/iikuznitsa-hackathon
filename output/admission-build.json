@@ -1,0 +1,110 @@
+{
+  "build_id": "43ea6c3958157dbbb4b117bac1f3ee79e05ea458f56afa3788f59f7992067c59",
+  "frozen_at": "2026-11-27T10:14:30.844078+00:00",
+  "source_files": {
+    "backend/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "backend/admission.py": "36b885cff1f42fe310567be19017cc66ff653b02d4d49f25bddab9797699f805",
+    "backend/agent.py": "5c17b92c464f60d2285f101e5b1ef93f54345ac1f5d85eb63fb7c6ede7af831b",
+    "backend/app.py": "d4a3cd34fd32a3684f3e2f824709c655a9d89f904360fe9d986f1a2ffe645bc6",
+    "backend/mechanic.py": "ab3b8d5756f39a215344e9876dd439137e68d92b9897d397f37ba23d34ef52fd",
+    "backend/models.py": "d62c87d061d1a2d3c6aec540b6e3e523c1264d3515fe9f8b6445970f936cef52",
+    "backend/store.py": "c3052f12d5f26d950a39cc90f136c74231bf4f50c658eab51ee62b2d0675b585",
+    "backend/upstream.py": "3de3bd2b9f93a65df733386f286f26a80c265293e82cdd1fa3b679563b0ba7c7",
+    "backend/workflow.py": "a0f3a29791adde9afd7cbf68a217b37770061f6557977e84781c2ece92709e2c",
+    "mechanic/case_agent.py": "784cae7a56cd80df9e5cd9e58a007bd1ac99b32d57f413b9675ebb5bdb42dc58",
+    "mechanic/config.py": "769f6b24459961cd2c3b8b3d70e09645aa4f98e497782731e84546237257c66f",
+    "mechanic/contracts.py": "37f40b0109aa35de5826bde197f07f0b9cd7ac78d2df633105fe63b4187af7bb",
+    "mechanic/demo_agent.py": "a667c03a27d331c266b18c5b7f916c292dfd6c5c55f0ea78ba61629e279d3d83",
+    "mechanic/main.py": "460eda1a8541ab18da709b441d33e30cc713816c486af65a1d6386836d8a78f6",
+    "mechanic/prepare.py": "5730c90db422ec6971683f5ad809b0c2de4f1852746248d540ac2c61a1f01b4d",
+    "mechanic/retrieval.py": "d8906fb6b2261adfd6e183ab8e58fd569c92dd48efc289321b49000391d541f2",
+    "mechanic/sources.py": "a287e515a679a73ffc3659cebb48cbf8586562a6b26366c9c984cadf1a32ba48",
+    "mechanic/state.py": "13729c705cb56a2cda66af7a5977586fc9000713315abe6bcda0297d025dbdb8",
+    "mechanic/team_workflow.py": "4cb129752e887719024d4d882c97976b5ec06745c556785a31798d8256292633",
+    "agent/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "agent/acceptance_benchmark.py": "6c4007703445b7f66370b4774b24ebcde34d30a8c94b211f5460a11c12ce6ffb",
+    "agent/backend.py": "b36c80f2c4443aa8c6c3df66fffafb4eae905502f12c76562d1898c28319a716",
+    "agent/benchmark.py": "314880bba2524a568c5e50adc4530e70978cfe5519e122564acc16dc86233aed",
+    "agent/dialog.py": "440f3783716af890a3a3cf0f0684b4170e31611540614e8fe131ea54782dbfc8",
+    "agent/server.py": "ac3f952e0bc5e3c66cfe746d8ebca2626b2adfae8c9a102053261ebabb28a8a1",
+    "agent/tools/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "agent/tools/diagnosis.py": "5053e2a37ed5b9266157b484d9eedc4264c69dadd8be00c0e2fbd9a9e0d2363b",
+    "agent/tools/fluid_check.py": "b75638f316a81290226e3aab3d518ec2c690ec75ceb70caf96d12250cc79e286",
+    "agent/tools/manual.py": "87a7c5d90d4d11c7fb053f49d9a750addf10d2470ea6e5caaa5386b342ccf889",
+    "agent/tools/oil_pressure.py": "680fd4c983d4c4a02ce66a01a23cf7b625d3dc2d13a6021322d483ca0e87f64d",
+    "agent/tools/ticket.py": "f6b3e4a3115c3b544c19cbdc000202a5bd21a7a83f4db7ffce36a2bfdf10bde8",
+    "agent/web/index.html": "adcc7c59e403ffbe66a37b0c032dd412c496d605c53f73b33dd62e33dfa8d454",
+    "manual_search/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "manual_search/corpus.py": "fa8a4cc821c74208f868437d9a967027105711e9b17004cf0302a61970de4f50",
+    "manual_search/search.py": "626d50b51ab0512f8500db305f21aae97c16afcbec9913ac453a8f86b32af5d4",
+    "web/app.js": "fc45cc9e0b46427ffd1f7b797141547cbd7c12d44eb20d0ab6382da65d1f2cf0",
+    "web/index.html": "ca96aa133d0cd282d191247ded89991727592452e65736a6f5b14f1bc815a462",
+    "web/source-return.js": "7ecbcc0e003893662ee8d8130523289478aafef4673057d522800b4273a49f63",
+    "web/styles.css": "192e8fac6010ee81e0dee7386f612fd3d5002551eeca398215878b72ec419cb4",
+    "data/manuals/approved-operations.json": "82ae25110241d9e0b944f4a09f192d3c7db8c1d6e0c52a877d0dd1764f5d904a",
+    "data/manuals/catalog.json": "5fa3d87e5370699b94761eb08614d2f298504c6df5cd40a2d4674f866ebc5da7",
+    "data/manuals/conflicts.json": "284e39d84813d32dbcea6930c692d8d732c899e3bd7fe1068b8f013ad4b3e07f",
+    "data/manuals/defect-checks.json": "26d15b0e20db4c11a0955409002cf83a1b41c602ad525ab8ab2bdbe716e8f9ed",
+    "data/manuals/reviewed-procedures.json": "edf7731593be36e8330906ab1071801b4f3faaf1c361d1fb8f6fa7ae72d18b5e",
+    "data/manuals/search-terms.json": "7610e7614eba778931e11c387770f0167f3b9448adda7613dd58c81d0e2dcc3b",
+    "data/manuals/yamz-236m2-oil-pressure.json": "bddb9cf2d304463b98593b1552eef9aecdcdc2cdcacad7fa9c486383811cff08",
+    "data/manuals/yamz-236m2-valves.json": "bf2732f36c1a915aa165a0d2aef46858fff11ef51217c1f8206ee85fc5b42588",
+    "data/manuals/yamz-536-oil-pressure.json": "0560de3c28a9b870e8b131a77221f4735a5747dcc453872ef9f13350475d0fb7",
+    "data/manuals/zmz-applicability.json": "107bf5ffa3808cf58d1f137fe0b65393b5f6c470e54f5aab7a071e73daeeae53",
+    "data/manuals/zmz-timing-chain.json": "6f4815d0859d7b06af16f2d06337c02dd5496296de60ea8b02d1475073d146ec",
+    "data/vehicles.json": "7011e79870b97cba26c08ea8323ba90a316b17bcde185693e59a2582db359ac8"
+  },
+  "corpus_sha256": "f2b4b4c61ce69d0fcf82f870461036b4e666c744d4a7eb2529dc7cf7f4b17ddf",
+  "recording_mode": "synthetic fleet, fixture chat, real customer Mock ML / Mock TOiR",
+  "recording": {
+    "started_at": "2026-11-27T10:15:45.296Z",
+    "ended_at": "2026-11-27T10:16:05.809Z",
+    "marks": [
+      {
+        "step": "diagnosis",
+        "ms": 0
+      },
+      {
+        "step": "question",
+        "ms": 2610
+      },
+      {
+        "step": "draft",
+        "ms": 6060
+      },
+      {
+        "step": "source",
+        "ms": 9126
+      },
+      {
+        "step": "ticket",
+        "ms": 14690,
+        "ticket": "TKT-0001"
+      },
+      {
+        "step": "check_failed",
+        "ms": 17908
+      }
+    ],
+    "error": null,
+    "file": "output/Цифровой механик — допуск.mp4",
+    "duration_seconds": 20.56,
+    "frames": 78,
+    "sha256": "067056d98517c5d83623268a7f286c486ccd3fa592d7f7d234b25e01f6da66be",
+    "capture_method": "Continuous CUA screenshots at original wall-clock timing; no cuts or speed change; no audio. Fixture chat, not live LLM."
+  },
+  "verification": {
+    "date": "2026-11-27",
+    "pytest": {
+      "passed": 116,
+      "subtests_passed": 207,
+      "skipped": 0,
+      "seconds": 104.25,
+      "warning": "StarletteDeprecationWarning in test transport; no test failures",
+      "log": "output/admission-pytest.log"
+    },
+    "manual_search_cases_passed": 13,
+    "physical_phone": "not connected; not performed",
+    "live_llm": "Ollama unavailable; not performed"
+  }
+}

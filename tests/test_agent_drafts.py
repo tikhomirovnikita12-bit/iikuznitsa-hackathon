@@ -35,17 +35,19 @@ class NoEvidence:
         return {"items": []}
 
 
-def test_f08_without_supported_check_requests_clarification(tmp_path):
+def test_f08_uses_reviewed_operation_without_model_selection(tmp_path):
     provider = NoEvidence()
     agent = Agent(None, Manuals(ROOT / "artifacts/manual-corpus.json"), provider,
                   log=tmp_path / "turns.jsonl")
     result = agent.turn("M333YK47", "S-0005", "Подготовь заявку", diagnosis=diagnosis())
     assert result["ml_observations"]["anomaly_type"] == "F08"
-    assert result["ticket_draft"] is None
+    assert result["ticket_draft"]
     assert result["clarifying_question"]
-    assert not result["checks"]
-    assert not result["references"]
-    assert len(provider.calls) <= 3
+    assert result["checks"] and result["references"][0]["pdf_page"] == 16
+    assert result["admission"]["can_prepare"]
+    assert not result["admission"]["can_submit"]
+    assert result["admission"]["approved_operations"][0]["conditions"][0]["requires_confirmation"]
+    assert provider.calls == []
 
 
 def test_capability_matches_ticket_sources_without_calling_model(tmp_path):
@@ -57,7 +59,7 @@ def test_capability_matches_ticket_sources_without_calling_model(tmp_path):
     agent.agent.provider = NoCalls()
     fleet = json.loads((ROOT / "data/vehicles.json").read_text(encoding="utf-8"))["vehicles"]
     for plate, session, expected in [("M333YK47", "S-0005", True),
-                                     ("E549YT198", "S-0011", True),
+                                     ("E549YT198", "S-0011", False),
                                      ("E549YT198", "S-0010", False),
                                      ("Y652CK98", "S-0132", False),
                                      ("P456AT178", "S-0003", False)]:

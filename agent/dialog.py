@@ -9,7 +9,8 @@ from uuid import uuid4
 from .backend import post
 from .tools.diagnosis import describe, diagnose
 from .tools import fluid_check, oil_pressure
-from .tools.ticket import prepare
+from backend.admission import incompatible_fault as admission_incompatible_fault, evaluate_admission
+from backend.mechanic import conflict_case
 
 
 def schema(**fields):
@@ -37,9 +38,7 @@ def ticket_query(diagnosis):
 
 
 def incompatible_fault(diagnosis):
-    diesel = "диз" in diagnosis["fuel"].lower()
-    return (diagnosis["anomaly_type"] == "F08" and not diesel
-            or diagnosis["anomaly_type"] in {"F12", "F13"} and diesel)
+    return admission_incompatible_fault(diagnosis)
 
 
 def passages(hit):
@@ -84,8 +83,9 @@ class Ollama:
 
 
 class Agent:
-    def __init__(self, backend, manuals, provider=None, log="artifacts/agent-turns.jsonl"):
+    def __init__(self, backend, manuals, provider=None, log="artifacts/agent-turns.jsonl", *, mechanic=None):
         self.backend = backend
+        self.mechanic = mechanic
         self.manuals = manuals
         self.provider = provider or Ollama()
         self.log = Path(log)
@@ -95,14 +95,14 @@ class Agent:
         trace = dict(id=uuid4().hex, vehicle_id=vehicle_id, session_id=session_id,
                      question=question, tools=[], calls=[])
         try:
-            trace["tools"].append({"name": "diagnose"})
+            trace["tools"].append({"name": "diagnosis_context" if diagnosis is not None else "diagnose"})
             reply = describe(diagnosis) if diagnosis is not None else diagnose(self.backend, vehicle_id, session_id)
             ml = reply["ml_observations"]
-            if ml["status"] == "check_failed":
-                return reply
-            if incompatible_fault(ml):
-                reply["clarifying_question"] = (f"ML указала «{ml['anomaly_title']}», а в карточке "
-                    f"{ml['engine_model']} ({ml['fuel']}). Подтвердите двигатель и выбранную запись.")
+            admission = self.admission(ml)
+            reply["admission"] = admission
+            if ml["status"] == "check_failed" or incompatible_fault(ml):
+                reason = admission["block_reason"]
+                reply.update(explanation=reason["message"], clarifying_question=reason["next_action"])
                 return reply
             wording = question.casefold().strip(" .!?")
             if term := TERM.fullmatch(wording):
@@ -160,6 +160,8 @@ class Agent:
                                   or (previous_pressure is not None and
                                       (values != previous_pressure or oil_pressure.BARE_NUMBER.fullmatch(question.strip())))):
                 return self.pressure_reply(reply, values, trace)
+            if self.conflict_reply(reply, question, trace):
+                return reply
             if OIL_NORM_QUESTION.match(wording):
                 hits = self.manuals.find(question, ml)
                 source = next((hit for hit in hits if hit.get("verified")
@@ -252,9 +254,8 @@ class Agent:
                 return reply
             if action == "diagnosis" and ml["status"] == "normal":
                 return reply
-            if action == "ticket" and ml["status"] != "anomaly":
-                reply["clarifying_question"] = "Для заявки нужна проверка с обнаруженным отклонением."
-                return reply
+            if action == "ticket":
+                return self.reviewed_ticket(reply, trace)
             query = plan["query"] or question
             if action == "ticket" and ticket_request:
                 query = ticket_query(ml)
@@ -299,11 +300,6 @@ class Agent:
             if not reply["references"]:
                 reply["clarifying_question"] = reply["clarifying_question"] or (
                     "В руководстве для этого двигателя прямого ответа не нашёл. Уточните узел или условия, если они известны.")
-            if action == "ticket":
-                trace["tools"].append(dict(name="prepare_ticket"))
-                reply["ticket_draft"] = prepare(reply)
-                if not reply["ticket_draft"]:
-                    reply["clarifying_question"] = "Для заявки нужна подтверждённая руководством проверка. Уточните узел."
             if ml["anomaly_type"] == "F02" and any(
                 item["fragment_id"] == fluid_check.SOURCE and "достаточно масла" in item["text"]
                 for item in reply["checks"]
@@ -318,6 +314,57 @@ class Agent:
             self.log.parent.mkdir(parents=True, exist_ok=True)
             with self.log.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(trace, ensure_ascii=False) + "\n")
+
+    def admission(self, ml):
+        if self.mechanic is None:
+            from backend.mechanic import Mechanic
+            root = Path(__file__).resolve().parents[1]
+            materials = getattr(self.backend, "materials", root / "artifacts/manuals")
+            self.mechanic = Mechanic(root / "artifacts/manual-corpus.json", materials)
+        return evaluate_admission(ml, ml, mechanic=self.mechanic)
+
+    def reviewed_ticket(self, reply, trace):
+        from backend.models import Diagnosis
+
+        ml = reply["ml_observations"]
+        admission = self.admission(ml)
+        reply["admission"] = admission
+        trace["tools"].append(dict(name="admission", can_prepare=admission["can_prepare"],
+                                    block_code=(admission.get("block_reason") or {}).get("code")))
+        if not admission["can_prepare"]:
+            reason = admission["block_reason"]
+            reply.update(intent="clarify", explanation=reason["message"], clarifying_question=reason["next_action"])
+            return reply
+        fields = self.mechanic.suggest_draft(Diagnosis.model_validate(ml), ml["engine_model"])
+        operations = admission["approved_operations"]
+        fragments = dict.fromkeys(fragment for item in operations
+                                  for fragment in [item["fragment_id"], *item.get("supporting_fragment_ids", [])])
+        reply.update(intent="ticket", checks=[dict(text=item["operation"], fragment_id=item["fragment_id"])
+            for item in operations], references=[self.manuals.reference(fragment, ml["engine_model"])
+                                                for fragment in fragments],
+            ticket_draft=dict(vehicle_id=ml["vehicle_id"], session_id=ml["session_id"],
+                              anomaly_type=ml["anomaly_type"], **fields.model_dump()))
+        reply["clarifying_question"] = "Проверьте условия применимости работ и подтвердите приоритет в основном экране."
+        trace["tools"].append(dict(name="prepare_ticket", operation_ids=[item["id"] for item in operations]))
+        return reply
+
+    def conflict_reply(self, reply, question, trace):
+        ml = reply["ml_observations"]
+        case = conflict_case(question, ml["engine_model"])
+        if not case:
+            return False
+        fragments = self.manuals.searcher.fragments
+        if any(fragment not in fragments for fragment in case["fragment_ids"]):
+            reply.update(intent="clarify", clarifying_question="Сверенный набор источников неполон. Уточните процедуру перед выполнением работ.")
+            return True
+        references = [self.manuals.reference(fragment, ml["engine_model"]) for fragment in case["fragment_ids"]]
+        reply.update(intent="search", explanation=case["explanation"],
+                     checks=[dict(text=fragments[fragment]["text"], fragment_id=fragment)
+                             for fragment in case["fragment_ids"]], references=references,
+                     clarifying_question=("Ограничения: " + case["limitations"]) if case.get("limitations") else None)
+        trace["tools"].append(dict(name="reviewed_conflict", query=question, conflict_id=case["id"],
+            pages=[(item["manual"], item["pdf_page"]) for item in references]))
+        return True
 
     def fluid_reply(self, reply, state, trace):
         ml = reply["ml_observations"]
@@ -344,7 +391,7 @@ class Agent:
         trace["tools"].append(dict(name="search", query=oil_pressure.QUERY,
             pages=[(hit["manual"], hit["pdf_page"]) for hit in hits]))
         reply.update(intent="movement", pressure_measurement=values,
-                     verdict="Возможность перегона по этим данным не подтверждена.")
+                     verdict="Возможность перегона по этим данным не подтверждена. Приоритет заявки не является запретом на движение.")
         source = next((hit for hit in hits if hit["fragment_id"] == oil_pressure.SOURCE), None)
         if source is None:
             reply["clarifying_question"] = "Не удалось найти применимый норматив в руководстве."
@@ -355,6 +402,9 @@ class Agent:
         if result:
             reply["checks"].append(dict(text=result, fragment_id=ref["fragment_id"]))
         reply["pressure_reference_text"] = source["text"]
+        reply["movement_limitations"] = ("Фактические замеры сообщены механиком; сравнение с нормативом не является допуском к перегону. "
+            "Рекомендация — очная дефектовка по результатам измерений. Прямой запрет из руководства здесь не установлен; "
+            "высокий приоритет сам по себе его не создаёт.")
         return reply
 
     def select(self, reply, action, question, hits, trace, coolant=False, next_step=False, previous=None):

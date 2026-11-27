@@ -67,15 +67,9 @@ def create_app(agent=None):
 
     @app.post("/api/confirm")
     def confirm():
-        body = request.get_json()
-        key = context(body)
-        with lock:
-            saved = drafts.get(key)
-            if not saved or saved[0] != body["draft_id"]:
-                abort(409, "Черновик устарел или относится к другому случаю.")
-            # Never retry an ambiguous external write automatically.
-            del drafts[key]
-        return agent.backend.submit(saved[1])
+        # All external writes require the shared Workflow admission/version checks.
+        return jsonify(error="Отправка доступна только через основной экран с серверной проверкой допуска. "
+                             "Откройте run.py, выберите машину и запись и подтвердите черновик там."), 409
 
     return app
 

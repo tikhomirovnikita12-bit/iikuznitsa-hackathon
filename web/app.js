@@ -14,17 +14,18 @@ const ui = Object.fromEntries([
 const view = {
   catalog: null, pair: null, state: null, generation: 0, busy: null,
   diagnosisError: null, chatError: null, ticketError: null, needsTicketCheck: false,
-  pendingQuestion: "", pendingEdits: new Map(), pollTimer: null, editingContext: false,
+  pendingQuestion: "", pendingEdits: new Map(), consents: null, pollTimer: null, editingContext: false,
 };
 const compactLayout = matchMedia("(max-width: 820px)");
 const vehiclePicker = { selected: null, matches: [], activeIndex: -1 };
 const plateLetters = { а: "a", в: "b", е: "e", к: "k", м: "m", н: "h", о: "o",
   р: "p", с: "c", т: "t", у: "y", х: "x" };
 const sectionNames = {
-  signs: "Признаки", causes: "Возможные причины", checks: "Проверки",
-  work: "Возможные работы", clarify: "Что уточнить", risk: "Риски",
+  signs: "Наблюдения ML", causes: "Возможные причины · гипотезы", checks: "Проверки",
+  work: "Возможные работы", clarify: "Что уточнить", risk: "Риски · гипотезы",
 };
 const urgencyNames = { low: "Низкий", medium: "Средний", high: "Высокий" };
+const urgencyDescriptions = { high: "Дефектовка до выпуска в рейс", medium: "Ближайшее ТО с работой под наблюдением", low: "Проверка узла на следующей проверке" };
 const riskLabels = {
   low: ["Низкий риск", "good"], medium: ["Средний риск", "warn"],
   high: ["Высокий риск", "danger"], unassessed: ["Риск требует уточнения", "neutral"],
@@ -44,11 +45,12 @@ const date = new Intl.DateTimeFormat("ru-RU", {
 const score = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 3 });
 
 class ApiFault extends Error {
-  constructor(code, message, status = 0, state = null) {
+  constructor(code, message, status = 0, state = null, admission = null) {
     super(message);
     this.code = code;
     this.status = status;
     this.state = state;
+    this.admission = admission;
   }
 }
 
@@ -64,7 +66,7 @@ async function api(path, method = "GET", payload) {
     const data = await response.json().catch(() => null);
     if (!response.ok || !data) {
       throw new ApiFault(data?.error?.code || "server_error",
-        data?.error?.message || "Бэкенд вернул ошибку. Проверьте состояние сервиса.", response.status, data?.state);
+        data?.error?.message || "Бэкенд вернул ошибку. Проверьте состояние сервиса.", response.status, data?.state, data?.admission);
     }
     return data;
   } catch (error) {
@@ -217,6 +219,8 @@ function renderDiagnosis() {
       diagnosis.anomaly_title || view.catalog?.fault_types?.[diagnosis.anomaly_type] || "Возможное отклонение"));
   }
   result.append(element("p", "diagnosis-description", diagnosis.description));
+  if (view.state.admission?.block_reason && view.state.admission.block_reason.code !== "draft_required" && diagnosis.status !== "normal"
+      && !["created", "sending", "unknown"].includes(view.state.ticket?.status)) result.append(admissionNotice(view.state.admission));
 
   // Show the risk and uncertainty before the next action, including on a phone.
   const brief = view.state.brief;
@@ -224,7 +228,7 @@ function renderDiagnosis() {
     const risk = element("div", "risk-line");
     const [label, theme] = riskLabels[brief?.risk] || riskLabels.unassessed;
     risk.dataset.risk = brief?.risk || "unassessed";
-    risk.append(element("span", "flag " + theme, label),
+    risk.append(element("span", "hypothesis-label", "Гипотеза о риске"), element("span", "flag " + theme, label),
       element("p", "", brief?.rationale || "Нужны симптомы и контрольная проверка для оценки риска."));
     result.append(risk);
   }
@@ -306,7 +310,7 @@ function renderDiagnosis() {
     }
   }
   result.append(controls);
-  if (diagnosis.status === "anomaly" && !view.state.draft && view.state.draft_unavailable_reason) {
+  if (diagnosis.status === "anomaly" && !view.state.draft && view.state.draft_unavailable_reason && !view.state.admission?.block_reason) {
     const notice = alert(view.state.draft_unavailable_reason);
     notice.id = "draft-unavailable-reason";
     notice.setAttribute("role", "status");
@@ -350,7 +354,7 @@ function answerBlock(section) {
     card.append(report);
     return card;
   }
-  const expandable = ["work", "causes", "signs"].includes(section.kind);
+  const expandable = section.kind === "work";
   const block = element(expandable ? "details" : "section", "answer-block");
   block.dataset.sourceContext = "";
   block.append(element(expandable ? "summary" : "h3", "", sectionNames[section.kind]));
@@ -411,7 +415,7 @@ function renderChat() {
     const bubble = element("article", "bubble");
     bubble.append(element("p", "message-meta", message.origin === "fixture" ? "Механик · тестовый ответ" : "Механик"),
       element("p", "answer-title", message.summary));
-    const order = { risk: 0, checks: 1, clarify: 2, signs: 3, causes: 4, work: 5 };
+    const order = { signs: 0, causes: 1, risk: 2, checks: 3, work: 4, clarify: 5 };
     const sections = [...(message.sections || [])].sort((left, right) => order[left.kind] - order[right.kind]);
     for (const section of sections) bubble.append(answerBlock(section));
     fragment.append(bubble);
@@ -556,27 +560,99 @@ function fieldSummary(draft) {
   return summary;
 }
 
+function admissionNotice(admission) {
+  const reason = admission.block_reason;
+  const notice = element("div", "alert admission-notice");
+  notice.setAttribute("role", "status");
+  notice.append(element("strong", "", reason.message), element("p", "", reason.next_action));
+  const copy = button("Скопировать рекомендацию");
+  copy.addEventListener("click", async () => {
+    const text = (view.pair ? view.pair.vehicle_id + " / " + view.pair.session_id + "\n" : "") + reason.message + "\n" + reason.next_action;
+    try { await navigator.clipboard.writeText(text); announce("Рекомендация скопирована"); }
+    catch { announce(copyThroughSelection(text) ? "Рекомендация скопирована" : "Выделите текст рекомендации и скопируйте вручную."); }
+  });
+  notice.append(copy);
+  return notice;
+}
+
+function operationEvidence(draft, admission) {
+  const group = element("section", "operation-evidence");
+  group.append(element("h3", "", "Основания для работ"));
+  for (const row of admission?.approved_operations || []) {
+    if (!draft.operations.includes(row.operation)) continue;
+    const card = element("article", "check-card");
+    card.dataset.sourceContext = "";
+    card.append(element("h3", "", row.operation));
+    const evidence = row.evidence || [{text:row.quote, source:{manual:row.manual, pdf_page:row.pdf_page}}];
+    card.append(element("blockquote", "evidence-quote", evidence[0].text.split("\n")[0]));
+    for (const condition of row.conditions || []) card.append(element("p", "muted", "Условие: " + condition.text));
+    card.append(references(evidence.map((item) => item.source)));
+    const full = element("details", "evidence-full");
+    full.append(element("summary", "", "Проверенные выдержки полностью"));
+    for (const item of evidence) {
+      full.append(element("p", "ref-title", item.source.manual + " · PDF " + item.source.pdf_page),
+                  element("blockquote", "evidence-quote", item.text));
+    }
+    card.append(full);
+    group.append(card);
+  }
+  return group;
+}
+
 function editableDraft(draft, pending) {
   const key = draftKey();
   const version = pending?.version ?? draftVersion();
   const edits = pending?.edits ?? draft;
   const form = element("form", "ticket-form");
+  const admission = view.state.admission;
   const conclusion = textarea(edits.conclusion, 3, true);
   const operations = textarea(edits.operations.join("\n"), 4, true);
+  operations.readOnly = true;
   const parts = textarea(edits.spare_parts.join("\n"), 2);
   const priority = element("select");
   priority.required = true;
   priority.add(option("", "Выберите приоритет"));
-  for (const [value, label] of Object.entries(urgencyNames)) priority.add(option(value, label));
+  for (const [value, label] of Object.entries(urgencyNames)) priority.add(option(value, label + " — " + urgencyDescriptions[value]));
   priority.value = edits.urgency || "";
   form.append(field("conclusion", "Заключение", conclusion), field("urgency", "Приоритет", priority),
-    field("operations", "Работы, по одной на строку", operations), field("parts", "Запчасти, по одной на строку", parts));
+    field("operations", "Работы по проверенным основаниям", operations), field("parts", "Запчасти, по одной на строку", parts));
   parts.placeholder = "Не определены";
-  form.append(element("h3", "field-hint", "Источники"), references(draft.references));
-
+  form.append(element("p", "priority-explanation", "Предложен: " + (urgencyNames[admission?.suggested_urgency] || "Не определён")
+    + ". Приоритет задаёт срок дефектовки и сам по себе не является запретом на перегон."), operationEvidence(draft, admission));
+  const required = new Map();
+  for (const operation of admission?.approved_operations || []) {
+    if (!draft.operations.includes(operation.operation)) continue;
+    for (const condition of operation.conditions || []) {
+      if (condition.requires_confirmation) required.set(condition.id, condition);
+    }
+  }
+  const conditionChecks = [];
+  for (const [id, condition] of required) {
+    const label = element("label", "priority-confirm");
+    const input = element("input");
+    input.type = "checkbox";
+    input.checked = (view.state.applicability_confirmations || []).includes(id);
+    label.append(input, document.createTextNode("Подтверждаю условие: " + condition.text));
+    conditionChecks.push({id, input});
+    form.append(label);
+  }
+  const warning = element("input");
+  warning.type = "checkbox";
+  warning.id = "warning-acknowledged";
+  if (admission?.warning_ack_required) {
+    const label = element("label", "priority-confirm warning-confirm");
+    label.append(warning, document.createTextNode("Запись с помехами. Предупреждение прочитал, сознательно продолжаю."));
+    form.append(label);
+  }
   const confirm = element("label", "priority-confirm");
   const checkbox = element("input");
   checkbox.type = "checkbox";
+  const consentKey = [key, version.draft_id, version.revision, admission?.diagnosis_revision].join("|");
+  if (view.consents?.key === consentKey) {
+    checkbox.checked = view.consents.priority;
+    warning.checked = view.consents.warning;
+    for (const row of conditionChecks) row.input.checked = view.consents.conditions.includes(row.id);
+  }
   confirm.append(checkbox, document.createTextNode("Подтверждаю выбранный приоритет"));
   const actions = element("div", "ticket-actions");
   const status = draftSaveStatus(changedDraftFields(edits, draft).length > 0);
@@ -584,7 +660,7 @@ function editableDraft(draft, pending) {
   const submit = button("Подтвердить и отправить", "primary", "submit");
   save.disabled = Boolean(view.busy);
   submit.disabled = true;
-  for (const control of [conclusion, operations, parts, priority, checkbox]) control.disabled = Boolean(view.busy);
+  for (const control of [conclusion, operations, parts, priority, checkbox, warning, ...conditionChecks.map((row) => row.input)]) control.disabled = Boolean(view.busy);
   actions.append(status, submit, save);
   form.append(confirm, actions);
 
@@ -602,17 +678,34 @@ function editableDraft(draft, pending) {
       else view.pendingEdits.delete(key);
       setDraftSaveStatus(status, dirty);
       checkbox.checked = false;
-      submit.disabled = true;
+      warning.checked = false;
+      updateSubmit();
     });
   }
-  checkbox.addEventListener("change", () => { submit.disabled = !checkbox.checked; });
+  function acknowledgements() {
+    return { warning_acknowledged: warning.checked,
+      diagnosis_revision: admission?.diagnosis_revision,
+      applicability_confirmations: conditionChecks.filter((row) => row.input.checked).map((row) => row.id) };
+  }
+  function updateSubmit() {
+    view.consents = {key:consentKey, priority:checkbox.checked, warning:warning.checked,
+      conditions:conditionChecks.filter((row) => row.input.checked).map((row) => row.id)};
+    const conditionalBlock = ["warning_ack_required", "applicability_required"].includes(admission?.block_reason?.code);
+    const allowed = admission?.can_submit || (admission?.can_prepare && conditionalBlock);
+    submit.disabled = Boolean(view.busy) || !allowed || !checkbox.checked
+      || (admission.warning_ack_required && !warning.checked) || conditionChecks.some((row) => !row.input.checked);
+  }
+  checkbox.addEventListener("change", updateSubmit);
+  warning.addEventListener("change", updateSubmit);
+  for (const row of conditionChecks) row.input.addEventListener("change", () => { checkbox.checked = false; updateSubmit(); });
   save.addEventListener("click", () => {
-    if (form.reportValidity()) updateDraft(values(true), version, false);
+    if (form.reportValidity()) updateDraft(values(true), version, false, acknowledgements());
   });
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (checkbox.checked) updateDraft(values(true), version, true);
+    if (!submit.disabled) updateDraft(values(true), version, true, acknowledgements());
   });
+  updateSubmit();
   return form;
 }
 
@@ -752,6 +845,8 @@ function renderTicket() {
   header.append(title);
   if (ticket.ticket_id) header.append(ticketReceipt(ticket.ticket_id));
   panel.replaceChildren(header);
+  if (view.state.admission?.block_reason && !["created", "sending", "unknown"].includes(ticket.status)) panel.append(admissionNotice(view.state.admission));
+  if (view.state.confirmed_urgency) panel.append(element("p", "", "Подтверждён механиком: " + urgencyNames[view.state.confirmed_urgency]));
   if (view.state.draft_origin === "fixture") panel.append(element("p", "origin", "Тестовый черновик"));
 
   const ids = element("div", "ticket-ids");
@@ -979,7 +1074,10 @@ async function choose(vehicleId, sessionId, restore = false) {
   ui["recording-help"].hidden = true;
   const vehicle = view.catalog.vehicles.find((item) => item.vehicle_id === vehicleId);
   const invalid = faultForSelection(vehicle, sessionId, vehicleId);
-  if (!restore) syncLocation(vehicleId, sessionId);
+  if (!restore) {
+    syncLocation(vehicleId, sessionId);
+    view.consents = null;
+  }
   view.pair = !invalid && vehicle && sessionId ? { vehicle_id: vehicleId, session_id: sessionId } : null;
   Object.assign(view, { state: null, diagnosisError: invalid, chatError: null, ticketError: null,
     needsTicketCheck: false, pendingQuestion: "", busy: view.pair ? "load" : null, editingContext: false });
@@ -1025,7 +1123,10 @@ async function loadCatalog() {
     ui.vehicle.disabled = false;
     const pendingDraft = history.state?.sourceOrigin?.pendingDraft;
     const key = JSON.stringify({ vehicle_id: vehicleId, session_id: sessionId });
-    if (pendingDraft?.key === key) view.pendingEdits.set(key, pendingDraft.edits);
+    if (pendingDraft?.key === key) {
+      if (pendingDraft.edits) view.pendingEdits.set(key, pendingDraft.edits);
+      view.consents = pendingDraft.consents || null;
+    }
     await choose(vehicleId, sessionId, true);
     requestAnimationFrame(restoreSourceOrigin);
   } catch (error) {
@@ -1120,6 +1221,8 @@ async function action(kind, path, method, payload = {}) {
       }
       return null;
     }
+    if (error.state && ["prepare", "save", "submit"].includes(kind)) view.state = error.state;
+    else if (error.admission && view.state) view.state = {...view.state, admission: error.admission};
     if (kind === "diagnose") view.diagnosisError = error;
     if (kind === "chat") view.chatError = error.message;
     if (kind === "prepare" || kind === "save") view.ticketError = error.message;
@@ -1128,7 +1231,7 @@ async function action(kind, path, method, payload = {}) {
       view.ticketError = error.message;
     }
     if (kind === "submit") {
-      view.needsTicketCheck = error.status === 0 || error.status >= 500 || error.status === 409;
+      view.needsTicketCheck = !error.admission && (error.status === 0 || error.status >= 500 || error.status === 409);
       view.ticketError = view.needsTicketCheck
         ? "Результат отправки неизвестен. Проверьте статус заявки. " + error.message : error.message;
     }
@@ -1160,13 +1263,14 @@ async function sendQuestion(value) {
   else ui.messages.lastElementChild?.scrollIntoView({ block: "nearest" });
 }
 
-async function updateDraft(edits, version, submit) {
+async function updateDraft(edits, version, submit, acknowledgements = {}) {
   const kind = submit ? "submit" : "save";
   const generation = view.generation;
   const key = draftKey();
   if (!view.pendingEdits.has(key)) view.pendingEdits.set(key, { edits, version });
   const result = await action(kind, submit ? "ticket" : "draft", submit ? "POST" : "PUT",
-    submit ? { ...version, edits, priority_confirmed: true } : { ...version, edits });
+    submit ? { ...version, edits, ...acknowledgements, priority_confirmed: true }
+      : { ...version, edits, applicability_confirmations: acknowledgements.applicability_confirmations || [] });
   if (!result || generation !== view.generation) return;
   if (submit) {
     announce(result.ticket.ticket_id ? "Заявка " + result.ticket.ticket_id + " зарегистрирована."
@@ -1249,7 +1353,7 @@ compactLayout.addEventListener("change", updateLayout);
 document.addEventListener("click", (event) => {
   const key = draftKey();
   const edits = view.pendingEdits.get(key);
-  rememberSourceOrigin(event, edits && { key, edits });
+  rememberSourceOrigin(event, { key, edits, consents: view.consents });
 });
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) requestAnimationFrame(restoreSourceOrigin);

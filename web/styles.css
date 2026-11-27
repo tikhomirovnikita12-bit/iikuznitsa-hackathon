@@ -324,3 +324,18 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
   .ref, .suggestions button { min-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+
+.admission-notice { display: grid; gap: .5rem; margin-top: .65rem; }
+.admission-notice > .button { justify-self: start; }
+.hypothesis-label { flex-basis: 100%; font-size: .85rem; font-weight: 700; color: var(--muted); }
+.operation-evidence { display: grid; gap: .7rem; margin-top: .85rem; }
+.operation-evidence > h3 { font-size: 1rem; }
+.operation-evidence .check-card h3 { font-size: 1rem; }
+.evidence-quote { margin: .6rem 0; padding-inline-start: .7rem; border-inline-start: 2px solid var(--control-line); white-space: pre-wrap; }
+.warning-confirm { padding: .7rem; border: 1px solid #ecd3a2; background: #fffaee; align-items: flex-start; }
+.priority-explanation { margin-top: .7rem; color: var(--muted); font-size: .9rem; }
+textarea[readonly] { background: var(--surface); }
+
+.evidence-full { margin-top: .5rem; }
+.evidence-full summary { min-height: 44px; padding-block: .5rem; color: var(--accent); font-weight: 650; }
+.evidence-full > .ref-title { margin-top: .5rem; }

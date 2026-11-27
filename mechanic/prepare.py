@@ -22,7 +22,11 @@ MOCK_FILES = (
     "data/vehicles.json", "data/fault_types.json", "mock_ml/__init__.py", "mock_ml/app.py",
     "mock_toir/__init__.py", "mock_toir/app.py", "tests/test_mocks.py",
 )
-PREVIEW_PAGES = {"yamz236-re": (19, 53), "zmz409": (107,), "zmz5234": (20, 21, 56)}
+PREVIEW_PAGES = {
+    "yamz236-re": (16, 19, 31, 53), "yamz236-rk": (12, 41, 248, 269, 276),
+    "yamz536-re": (49, 173, 174, 175, 176),
+    "zmz409": (107, 143, 144, 145, 146, 147), "zmz5234": (20, 21, 56),
+}
 ARCHIVE_NAME = "007_хакатон_ИИ.zip"
 
 

@@ -31,6 +31,7 @@ class Vehicle(BaseModel):
     make: Text
     model: Text | None
     engine_model: Text
+    fuel: str = ""
 
 
 class Diagnosis(BaseModel):
@@ -94,6 +95,7 @@ class DiagnosticResult(BaseModel):
     engine_model: str
     diagnosis: Diagnosis
     assessment: Assessment
+    admission: dict | None = None
 
 
 Question = Annotated[Text, Field(max_length=2000)]
@@ -128,6 +130,7 @@ class DraftFields(Input):
 
 class DraftPatch(DraftFields):
     revision: Revision
+    applicability_confirmations: list[Text] = empty_list()
 
     @model_validator(mode="after")
     def valid_patch(self):
@@ -140,7 +143,9 @@ class Confirm(Input):
     revision: Revision
     urgency: Urgency
     confirmed: StrictBool
-
+    warning_acknowledged: StrictBool = False
+    diagnosis_revision: str | None = None
+    applicability_confirmations: list[Text] = empty_list()
 
 class Reconcile(Input):
     revision: Revision
@@ -176,3 +181,8 @@ class DraftView(DraftFields, Pair):
     state: Literal["draft", "sending", "sent", "delivery_failed", "delivery_unknown"]
     ticket_id: str | None = None
     delivery_error: DeliveryError | None = None
+    admission: dict | None = None
+    diagnosis_revision: str | None = None
+    suggested_urgency: Urgency | None = None
+    confirmed_urgency: Urgency | None = None
+    applicability_confirmations: list[str] = empty_list()
