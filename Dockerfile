@@ -13,6 +13,9 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
+COPY mechanic/speech.py mechanic/speech.py
+RUN python -m mechanic.speech
+
 COPY . .
 RUN mkdir -p artifacts
 

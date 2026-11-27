@@ -471,6 +471,101 @@ def stored_recommendations_check(browser, base, results):
         results.append({"step": "Одна сохранённая рекомендация с объединёнными ссылками", "result": "passed"})
 
 
+def dictation_check(browser, base, results):
+    with browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True) as context:
+        context.add_init_script("""
+            navigator.mediaDevices.getUserMedia = async () => {
+                if (window.denyMic) throw new DOMException("", "NotAllowedError");
+                const audio = new AudioContext();
+                const destination = audio.createMediaStreamDestination();
+                const source = audio.createOscillator();
+                source.connect(destination);
+                window.microphone = destination.stream.getAudioTracks()[0];
+                await audio.resume();
+                source.start();
+                window.micAudio = audio;
+                window.micStartedAt = audio.currentTime;
+                return destination.stream;
+            };
+        """)
+        page = context.new_page()
+        requests = []
+        transcripts = iter(("когда замеряют давление?", "ЯМЗ"))
+        recordings = []
+
+        def transcribe(route):
+            assert route.request.headers["content-type"] == "application/octet-stream"
+            recordings.append(route.request.post_data_buffer)
+            route.fulfill(json={"transcript": next(transcripts)})
+
+        page.route("**/api/dictation", transcribe)
+        page.on("request", lambda request: requests.append(request.post_data_json)
+                if request.method == "POST" and request.url.endswith("/api/chat") else None)
+        open_pair(page, base, OIL)
+        question = page.locator("#question")
+        mic = page.locator("#dictation")
+        status = page.locator("#dictation-status")
+        send = page.locator("#send")
+
+        question.fill("Подскажи,")
+        mic.tap()
+        expect(status).to_contain_text("Говорите")
+        expect(mic).to_have_accessible_name("Остановить диктовку")
+        expect(send).to_be_disabled()
+        question.press("Enter")
+        page.wait_for_function("micAudio.currentTime - micStartedAt >= 0.5")
+        mic.tap()
+        expect(question).to_have_value("Подскажи, когда замеряют давление?")
+        assert len(recordings) == 1 and len(recordings[0]) > 0 and len(recordings[0]) % 2 == 0
+        assert page.evaluate("microphone.readyState") == "ended"
+        expect(send).to_be_enabled()
+        assert not requests
+        assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
+
+        question.fill(OIL_QUESTION)
+        with page.expect_response(lambda response: response.url.endswith("/api/chat")) as response:
+            send.tap()
+        assert response.value.ok
+        assert requests == [{"vehicle_id": OIL[0], "session_id": OIL[1], "message": OIL_QUESTION}]
+        expect(page.locator("#messages .bubble:not(.user) a[href='/sources/yamz236-re/19']").first).to_be_visible()
+        expect(question).to_be_empty()
+
+        question.fill("Набранный текст")
+        page.evaluate("window.denyMic = true")
+        mic.tap()
+        expect(status).to_contain_text("Разрешите доступ к микрофону")
+        expect(question).to_have_value("Набранный текст")
+        expect(send).to_be_enabled()
+
+        question.fill("а" * 1598)
+        page.evaluate("window.denyMic = false")
+        mic.tap()
+        expect(status).to_contain_text("Говорите")
+        page.wait_for_function("micAudio.currentTime - micStartedAt >= 0.5")
+        mic.tap()
+        expect(question).to_have_value("а" * 1598 + " Я")
+        expect(status).to_contain_text("1600 символами")
+
+        mic.tap()
+        expect(status).to_contain_text("Говорите")
+        pick(page, *NORMAL, touch=True)
+        diagnose(page, "Отклонений по записи не обнаружено")
+        assert page.evaluate("microphone.readyState") == "ended"
+        expect(question).to_be_empty()
+        assert len(requests) == 1 and len(recordings) == 2
+
+    with browser.new_context() as context:
+        context.add_init_script("window.MediaRecorder = undefined;")
+        page = context.new_page()
+        open_pair(page, base, OIL)
+        expect(page.locator("#dictation")).to_be_disabled()
+        expect(page.locator("#dictation-status")).to_contain_text("браузер не поддерживает запись")
+        page.locator("#question").fill("Ручной ввод")
+        expect(page.locator("#send")).to_be_enabled()
+
+    results.append({"pair": OIL, "step": "Диктовка, правка перед отправкой и смена сессии на 390 px", "result": "passed"})
+
+
 def record(browser, base, folder):
     context = browser.new_context(viewport={"width": 1280, "height": 810}, locale="ru-RU",
                                   record_video_dir=folder, record_video_size={"width": 1280, "height": 810})
@@ -583,6 +678,7 @@ def main():
                 fleet_and_history_check(browser, base, results)
                 pressure_form_check(browser, directory, results)
                 stored_recommendations_check(browser, base, results)
+                dictation_check(browser, base, results)
                 (out / "browser-results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
                 print(f"{len(results)} browser checks passed", flush=True)
         browser.close()

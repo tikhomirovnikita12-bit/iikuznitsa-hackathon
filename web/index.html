@@ -95,8 +95,13 @@
             <label for="question" class="visually-hidden">Вопрос или результат проверки</label>
             <div class="composer-row">
               <textarea id="question" rows="1" maxlength="1600" placeholder="Например, что проверить сначала?" disabled></textarea>
+              <button class="button secondary dictation-button" type="button" id="dictation"
+                      aria-label="Диктовать вопрос" aria-describedby="dictation-status" title="Диктовать вопрос" disabled>
+                <span class="dictation-icon" aria-hidden="true"></span>
+              </button>
               <button class="button primary" type="submit" id="send" disabled>Отправить</button>
             </div>
+            <p id="dictation-status" class="dictation-status" role="status"></p>
           </form>
           <div id="suggestions" class="suggestions" role="group" aria-label="Действия по проверке" hidden></div>
           <div class="chat-tools">

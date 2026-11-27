@@ -1,4 +1,5 @@
 import { rememberSourceOrigin, restoreSourceOrigin } from "./source-return.js";
+import { bindDictation } from "./dictation.js";
 
 const byId = (id) => document.getElementById(id);
 const ui = Object.fromEntries([
@@ -7,11 +8,14 @@ const ui = Object.fromEntries([
   "workspace", "context", "workarea", "context-summary", "context-title", "context-vehicle", "context-session",
   "edit-context", "collapse-context", "journal-panel", "ask-question",
   "selection", "selection-hint", "selection-error", "retry-catalog", "diagnostic", "result",
-  "chat", "chat-context", "messages", "chat-error", "composer", "question", "send", "suggestions",
+  "chat", "chat-context", "messages", "chat-error", "composer", "question", "dictation", "dictation-status",
+  "send", "suggestions",
   "pressure-helper", "pressure-form", "pressure-fields",
   "ticket-panel", "journal", "announcement", "fleet-toggle", "fleet-panel", "vehicle-history", "history-content",
   "recording-help", "quick-replies", "reply-options",
 ].map((id) => [id, byId(id)]));
+
+const dictation = bindDictation(ui.dictation, ui["dictation-status"], ui.question, setChatSubmit);
 
 const view = {
   catalog: null, pair: null, state: null, generation: 0, busy: null,
@@ -132,12 +136,13 @@ function setControls() {
   ui.question.disabled = !view.state?.diagnosis || Boolean(view.busy);
   ui["ask-question"].disabled = ui.question.disabled;
   ui["pressure-fields"].disabled = ui.question.disabled;
+  dictation.setEnabled(!ui.question.disabled && !view.fleetOpen);
   setChatSubmit();
   ui.send.textContent = view.busy === "chat" ? "Ждём ответ…" : "Отправить";
 }
 
 function setChatSubmit() {
-  ui.send.disabled = ui.question.disabled || !ui.question.value.trim();
+  ui.send.disabled = ui.question.disabled || dictation.active || !ui.question.value.trim();
 }
 
 function formatDate(value, formatter = date) {
@@ -1396,6 +1401,8 @@ async function loadFleet(force = false) {
 
 function toggleFleet() {
   view.fleetOpen = !view.fleetOpen;
+  if (view.fleetOpen) dictation.reset();
+  setControls();
   renderFleet();
   window.scrollTo(0, 0);
   // Сводка обновляется при каждом открытии: статусы заявок могли измениться.
@@ -1559,6 +1566,7 @@ function faultForSelection(vehicle, sessionId, vehicleId) {
 async function choose(vehicleId, sessionId, restore = false) {
   const generation = ++view.generation;
   clearTimeout(view.pollTimer);
+  dictation.reset();
   ui.question.value = "";
   ui.question.style.height = "";
   ui["recording-help"].hidden = true;
@@ -1748,7 +1756,8 @@ async function action(kind, path, method, payload = {}) {
 
 async function sendQuestion(value, fromComposer = false) {
   const message = value.trim();
-  if (!message || !view.state?.diagnosis || view.busy) return;
+  if (!message || !view.state?.diagnosis || view.busy || (fromComposer && dictation.active)) return;
+  if (fromComposer) dictation.reset();
   const generation = view.generation;
   const hadDraft = Boolean(view.state?.draft);
   const result = await action("chat", "chat", "POST", { message });
@@ -1880,5 +1889,6 @@ document.addEventListener("click", (event) => {
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) requestAnimationFrame(restoreSourceOrigin);
 });
+window.addEventListener("pagehide", () => dictation.reset());
 updateLayout();
 loadCatalog();
