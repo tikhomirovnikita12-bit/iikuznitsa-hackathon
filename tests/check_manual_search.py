@@ -21,6 +21,30 @@ def check(index):
             previous = search.fragments[linked]
             assert previous["manual_id"] == item["manual_id"]
             assert previous["pdf_page"] == item["pdf_page"] - 1
+        related = list(item.get("supporting_fragments", ()))
+        if item.get("cross_reference"):
+            related.append(item["cross_reference"])
+        for linked in related:
+            target = search.fragments[linked]
+            assert target["verified"]
+            assert set(item["applicable_engine_models"]) <= set(target["applicable_engine_models"])
+        if work := item.get("work"):
+            assert item["verified"]
+            assert set(work) == {
+                "fault_code", "component", "applicability", "operation", "requires_mechanic_confirmation",
+            }
+            assert work["fault_code"] in search.fault_terms
+            assert all(work[key] for key in ("component", "applicability", "operation"))
+
+    for conflict in index["conflicts"]:
+        assert len(conflict["fragment_ids"]) >= 2
+        for fragment_id in conflict["fragment_ids"]:
+            fragment = search.fragments[fragment_id]
+            assert fragment["verified"] and fragment["applicability"]
+            search.resolve_source(fragment_id, conflict["engine_model"])
+
+    valves = search.search("Как проверить тепловые зазоры клапанного механизма?", "ЯМЗ-236М2", "F02", limit=1)
+    assert valves[0]["fragment_id"] == "yamz-236-3902150-b-re-p033-valve-clearance-check"
 
     file_url = {"yamz-236-3902150-b-re": "/manuals/yamz.pdf"}
     for page in (19, 53):
@@ -64,7 +88,7 @@ def check(index):
             assert citation["pdf_page"] == hit["pdf_page"]
             assert citation["url"] == f"{base}#page={hit['pdf_page']}"
     assert not failures, f"Unexpected source pages: {failures}"
-    print("Corpus integrity and 13 search cases passed")
+    print("Corpus integrity, explicit valve lookup and 13 search cases passed")
 
 
 if __name__ == "__main__":

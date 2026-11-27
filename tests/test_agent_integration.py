@@ -86,6 +86,15 @@ class Member4Tests(unittest.TestCase):
         self.assertEqual(receipt["ticket"]["ticket_id"], "TKT-0001")
         self.assertEqual(len(self.sent), 1)
 
+    def test_q05_on_case_agent_screen_route(self):
+        pair = dict(vehicle_id="A464EP47", session_id="S-0096")
+        self.post("diagnose", pair)
+        reply = self.post("chat", pair, message="Какое давление масла на прогретом двигателе?")
+        analysis = reply["messages"][-1]["analysis"]
+        self.assertIn("400–635 кПа", analysis["checks"][0]["text"])
+        self.assertIn("80–100 °C", analysis["checks"][0]["text"])
+        self.assertEqual(analysis["references"][0]["url"], "/sources/yamz536-rk/13")
+
     def test_measurement_switch_and_recording(self):
         self.post("diagnose", self.oil)
         result = self.post("chat", self.oil, message="Можно ли перегнать машину своим ходом?")
