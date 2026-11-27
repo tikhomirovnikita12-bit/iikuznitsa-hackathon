@@ -273,6 +273,34 @@ def test_generated_command_preserves_russian_command_with_localized_display(stan
     assert calls == [("ru", "uz")]
 
 
+def test_stored_normal_notice_keeps_interface_copy_separate_from_answer_language():
+    prior = {
+        "role": "assistant", "summary": localization.NORMAL_NOTICE,
+        "sections": [{"kind": "signs", "items": ["Исходное наблюдение"], "references": []}],
+        "localized": {"language": "be", "summary": "Старый перевод", "sections": []},
+    }
+    step = localization.NORMAL_NEXT_STEP.format(session="S-0030")
+    old, next_step, regular = localization.public_messages([
+        prior, {"role": "assistant", "summary": step}, {"role": "assistant", "summary": "Обычный ответ"},
+    ])
+    assert old["status_notice"] == localization.NORMAL_NOTICE and old["sections"] == prior["sections"]
+    assert old["language"] == "be" and next_step["status_notice"] == step
+    assert "status_notice" not in regular
+
+
+def test_suggested_question_keeps_canonical_text_and_distinguishes_manual_input():
+    question = "Что проверить сначала?"
+    display = "Əvvəlcə nəyi yoxlamalıyam?"
+    old, new, manual = localization.public_messages([
+        {"role": "user", "text": question},
+        {"role": "user", "text": question, "input_text": display},
+        {"role": "user", "text": question, "language": "ru"},
+    ])
+    assert old["suggested_question"] == new["suggested_question"] == question
+    assert new["text"] == display
+    assert manual["text"] == question and "suggested_question" not in manual
+
+
 def test_translation_preserves_engine_units_and_part_number():
     original = "ЯМЗ-236М2: 400–700 кПа при 2100 об/мин; 55,5 ± 0,5 мм; 40904.1006100; −20 °C; F14."
     masked, values = localization.protect(original, "ЯМЗ-236М2")

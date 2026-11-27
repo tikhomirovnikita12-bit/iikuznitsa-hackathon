@@ -33,6 +33,19 @@ UNAVAILABLE = "Переводчик недоступен. Выберите ру�
 SCRIPT = {"hy": re.compile(r"[\u0531-\u0587]"), "hi": re.compile(r"[\u0900-\u097f]")}
 NO_SOURCE = ("Для этого вопроса в тестовом режиме нет подтверждённой страницы для двигателя {engine}. "
              "Уточните узел и что именно нужно проверить. При необходимости передайте вопрос на дефектовку.")
+NORMAL_NOTICE = ("В этой сессии значимых отклонений нет. Уточните симптом или узел, "
+                 "по которому нужна проверка.")
+NORMAL_NEXT_STEP = "По сессии {session} значимых отклонений не обнаружено. Продолжайте штатный контроль двигателя."
+NORMAL_NEXT_STEP_PATTERN = re.compile(re.escape(NORMAL_NEXT_STEP).replace(r"\{session\}", r"[^\s]+"))
+SUGGESTED_QUESTIONS = {
+    "Что проверить сначала?",
+    "Как повторить запись?",
+    "На каких оборотах замеряют давление масла?",
+    "Какие причины отклонения указаны в руководстве?",
+    "Можно ли своим ходом перегнать машину?",
+    "Какие работы предусмотрены руководством?",
+    "Какая норма температуры охлаждающей жидкости?",
+}
 QUESTION_WORDS = {
     "ru": "что как когда сначала проверить почему нужно машина укажите двигатель давление",
     "be": "што трэба спачатку праверыць гэтай машыне рухавік ціск колькі чаму",
@@ -282,5 +295,11 @@ def public_messages(messages):
         if "input_text" in visible:
             visible["text"] = visible.pop("input_text")
         visible.update(visible.pop("localized", {}))
+        if message["role"] == "user" and not message.get("language") and message.get("text") in SUGGESTED_QUESTIONS:
+            visible["suggested_question"] = message["text"]
+        summary = message.get("summary") or ""
+        if message["role"] == "assistant" and (summary == NORMAL_NOTICE or NORMAL_NEXT_STEP_PATTERN.fullmatch(summary)):
+            visible["status_notice"] = summary
+            visible["sections"] = message.get("sections", [])
         result.append(visible)
     return result

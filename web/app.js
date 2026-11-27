@@ -395,7 +395,7 @@ function renderDiagnosis() {
     check.addEventListener("click", () => {
       const cards = ui.messages.querySelectorAll(".check-card");
       if (cards.length) cards[cards.length - 1].closest(".bubble").scrollIntoView({ block: "start" });
-      else sendQuestion("Что проверить сначала?");
+      else sendSuggestedQuestion("Что проверить сначала?");
     });
     controls.append(check);
   } else {
@@ -614,23 +614,26 @@ function renderChat() {
   const fragment = document.createDocumentFragment();
   for (const message of messages) {
     if (message.role === "user") {
-      fragment.append(userMessage(message.text, message.language));
+      const suggested = message.suggested_question;
+      fragment.append(userMessage(suggested ? interfaceText(suggested) : message.text,
+        suggested ? chatLanguage() : message.language));
       continue;
     }
     const bubble = element("article", "bubble");
     bubble.tabIndex = -1;
-    const name = view.catalog?.chat_languages?.find((item) => item.code === message.language)?.name;
+    const name = !message.status_notice && view.catalog?.chat_languages?.find((item) => item.code === message.language)?.name;
     const role = message.origin === "fixture" ? "Механик · тестовый ответ" : "Механик";
     bubble.append(element("p", "message-meta", name && message.language !== "ru" ? role + " · " + name : role));
-    if (message.translation_failed) bubble.append(alert("Перевод недоступен. Показан исходный ответ на русском."));
+    if (!message.status_notice && message.translation_failed) bubble.append(alert("Перевод недоступен. Показан исходный ответ на русском."));
     const answer = element("div", "translated-answer");
-    answer.lang = message.language || "ru";
+    answer.lang = message.status_notice ? chatLanguage() : (message.language || "ru");
     const parts = (message.sections || []).flatMap((part) => {
       if (part.kind !== "signs" || part.references?.length) return [part];
       const items = part.items.filter((item) => !reportTexts.has(answerTextKey(item)));
       return items.length ? [{ ...part, items }] : [];
     });
-    const summary = answerTextKey(message.summary);
+    const displaySummary = message.status_notice ? interfaceText(message.status_notice) : message.summary;
+    const summary = answerTextKey(message.status_notice || message.summary);
     if (reportTexts.has(summary)) {
       if (!parts.length) {
         const link = element("a", "", "К результату проверки");
@@ -638,7 +641,7 @@ function renderChat() {
         answer.append(link);
       }
     } else if (!parts.some((part) => part.kind !== "work" && part.items.some((item) => answerTextKey(item) === summary))) {
-      const title = element("p", "answer-title", message.summary);
+      const title = element("p", "answer-title", displaySummary);
       title.translate = false;
       answer.append(title);
     }
@@ -654,7 +657,7 @@ function renderChat() {
       && [null, "unknown"].includes(message.analysis?.generator_reading));
     for (const kind of new Set([...Object.keys(sectionNames), ...sections.keys()])) {
       if (sections.has(kind)) answer.append(answerBlock(kind, sections.get(kind),
-        kind === "checks" ? measurementTitle : undefined, reportInDiagnosis, true));
+        kind === "checks" ? measurementTitle : undefined, reportInDiagnosis, !message.status_notice));
     }
     bubble.append(answer);
     if (message.source_quotes?.length) bubble.append(originalEvidence("Цитата из руководства · русский", message.source_quotes));
@@ -720,7 +723,7 @@ function renderChatActions(diagnosis, engine) {
     const chip = element("button", "", label);
     chip.type = "button";
     chip.disabled = Boolean(view.busy);
-    chip.addEventListener("click", () => sendQuestion(question));
+    chip.addEventListener("click", () => sendSuggestedQuestion(question));
     suggestions.append(chip);
   }
   const replies = ui["reply-options"];
@@ -1782,7 +1785,7 @@ async function action(kind, path, method, payload = {}) {
   if (kind === "diagnose") view.diagnosisError = null;
   if (kind === "chat") {
     view.chatError = null;
-    view.pendingQuestion = payload.message;
+    view.pendingQuestion = payload.display_message || payload.message;
   }
   if (["prepare", "save", "submit", "reconcile"].includes(kind)) view.ticketError = null;
   render();
@@ -1841,7 +1844,11 @@ async function action(kind, path, method, payload = {}) {
   }
 }
 
-async function sendQuestion(value, fromComposer = false, inputLanguage = "ru") {
+function sendSuggestedQuestion(question) {
+  return sendQuestion(question, false, "ru", interfaceText(question));
+}
+
+async function sendQuestion(value, fromComposer = false, inputLanguage = "ru", display = null) {
   const message = value.trim();
   if (!message || !view.state?.diagnosis || view.busy || (fromComposer && dictation.active)) return;
   if (fromComposer) dictation.reset();
@@ -1850,15 +1857,20 @@ async function sendQuestion(value, fromComposer = false, inputLanguage = "ru") {
   const language = chatLanguage();
   const generated = fromComposer && view.composed?.display === message ? view.composed.canonical : null;
   const manual = fromComposer && !generated;
+  const displayMessage = generated ? message : display;
   const result = await action("chat", "chat", "POST", {
     message: generated || message,
     ...(language !== "ru" && { language }),
     ...(manual ? { match_input_language: true } : { input_language: inputLanguage }),
-    ...(generated && generated !== message && { display_message: message }),
+    ...(displayMessage && displayMessage !== (generated || message) && { display_message: displayMessage }),
   });
   if (generation !== view.generation) return;
   if (!result) {
-    if (!ui.question.value.trim()) ui.question.value = message;
+    if (!ui.question.value.trim()) {
+      const retry = displayMessage || message;
+      if (displayMessage && !manual) view.composed = { display: retry, canonical: generated || message };
+      ui.question.value = retry;
+    }
     ui.question.dispatchEvent(new Event("input"));
     if (fromComposer) ui.question.focus({ preventScroll: true });
     return;
