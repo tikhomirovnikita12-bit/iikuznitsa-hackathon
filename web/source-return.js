@@ -1,3 +1,5 @@
+import { savedLanguage, setUiLanguage } from "./ui-language.js";
+
 function isOrdinaryClick(event) {
   return !event.defaultPrevented && event.button === 0 &&
     !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
@@ -67,6 +69,7 @@ export function restoreSourceOrigin() {
 }
 
 const backLink = document.getElementById("source-return");
+if (backLink) setUiLanguage(savedLanguage()).catch(() => {});
 if (backLink && document.referrer) {
   const previous = new URL(document.referrer);
   if (previous.origin === location.origin && previous.pathname === "/") {

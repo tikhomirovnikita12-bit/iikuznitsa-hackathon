@@ -637,6 +637,38 @@ def record(browser, base, folder):
     return video.path(), times
 
 
+def language_switch_check(browser, base, results):
+    page = browser.new_page(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
+    try:
+        page.goto(base)
+        selector = page.locator("#chat-language")
+        expect(selector).to_be_visible()
+        expect(selector.locator("option")).to_have_count(10)
+        for code in ("be", "az", "kk", "ky", "tk", "uz", "hy", "tg", "hi"):
+            selector.select_option(code)
+            expect(page.locator("html")).to_have_attribute("lang", code)
+            assert page.locator(".brand h1").inner_text() != "Цифровой механик", code
+        selector.select_option("hy")
+        expect(page.locator(".brand h1")).to_have_text("Թվային մեխանիկ")
+        page.goto(f"{base}/?vehicle_id=E549YT198&session_id=S-0011")
+        question = page.locator("#question")
+        expect(question).to_have_attribute("lang", "hy")
+        expect(page.locator("#chat-language-example")).to_be_visible()
+        typed = "Որքա՞ն պետք է լինի յուղի ճնշումը տաքացված շարժիչում։"
+        question.fill(typed)
+        page.locator("#send").click()
+        expect(page.locator("#messages .user").last).to_contain_text(typed)
+        expect(page.locator("#messages .translated-answer[lang='hy']").last).to_contain_text("400–700 kPa")
+        question.fill("Что мне сначала проверить у этой машины?")
+        page.locator("#send").click()
+        expect(page.locator("#messages .bubble:not(.user)").last.locator(".translated-answer")).to_have_attribute("lang", "ru")
+        page.goto(f"{base}/sources/yamz236-re/19")
+        expect(page.locator("#source-return")).to_have_text("Վերադառնալ ստուգմանը")
+        results.append({"check": "language_switch", "languages": 10})
+    finally:
+        page.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--record", action="store_true")
@@ -676,6 +708,7 @@ def main():
                     admission_checks(browser, mobile_base, out, results, mobile=True)
                 late_response_check(browser, directory, results)
                 fleet_and_history_check(browser, base, results)
+                language_switch_check(browser, base, results)
                 pressure_form_check(browser, directory, results)
                 stored_recommendations_check(browser, base, results)
                 dictation_check(browser, base, results)

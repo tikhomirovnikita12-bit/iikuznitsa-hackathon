@@ -1,0 +1,141 @@
+{
+  "ru": {
+    "name": "Русский",
+    "oil": [
+      "Какое давление масла должно быть на прогретом двигателе?",
+      "На прогретом двигателе {engine} давление масла должно составлять {range} при {rpm} и не менее {idle} на минимальном холостом ходу.",
+      "После длительной эксплуатации допускается не ниже {worn_nominal} на номинальных оборотах и {worn_idle} на минимальном холостом ходу."
+    ],
+    "chain": [
+      "Когда менять гидронатяжитель ГРМ с адаптером?",
+      "На двигателе {engine} гидронатяжитель с адаптером подлежит замене, если после снятия плунжер остаётся в промежуточном положении. Это признак заклинивания.",
+      "Сверьте маркировку: для детали {part} длина при полностью выдвинутом плунжере составляет {length}."
+    ]
+  },
+  "be": {
+    "name": "Беларуская",
+    "oil": [
+      "Які ціск алею павінен быць на прагрэтым рухавіку?",
+      "На прагрэтым рухавіку {engine} ціск алею павінен складаць {range} пры {rpm} і не менш за {idle} на мінімальных абаротах халастога ходу.",
+      "Пасля працяглай эксплуатацыі дапускаецца не менш за {worn_nominal} пры намінальных абаротах і {worn_idle} на мінімальных абаротах халастога ходу."
+    ],
+    "chain": [
+      "Калі трэба замяняць гідранацягвальнік ланцуга ГРМ з адаптарам?",
+      "На рухавіку {engine} гідранацягвальнік з адаптарам трэба замяніць, калі пасля зняцця плунжар застаецца ў прамежкавым становішчы. Гэта прыкмета закліноўвання.",
+      "Зверце маркіроўку: для дэталі {part} даўжыня пры цалкам высунутым плунжары складае {length}."
+    ],
+    "no_source": "У тэставым рэжыме для рухавіка {engine} няма пацверджанай старонкі па гэтым пытанні. Удакладніце вузел і што трэба праверыць. Пры неабходнасці перадайце вузел на вочную дэфектоўку."
+  },
+  "az": {
+    "name": "Azərbaycanca",
+    "oil": [
+      "Qızdırılmış mühərrikdə yağ təzyiqi nə qədər olmalıdır?",
+      "Qızdırılmış {engine} mühərrikində yağ təzyiqi {rpm} zamanı {range}, boş gedişin minimal fırlanma tezliyində isə ən azı {idle} olmalıdır.",
+      "Uzunmüddətli istismardan sonra nominal fırlanma tezliyində ən azı {worn_nominal}, boş gedişin minimal fırlanma tezliyində isə ən azı {worn_idle} qəbul edilir."
+    ],
+    "chain": [
+      "Adapterli qazpaylama zəncirinin hidravlik dartıcısı nə vaxt dəyişdirilməlidir?",
+      "{engine} mühərrikində adapterli hidravlik dartıcı çıxarıldıqdan sonra plunjer aralıq vəziyyətdə qalarsa, dartıcı dəyişdirilməlidir. Bu, ilişib qalmanın əlamətidir.",
+      "Markalanmanı yoxlayın: {part} detalının plunjeri tam çıxmış vəziyyətdə uzunluğu {length} olmalıdır."
+    ],
+    "no_source": "Test rejimində {engine} mühərriki üçün bu suala aid təsdiqlənmiş səhifə yoxdur. Hansı qovşağı və nəyi yoxlamaq lazım olduğunu dəqiqləşdirin. Lazım gələrsə, qovşağı yerində yoxlamaya göndərin."
+  },
+  "kk": {
+    "name": "Қазақша",
+    "oil": [
+      "Қызған қозғалтқышта май қысымы қандай болуы керек?",
+      "Қызған {engine} қозғалтқышында май қысымы {rpm} кезінде {range}, ал бос жүрістің ең төменгі айналу жиілігінде кемінде {idle} болуы керек.",
+      "Ұзақ уақыт пайдаланғаннан кейін номиналды айналу жиілігінде кемінде {worn_nominal}, ал бос жүрістің ең төменгі айналу жиілігінде кемінде {worn_idle} рұқсат етіледі."
+    ],
+    "chain": [
+      "Адаптері бар газ тарату тізбегінің гидравликалық кергішін қашан ауыстыру керек?",
+      "{engine} қозғалтқышындағы адаптері бар гидравликалық кергішті шешкеннен кейін плунжер аралық қалыпта қалса, кергішті ауыстыру керек. Бұл кептелудің белгісі.",
+      "Таңбалануын тексеріңіз: {part} бөлшегінің плунжері толық шыққандағы ұзындығы {length} болуы керек."
+    ],
+    "no_source": "Сынақ режимінде {engine} қозғалтқышы бойынша бұл сұраққа расталған бет жоқ. Қай торапты және нені тексеру қажет екенін нақтылаңыз. Қажет болса, торапты орнында ақау анықтауға жіберіңіз."
+  },
+  "ky": {
+    "name": "Кыргызча",
+    "oil": [
+      "Ысыган кыймылдаткычта майдын басымы канча болушу керек?",
+      "Ысыган {engine} кыймылдаткычында майдын басымы {rpm} учурунда {range}, ал эми бош жүрүштөгү эң төмөнкү айлануу жыштыгында кеминде {idle} болушу керек.",
+      "Узак убакыт колдонулгандан кийин номиналдык айлануу жыштыгында кеминде {worn_nominal}, бош жүрүштөгү эң төмөнкү айлануу жыштыгында кеминде {worn_idle} уруксат берилет."
+    ],
+    "chain": [
+      "Адаптери бар газ бөлүштүрүү чынжырынын гидравликалык кергичин качан алмаштыруу керек?",
+      "{engine} кыймылдаткычындагы адаптери бар гидравликалык кергичти чечкенден кийин плунжер ортоңку абалда калса, кергичти алмаштыруу керек. Бул кыпчылып калуунун белгиси.",
+      "Таңбасын текшериңиз: {part} тетигинин плунжери толук чыккандагы узундугу {length} болушу керек."
+    ],
+    "no_source": "Сыноо режиминде {engine} кыймылдаткычы боюнча бул суроого ырасталган бет жок. Кайсы түйүндү жана эмнени текшерүү керектигин тактаңыз. Зарыл болсо, түйүндү жеринде текшерүүгө жөнөтүңүз."
+  },
+  "tk": {
+    "name": "Türkmençe",
+    "oil": [
+      "Gyzan hereketlendirijide ýagyň basyşy näçe bolmaly?",
+      "Gyzan {engine} hereketlendirijisinde ýagyň basyşy {rpm} wagtynda {range}, boş işdäki iň pes aýlaw ýygylygynda bolsa azyndan {idle} bolmaly.",
+      "Uzak wagt ulanylandan soň nominal aýlaw ýygylygynda azyndan {worn_nominal}, boş işdäki iň pes aýlaw ýygylygynda bolsa azyndan {worn_idle} rugsat edilýär."
+    ],
+    "chain": [
+      "Adapterli gaz paýlaýyş zynjyrynyň gidrawliki dartdyryjysyny haçan çalyşmaly?",
+      "{engine} hereketlendirijisinde adapterli gidrawliki dartdyryjy aýrylandan soň plunžer aralyk ýagdaýda galsa, dartdyryjyny çalyşmaly. Bu onuň gysylyp galandygyny görkezýär.",
+      "Belgilemesini barlaň: {part} şaýynyň plunžeri doly çykarylan ýagdaýynda uzynlygy {length} bolmaly."
+    ],
+    "no_source": "Synag tertibinde {engine} hereketlendirijisi boýunça bu soraga degişli tassyklanan sahypa ýok. Haýsy düwüni we nämäni barlamalydygyny anyklaň. Zerur bolsa, düwüni ýerinde barlaga iberiň."
+  },
+  "uz": {
+    "name": "O‘zbekcha",
+    "oil": [
+      "Qizigan dvigatelda moy bosimi qancha bo‘lishi kerak?",
+      "Qizigan {engine} dvigatelida moy bosimi {rpm} da {range}, salt yurishning eng past aylanish chastotasida esa kamida {idle} bo‘lishi kerak.",
+      "Uzoq muddat ishlatilgandan keyin nominal aylanish chastotasida kamida {worn_nominal}, salt yurishning eng past aylanish chastotasida esa kamida {worn_idle} ga ruxsat etiladi."
+    ],
+    "chain": [
+      "Adapterli gaz taqsimlash zanjirining gidravlik taranglagichini qachon almashtirish kerak?",
+      "{engine} dvigatelida adapterli gidravlik taranglagich yechilgach, plunjer oraliq holatda qolsa, taranglagichni almashtirish kerak. Bu uning qadalib qolganini bildiradi.",
+      "Markirovkani tekshiring: {part} detalining plunjeri to‘liq chiqqandagi uzunligi {length} bo‘lishi kerak."
+    ],
+    "no_source": "Sinov rejimida {engine} dvigateli bo‘yicha bu savolga mos tasdiqlangan sahifa yo‘q. Qaysi uzelni va nimani tekshirish kerakligini aniqlashtiring. Zarur bo‘lsa, uzelni joyida tekshiruvga yuboring."
+  },
+  "hy": {
+    "name": "Հայերեն",
+    "oil": [
+      "Որքա՞ն պետք է լինի յուղի ճնշումը տաքացված շարժիչում։",
+      "Տաքացված {engine} շարժիչում յուղի ճնշումը {rpm} դեպքում պետք է լինի {range}, իսկ պարապ ընթացքի նվազագույն պտտման հաճախականության դեպքում՝ առնվազն {idle}։",
+      "Երկարատև շահագործումից հետո անվանական պտտման հաճախականության դեպքում թույլատրվում է առնվազն {worn_nominal}, իսկ պարապ ընթացքի նվազագույն պտտման հաճախականության դեպքում՝ առնվազն {worn_idle}։"
+    ],
+    "chain": [
+      "Ե՞րբ պետք է փոխարինել գազաբաշխման շղթայի ադապտերով հիդրավլիկ ձգիչը։",
+      "{engine} շարժիչի ադապտերով հիդրավլիկ ձգիչը պետք է փոխարինել, եթե հանելուց հետո պլունժերը մնում է միջանկյալ դիրքում։ Դա սեպման նշան է։",
+      "Ստուգեք մակնշումը. {part} դետալի երկարությունը լիովին դուրս եկած պլունժերով պետք է լինի {length}։"
+    ],
+    "no_source": "Փորձարկման ռեժիմում {engine} շարժիչի համար այս հարցին վերաբերող հաստատված էջ չկա։ Հստակեցրեք հանգույցը և ստուգման առարկան։ Անհրաժեշտության դեպքում հանգույցը ուղարկեք տեղում ստուգման։"
+  },
+  "tg": {
+    "name": "Тоҷикӣ",
+    "oil": [
+      "Фишори равған дар муҳаррики гармшуда бояд чӣ қадар бошад?",
+      "Дар муҳаррики гармшудаи {engine} фишори равған ҳангоми {rpm} бояд {range}, дар пасттарин суръати гардиши гашти холӣ бошад, на камтар аз {idle} бошад.",
+      "Пас аз истифодаи тӯлонӣ дар суръати номиналии гардиш на камтар аз {worn_nominal} ва дар пасттарин суръати гардиши гашти холӣ на камтар аз {worn_idle} иҷозат аст."
+    ],
+    "chain": [
+      "Кашандаи гидравликии занҷири тақсимоти газро бо адаптер кай бояд иваз кард?",
+      "Дар муҳаррики {engine} кашандаи гидравликии дорои адаптерро бояд иваз кард, агар пас аз ҷудо кардан плунжер дар ҳолати мобайнӣ монад. Ин нишонаи дармондан аст.",
+      "Тамғагузориро санҷед: дарозии ҷузъи {part} ҳангоми пурра баромадани плунжер бояд {length} бошад."
+    ],
+    "no_source": "Дар реҷаи санҷишӣ барои муҳаррики {engine} саҳифаи тасдиқшуда оид ба ин савол мавҷуд нест. Муайян кунед, ки кадом гиреҳ ва чиро бояд санҷид. Агар лозим бошад, гиреҳро барои санҷиш дар маҳал фиристед."
+  },
+  "hi": {
+    "name": "हिन्दी",
+    "oil": [
+      "गर्म इंजन में तेल का दबाव कितना होना चाहिए?",
+      "गर्म {engine} इंजन में {rpm} पर तेल का दबाव {range} और न्यूनतम निष्क्रिय चाल पर कम से कम {idle} होना चाहिए।",
+      "लंबे समय तक उपयोग के बाद निर्धारित घूर्णन गति पर कम से कम {worn_nominal} और न्यूनतम निष्क्रिय चाल पर कम से कम {worn_idle} स्वीकार्य है।"
+    ],
+    "chain": [
+      "अडैप्टर वाले टाइमिंग चेन के हाइड्रोलिक टेंशनर को कब बदलना चाहिए?",
+      "{engine} इंजन में अडैप्टर वाला हाइड्रोलिक टेंशनर खोलने के बाद अगर प्लंजर बीच की स्थिति में रह जाए, तो टेंशनर बदलें। यह उसके जाम होने का संकेत है।",
+      "मार्किंग की जाँच करें: {part} पुर्जे का प्लंजर पूरी तरह बाहर निकला हो तो उसकी लंबाई {length} होनी चाहिए।"
+    ],
+    "no_source": "परीक्षण मोड में {engine} इंजन से जुड़े इस प्रश्न के लिए कोई सत्यापित पृष्ठ उपलब्ध नहीं है। बताएं कि किस भाग में क्या जाँचना है। आवश्यकता होने पर उस भाग की मौके पर जाँच कराएं।"
+  }
+}

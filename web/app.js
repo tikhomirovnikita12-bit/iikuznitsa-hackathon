@@ -1,5 +1,6 @@
 import { rememberSourceOrigin, restoreSourceOrigin } from "./source-return.js";
 import { bindDictation } from "./dictation.js";
+import { interfaceText, languages, savedLanguage, setUiLanguage, uiLanguage } from "./ui-language.js";
 
 const byId = (id) => document.getElementById(id);
 const ui = Object.fromEntries([
@@ -10,6 +11,7 @@ const ui = Object.fromEntries([
   "selection", "selection-hint", "selection-error", "retry-catalog", "diagnostic", "result",
   "chat", "chat-context", "messages", "chat-error", "composer", "question", "dictation", "dictation-status",
   "send", "suggestions",
+  "chat-language", "chat-language-example",
   "pressure-helper", "pressure-form", "pressure-fields",
   "ticket-panel", "journal", "announcement", "fleet-toggle", "fleet-panel", "vehicle-history", "history-content",
   "recording-help", "quick-replies", "reply-options",
@@ -21,6 +23,7 @@ const view = {
   catalog: null, pair: null, state: null, generation: 0, busy: null,
   diagnosisError: null, chatError: null, ticketError: null, needsTicketCheck: false,
   pendingQuestion: "", pendingEdits: new Map(), consents: null, pollTimer: null, editingContext: false,
+  composed: null,
   fleet: null, fleetError: null, fleetOpen: false, fleetLoading: false, fleetFilter: null,
   history: null, historyVehicle: null, historyError: null, historyRequest: 0,
 };
@@ -48,13 +51,15 @@ const outcomes = {
   anomaly: "Обнаружено отклонение",
   check_failed: "Запись не удалось проверить",
 };
-const date = new Intl.DateTimeFormat("ru-RU", {
-  dateStyle: "short", timeStyle: "short", timeZone: "Europe/Moscow",
-});
-const sessionDate = new Intl.DateTimeFormat("ru-RU", {
-  day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Moscow",
-});
-const score = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 3 });
+let date, sessionDate, score;
+function setNumberFormats(locale) {
+  date = new Intl.DateTimeFormat(locale, { dateStyle: "short", timeStyle: "short", timeZone: "Europe/Moscow" });
+  sessionDate = new Intl.DateTimeFormat(locale, {
+    day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Moscow",
+  });
+  score = new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 3 });
+}
+setNumberFormats("ru-RU");
 
 class ApiFault extends Error {
   constructor(code, message, status = 0, state = null, admission = null) {
@@ -390,7 +395,7 @@ function renderDiagnosis() {
     check.addEventListener("click", () => {
       const cards = ui.messages.querySelectorAll(".check-card");
       if (cards.length) cards[cards.length - 1].closest(".bubble").scrollIntoView({ block: "start" });
-      else sendQuestion("Что проверить сначала?");
+      else sendSuggestedQuestion("Что проверить сначала?");
     });
     controls.append(check);
   } else {
@@ -474,7 +479,7 @@ function uniqueAnswerParts(sections) {
   return parts;
 }
 
-function answerBlock(kind, sections, title = sectionNames[kind] || "Рекомендации", reportInDiagnosis = false) {
+function answerBlock(kind, sections, title = sectionNames[kind] || "Рекомендации", reportInDiagnosis = false, preserveText = false) {
   const expandable = kind === "work";
   const block = element(expandable ? "details" : "section", "answer-block");
   block.dataset.kind = kind;
@@ -482,15 +487,20 @@ function answerBlock(kind, sections, title = sectionNames[kind] || "Рекоме
   block.append(element(expandable ? "summary" : "h3", "", title));
   const parts = uniqueAnswerParts(sections);
   const numbered = kind === "checks" && parts.reduce((count, part) => count + part.items.length, 0) > 1;
+  const itemNode = (tag, text) => {
+    const node = element(tag, "", text);
+    if (preserveText) node.translate = false;
+    return node;
+  };
   let number = 1;
   for (const section of parts) {
     const part = element("div", "answer-part");
     if (!numbered && section.items.length === 1) {
-      part.append(element("p", "", section.items[0]));
+      part.append(itemNode("p", section.items[0]));
     } else {
       const list = element(numbered ? "ol" : "ul");
       if (numbered) list.start = number;
-      for (const item of section.items) list.append(element("li", "", item));
+      for (const item of section.items) list.append(itemNode("li", item));
       number += section.items.length;
       part.append(list);
     }
@@ -517,23 +527,73 @@ function answerBlock(kind, sections, title = sectionNames[kind] || "Рекоме
 
 function composeAnswer(text, alternatives = []) {
   let current = ui.question.value;
-  for (const alternative of alternatives) current = current.replace(alternative, "");
-  const combined = current.trimEnd() + (current.trim() ? "\n" : "") + text;
+  const previous = view.composed?.display === current.trim() ? view.composed.canonical : null;
+  const lines = text.split("\n");
+  const translations = lines.map(interfaceText);
+  const complete = lines.every((line, index) => !/[А-Яа-яЁё]/u.test(line) || translations[index] !== line);
+  const display = complete ? translations.join("\n") : text;
+  let canonical = previous || "";
+  for (const alternative of alternatives) {
+    current = current.replace(alternative, "").replace(interfaceText(alternative), "");
+    canonical = canonical.replace(alternative, "");
+  }
+  const combined = current.trimEnd() + (current.trim() ? "\n" : "") + display;
   if (combined.length > ui.question.maxLength) {
     announce("Текст слишком длинный. Сократите сообщение перед добавлением результата.");
     ui.question.focus();
     return;
   }
+  view.composed = previous !== null || !current.trim()
+    ? { display: combined.trim(), canonical: [canonical.trim(), text.trim()].filter(Boolean).join("\n") }
+    : null;
   ui.question.value = combined;
   ui.question.dispatchEvent(new Event("input"));
   ui.question.focus();
   ui.question.scrollIntoView({ block: "nearest" });
 }
 
-function userMessage(text) {
+function userMessage(text, language) {
   const bubble = element("article", "bubble user");
-  bubble.append(element("p", "message-meta", "Вы"), element("p", "", text));
+  const body = element("p", "", text);
+  body.translate = false;
+  if (language) body.lang = language;
+  bubble.append(element("p", "message-meta", "Вы"), body);
   return bubble;
+}
+
+function chatLanguage() {
+  return uiLanguage();
+}
+
+function languageExample() {
+  const language = view.catalog?.chat_languages?.find((item) => item.code === chatLanguage());
+  return language?.examples.find((example) => example.engine_model === vehiclePicker.selected?.engine_model
+    && example.fault_code === view.state?.diagnosis?.anomaly_type);
+}
+
+function renderChatLanguages() {
+  const demo = ui["chat-language-example"];
+  demo.hidden = !languageExample();
+  demo.disabled = Boolean(view.busy);
+  ui.question.lang = chatLanguage();
+  ui.question.placeholder = languageExample()?.question || "Например, что проверить сначала?";
+}
+
+function originalEvidence(title, passages) {
+  const details = element("details", "answer-block");
+  details.append(element("summary", "", title));
+  const original = element("div", "answer-part");
+  for (const passage of passages) {
+    for (const item of passage.items || [passage.text]) {
+      const quote = element("p", "", item);
+      quote.lang = "ru";
+      quote.translate = false;
+      original.append(quote);
+    }
+    original.append(references(passage.references));
+  }
+  details.append(original);
+  return details;
 }
 
 function renderChat() {
@@ -554,26 +614,36 @@ function renderChat() {
   const fragment = document.createDocumentFragment();
   for (const message of messages) {
     if (message.role === "user") {
-      fragment.append(userMessage(message.text));
+      const suggested = message.suggested_question;
+      fragment.append(userMessage(suggested ? interfaceText(suggested) : message.text,
+        suggested ? chatLanguage() : message.language));
       continue;
     }
     const bubble = element("article", "bubble");
     bubble.tabIndex = -1;
-    bubble.append(element("p", "message-meta", message.origin === "fixture" ? "Механик · тестовый ответ" : "Механик"));
+    const name = !message.status_notice && view.catalog?.chat_languages?.find((item) => item.code === message.language)?.name;
+    const role = message.origin === "fixture" ? "Механик · тестовый ответ" : "Механик";
+    bubble.append(element("p", "message-meta", name && message.language !== "ru" ? role + " · " + name : role));
+    if (!message.status_notice && message.translation_failed) bubble.append(alert("Перевод недоступен. Показан исходный ответ на русском."));
+    const answer = element("div", "translated-answer");
+    answer.lang = message.status_notice ? chatLanguage() : (message.language || "ru");
     const parts = (message.sections || []).flatMap((part) => {
       if (part.kind !== "signs" || part.references?.length) return [part];
       const items = part.items.filter((item) => !reportTexts.has(answerTextKey(item)));
       return items.length ? [{ ...part, items }] : [];
     });
-    const summary = answerTextKey(message.summary);
+    const displaySummary = message.status_notice ? interfaceText(message.status_notice) : message.summary;
+    const summary = answerTextKey(message.status_notice || message.summary);
     if (reportTexts.has(summary)) {
       if (!parts.length) {
         const link = element("a", "", "К результату проверки");
         link.href = "#result-title";
-        bubble.append(link);
+        answer.append(link);
       }
     } else if (!parts.some((part) => part.kind !== "work" && part.items.some((item) => answerTextKey(item) === summary))) {
-      bubble.append(element("p", "answer-title", message.summary));
+      const title = element("p", "answer-title", displaySummary);
+      title.translate = false;
+      answer.append(title);
     }
     const sections = new Map();
     for (const part of parts) {
@@ -586,9 +656,12 @@ function renderChat() {
     const reportInDiagnosis = Boolean(view.state.generator_check && message.origin === "rule"
       && [null, "unknown"].includes(message.analysis?.generator_reading));
     for (const kind of new Set([...Object.keys(sectionNames), ...sections.keys()])) {
-      if (sections.has(kind)) bubble.append(answerBlock(kind, sections.get(kind),
-        kind === "checks" ? measurementTitle : undefined, reportInDiagnosis));
+      if (sections.has(kind)) answer.append(answerBlock(kind, sections.get(kind),
+        kind === "checks" ? measurementTitle : undefined, reportInDiagnosis, !message.status_notice));
     }
+    bubble.append(answer);
+    if (message.source_quotes?.length) bubble.append(originalEvidence("Цитата из руководства · русский", message.source_quotes));
+    if (message.original_sections?.length) bubble.append(originalEvidence("Исходный текст ответа · русский", message.original_sections));
     fragment.append(bubble);
   }
   if (view.pendingQuestion) fragment.append(userMessage(view.pendingQuestion));
@@ -596,6 +669,7 @@ function renderChat() {
   ui.messages.replaceChildren(fragment);
   [...ui.messages.querySelectorAll("details")].forEach((node, index) => { node.open = Boolean(openDetails[index]); });
   setAlert(ui["chat-error"], view.chatError);
+  renderChatLanguages();
   renderChatActions(diagnosis, engine);
 }
 
@@ -649,7 +723,7 @@ function renderChatActions(diagnosis, engine) {
     const chip = element("button", "", label);
     chip.type = "button";
     chip.disabled = Boolean(view.busy);
-    chip.addEventListener("click", () => sendQuestion(question));
+    chip.addEventListener("click", () => sendSuggestedQuestion(question));
     suggestions.append(chip);
   }
   const replies = ui["reply-options"];
@@ -807,8 +881,10 @@ function operationEvidence(draft, admission) {
     full.append(element("summary", "", "Выдержки и условия"));
     for (const condition of row.conditions || []) full.append(element("p", "muted", condition.text));
     for (const item of evidence) {
-      full.append(element("p", "ref-title", item.source.manual + " · PDF " + item.source.pdf_page),
-                  element("blockquote", "evidence-quote", item.text));
+      const quote = element("blockquote", "evidence-quote", item.text);
+      quote.translate = false;
+      quote.lang = "ru";
+      full.append(element("p", "ref-title", item.source.manual + " · PDF " + item.source.pdf_page), quote);
     }
     card.append(full);
     group.append(card);
@@ -842,7 +918,17 @@ function editableDraft(draft, pending, partsExpanded) {
   priority.addEventListener("change", showPriority);
   showPriority();
   const work = element("section", "draft-work");
-  work.append(field("operations", "Работы", operations), operationEvidence(draft, admission));
+  const operationField = field("operations", "Работы", operations);
+  work.append(operationField, operationEvidence(draft, admission));
+  if (chatLanguage() !== "ru") {
+    const translatedOperations = draft.operations.map(interfaceText);
+    if (translatedOperations.some((line, index) => line !== draft.operations[index])) {
+      const reading = element("ul", "draft-reading");
+      for (const line of translatedOperations) reading.append(element("li", "", line));
+      operations.hidden = true;
+      operationField.append(reading);
+    }
+  }
   const extras = element("details", "draft-parts");
   extras.open = partsExpanded || edits.spare_parts.some((item) => item.trim());
   extras.append(element("summary", "", "Запчасти"), field("parts", "По одной на строку", parts));
@@ -1699,7 +1785,7 @@ async function action(kind, path, method, payload = {}) {
   if (kind === "diagnose") view.diagnosisError = null;
   if (kind === "chat") {
     view.chatError = null;
-    view.pendingQuestion = payload.message;
+    view.pendingQuestion = payload.display_message || payload.message;
   }
   if (["prepare", "save", "submit", "reconcile"].includes(kind)) view.ticketError = null;
   render();
@@ -1758,16 +1844,33 @@ async function action(kind, path, method, payload = {}) {
   }
 }
 
-async function sendQuestion(value, fromComposer = false) {
+function sendSuggestedQuestion(question) {
+  return sendQuestion(question, false, "ru", interfaceText(question));
+}
+
+async function sendQuestion(value, fromComposer = false, inputLanguage = "ru", display = null) {
   const message = value.trim();
   if (!message || !view.state?.diagnosis || view.busy || (fromComposer && dictation.active)) return;
   if (fromComposer) dictation.reset();
   const generation = view.generation;
   const hadDraft = Boolean(view.state?.draft);
-  const result = await action("chat", "chat", "POST", { message });
+  const language = chatLanguage();
+  const generated = fromComposer && view.composed?.display === message ? view.composed.canonical : null;
+  const manual = fromComposer && !generated;
+  const displayMessage = generated ? message : display;
+  const result = await action("chat", "chat", "POST", {
+    message: generated || message,
+    ...(language !== "ru" && { language }),
+    ...(manual ? { match_input_language: true } : { input_language: inputLanguage }),
+    ...(displayMessage && displayMessage !== (generated || message) && { display_message: displayMessage }),
+  });
   if (generation !== view.generation) return;
   if (!result) {
-    if (!ui.question.value.trim()) ui.question.value = message;
+    if (!ui.question.value.trim()) {
+      const retry = displayMessage || message;
+      if (displayMessage && !manual) view.composed = { display: retry, canonical: generated || message };
+      ui.question.value = retry;
+    }
     ui.question.dispatchEvent(new Event("input"));
     if (fromComposer) ui.question.focus({ preventScroll: true });
     return;
@@ -1859,11 +1962,35 @@ ui["ask-question"].addEventListener("click", () => {
   ui.question.scrollIntoView({ block: "center" });
 });
 ui.selection.addEventListener("submit", (event) => event.preventDefault());
+async function applyLanguage(code) {
+  try {
+    if (!await setUiLanguage(code)) return;
+    ui["chat-language"].value = code;
+    setNumberFormats(code);
+    render();
+  } catch (error) {
+    ui["chat-language"].value = chatLanguage();
+    announce(error.message);
+  }
+}
+
+ui["chat-language"].replaceChildren(...Object.entries(languages).map(([code, name]) => {
+  const choice = option(code, name);
+  choice.lang = code;
+  choice.translate = false;
+  return choice;
+}));
+ui["chat-language"].addEventListener("change", () => applyLanguage(ui["chat-language"].value));
+applyLanguage(savedLanguage());
+ui["chat-language-example"].addEventListener("click", () => {
+  if (languageExample()) sendQuestion(languageExample().question, false, chatLanguage());
+});
 ui.composer.addEventListener("submit", (event) => {
   event.preventDefault();
   sendQuestion(ui.question.value, true);
 });
 ui.question.addEventListener("input", () => {
+  if (view.composed?.display !== ui.question.value.trim()) view.composed = null;
   ui.question.style.height = "auto";
   ui.question.style.height = ui.question.scrollHeight + "px";
   setChatSubmit();

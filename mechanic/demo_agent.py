@@ -9,6 +9,7 @@ from backend.mechanic import conflict_case
 from manual_search.corpus import verified_fragments
 
 from .contracts import Brief, Diagnosis, DraftFields, Reference, Reply, Section
+from .localization import NO_SOURCE, NORMAL_NEXT_STEP, NORMAL_NOTICE
 from .sources import YAMZ236, ZMZ409, ZMZ5234
 
 
@@ -357,10 +358,8 @@ def answer(vehicle: dict, diagnosis: Diagnosis, question: str) -> Reply:
                                  "Сообщите, почему возник вопрос, и укажите показания приборов этой сессии.",
                          sections=[signs])
         if FIRST.search(text):
-            return Reply(summary=f"По сессии {diagnosis.session_id} значимых отклонений не обнаружено. "
-                                 "Продолжайте штатный контроль двигателя.", sections=[signs])
-        return Reply(summary="В этой сессии значимых отклонений нет. Уточните симптом или узел, "
-                             "по которому нужна проверка.", sections=[signs])
+            return Reply(summary=NORMAL_NEXT_STEP.format(session=diagnosis.session_id), sections=[signs])
+        return Reply(summary=NORMAL_NOTICE, sections=[signs])
 
     case = case_for(vehicle, diagnosis)
     if case == "mismatch":
@@ -432,9 +431,7 @@ def answer(vehicle: dict, diagnosis: Diagnosis, question: str) -> Reply:
         if case == "coolant":
             return coolant_reply(signs)
         return valve_reply(signs, diagnosis.signal_quality)
-    return Reply(summary=f"Для этого вопроса в тестовом режиме нет подтверждённой страницы "
-                         f"для двигателя {vehicle['engine_model']}. Уточните узел и что именно "
-                         "нужно проверить. При необходимости передайте вопрос на дефектовку.")
+    return Reply(summary=NO_SOURCE.format(engine=vehicle["engine_model"]))
 
 
 def draft(vehicle: dict, diagnosis: Diagnosis) -> DraftFields | None:

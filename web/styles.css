@@ -48,6 +48,8 @@ a { color: var(--accent); text-underline-offset: .18em; }
 .brand h1 { font-size: 1.28rem; font-weight: 700; letter-spacing: -.025em; }
 .mode { font-size: .82rem; color: var(--muted); white-space: nowrap; }
 .masthead-actions { display: flex; align-items: center; gap: .8rem; }
+.site-language { display: grid; gap: .12rem; font-size: .78rem; color: var(--muted); }
+.site-language select { min-height: 36px; padding-block: .26rem; font-size: .9rem; }
 
 .layout {
   max-width: var(--layout-width); margin: 0 auto; padding: 1.6rem 1.75rem 3.5rem;
@@ -267,6 +269,8 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
 .dictation-button[data-active="true"] .dictation-icon::after { display: none; }
 .dictation-status { color: var(--muted); font-size: .875rem; }
 .dictation-status:not(:empty) { margin-top: .35rem; }
+.translated-answer { display: grid; gap: .45rem; }
+.draft-reading { margin-block: .55rem; padding-inline-start: 1.4rem; }
 #question { max-height: 12rem; resize: none; }
 #chat-error { margin: .65rem var(--section-padding) 0; }
 .suggestions { display: flex; flex-wrap: wrap; gap: .18rem .4rem; }
@@ -453,6 +457,7 @@ button.fleet-chip:hover, button.fleet-chip[aria-pressed="true"] { background: va
   .masthead-actions { display: contents; }
   .brand h1 { font-size: 1.12rem; }
   .mode { grid-column: 1; grid-row: 2; }
+  .site-language { grid-column: 1 / -1; grid-row: 3; justify-self: start; margin-top: .35rem; }
   #fleet-toggle { grid-column: 2; grid-row: 1 / span 2; padding-inline: .52rem; font-size: .875rem; }
   .layout { padding-inline: .72rem; gap: .75rem; }
   .workarea { gap: .8rem; }

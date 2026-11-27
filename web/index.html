@@ -6,10 +6,22 @@
   <meta name="theme-color" content="#fbfcfa">
   <meta name="description" content="Результаты акустической проверки двигателя, заводские руководства и заявки на дефектовку.">
   <title>Цифровой механик</title>
+  <script>
+    if (location.protocol === "file:") document.documentElement.classList.add("file-preview");
+  </script>
+  <style>
+    .file-preview body > :not(#file-preview-notice) { display: none; }
+    .file-preview #file-preview-notice { display: block; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; font: 1rem/1.5 system-ui, sans-serif; }
+  </style>
   <link rel="stylesheet" href="/assets/styles.css">
   <script type="module" src="/assets/app.js"></script>
 </head>
 <body>
+  <main id="file-preview-notice" hidden>
+    <h1>Откройте рабочий стенд</h1>
+    <p>Каталог, диагностика и чат загружаются с локального сервера. Запустите <code>python run.py</code> из папки проекта и откройте адрес, который выведен в терминале.</p>
+    <p><a href="http://127.0.0.1:8000/">Открыть стенд на порту 8000</a></p>
+  </main>
   <a class="skip-link" href="#workspace">К рабочей области</a>
   <header class="masthead">
     <div class="masthead-inner">
@@ -18,6 +30,10 @@
       </div>
       <div class="masthead-actions">
         <span class="mode" id="mode" role="status">Демо-данные</span>
+        <label class="site-language" for="chat-language">
+          <span>Язык интерфейса</span>
+          <select id="chat-language"><option value="ru" translate="no">Русский</option></select>
+        </label>
         <button id="fleet-toggle" class="button quiet" type="button" aria-expanded="false"
                 aria-controls="fleet-panel">Состояние парка</button>
       </div>
@@ -105,6 +121,7 @@
           </form>
           <div id="suggestions" class="suggestions" role="group" aria-label="Действия по проверке" hidden></div>
           <div class="chat-tools">
+            <button id="chat-language-example" class="button quiet" type="button" hidden>Задать демо-вопрос</button>
             <details id="pressure-helper" class="pressure-helper" hidden>
               <summary>Замер давления масла</summary>
               <form id="pressure-form">
