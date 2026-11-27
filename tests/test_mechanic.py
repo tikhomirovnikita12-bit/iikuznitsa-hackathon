@@ -6,7 +6,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from mechanic import main
+from mechanic import localization, main
 from mechanic.case_agent import CaseAgent
 from mechanic.config import MOCKS
 from mechanic.state import Store
@@ -155,6 +155,172 @@ def test_fleet_reflects_sent_ticket(stand):
     assert row["category"] == "quarantine"
     assert row["ticket"] == {"status": "created", "ticket_id": created["ticket_id"]}
     assert row["urgency"] == request["edits"]["urgency"]
+
+
+@pytest.mark.parametrize("pair,case,page,values", [
+    (OIL, "oil", 19, ("ЯМЗ-236М2", "400–700", "2100", "100", "300", "50")),
+    (CHAIN, "chain", 146, ("ЗМЗ-40905.10", "40904.1006100", "55,5 ± 0,5")),
+])
+def test_localized_demo_preserves_evidence_for_all_languages(stand, monkeypatch, pair, case, page, values):
+    client, _ = stand
+    monkeypatch.setattr(localization, "translate", lambda *args, **kwargs: pytest.fail("Unexpected online translation"))
+    diagnose(client, pair)
+    languages = client.get("/api/catalog").json()["chat_languages"]
+    assert {entry["code"] for entry in languages} == {"ru", "be", "az", "kk", "ky", "tk", "uz", "hy", "tg", "hi"}
+    engine, _, fragment_id = localization.DEMO_CASES[case]
+    expected = main.policy_mechanic.search.fragments[fragment_id]["text"]
+
+    for language in languages:
+        code = language["code"]
+        question = next(example["question"] for example in language["examples"] if example["engine_model"] == engine)
+        response = client.post("/api/chat", json={**pair, "message": question, "language": code})
+        assert response.status_code == 200, response.text
+        user, reply = response.json()["messages"][-2:]
+        assert user["text"] == question and reply.get("language", "ru") == code
+        check, = reply["sections"]
+        assert check["items"][0] == reply["summary"]
+        assert all(value in " ".join(check["items"]) for value in values)
+        quote, = reply["source_quotes"]
+        assert quote["text"] == expected
+        assert quote["references"] == check["references"]
+        assert check["references"][0]["pdf_page"] == page
+        assert state(client, pair)["messages"][-1] == reply
+
+
+def test_localized_free_question_and_output_fallback(stand, monkeypatch):
+    client, _ = stand
+    diagnose(client)
+    assert client.post("/api/chat", json={**OIL, "message": "Ողջույն", "language": "bad"}).status_code == 422
+    monkeypatch.delenv("GOOGLE_TRANSLATION_PROJECT", raising=False)
+    unavailable = client.post("/api/chat", json={**OIL, "message": "Ողջույն", "language": "hy"})
+    assert unavailable.status_code == 503 and unavailable.json()["error"]["code"] == "translation_unavailable"
+    assert len(state(client)["messages"]) == 1
+    captured = []
+
+    def translate(texts, source, target, *, engine):
+        captured.append((source, target, texts))
+        assert engine == "ЯМЗ-236М2"
+        if target == "ru":
+            return ["Что проверить сначала?"]
+        if len(captured) == 4:
+            raise localization.TranslationError("Ошибка перевода")
+        return [f"Հայերեն {item}" for item in texts]
+
+    monkeypatch.setattr(localization, "translate", translate)
+    payload = {**OIL, "message": "Ի՞նչ ստուգել սկզբում։", "language": "hy"}
+    out = client.post("/api/chat", json=payload).json()
+    user, answer = out["messages"][-2:]
+    assert user["text"] == payload["message"]
+    assert answer["summary"].startswith("Հայերեն ") and answer["language"] == "hy"
+    assert answer["original_sections"] and any(s["references"] for s in answer["sections"])
+    stored = main.store.read((OIL["vehicle_id"], OIL["session_id"]))["messages"][-2:]
+    assert stored[0]["text"] == "Что проверить сначала?" and not stored[1]["summary"].startswith("Հայերեն ")
+    out = client.post("/api/chat", json=payload).json()
+    assert out["messages"][-1]["translation_failed"] and out["messages"][-1]["language"] == "ru"
+    assert [(source, target) for source, target, _ in captured] == [("hy", "ru"), ("ru", "hy")] * 2
+
+
+@pytest.mark.parametrize("language,question", [
+    ("ru", "Что мне сначала проверить у этой машины?"),
+    ("be", "Што мне трэба спачатку праверыць у гэтай машыне?"),
+    ("az", "Bu maşında əvvəlcə nəyi yoxlamalıyam?"),
+    ("kk", "Осы көлікте алдымен нені тексеруім керек?"),
+    ("ky", "Бул унаада биринчи эмнени текшеришим керек?"),
+    ("tk", "Bu ulagda ilki bilen nämäni barlamaly?"),
+    ("uz", "Bu mashinada avval nimani tekshirishim kerak?"),
+    ("hy", "Ի՞նչ պետք է նախ ստուգեմ այս մեքենայում։"),
+    ("tg", "Дар ин мошин аввал чиро бояд тафтиш кунам?"),
+    ("hi", "इस गाड़ी में मुझे सबसे पहले क्या जाँचना चाहिए?"),
+])
+def test_manual_question_uses_input_language_instead_of_interface(stand, monkeypatch, language, question):
+    client, _ = stand
+    diagnose(client)
+    calls = []
+
+    def translate(texts, source, target, *, engine):
+        calls.append((source, target))
+        return ["Что проверить сначала?"] if target == "ru" else [f"[{target}] {text}" for text in texts]
+
+    monkeypatch.setattr(localization, "translate", translate)
+    fallback = "uz" if language == "ru" else "ru"
+    response = client.post("/api/chat", json={
+        **OIL, "message": question, "language": fallback, "match_input_language": True,
+    })
+    assert response.status_code == 200, response.text
+    user, reply = response.json()["messages"][-2:]
+    assert user["text"] == question and user["language"] == language
+    assert reply.get("language", "ru") == language
+    assert calls == ([] if language == "ru" else [(language, "ru"), ("ru", language)])
+
+
+def test_generated_command_preserves_russian_command_with_localized_display(stand, monkeypatch):
+    client, _ = stand
+    diagnose(client)
+    calls = []
+
+    def translate(texts, source, target, *, engine):
+        calls.append((source, target))
+        return texts
+
+    monkeypatch.setattr(localization, "translate", translate)
+    command = "Что проверить сначала?"
+    display = "Avval nimani tekshirish kerak?"
+    response = client.post("/api/chat", json={**OIL, "message": command, "language": "uz",
+                                              "input_language": "ru", "display_message": display})
+    assert response.status_code == 200, response.text
+    assert response.json()["messages"][-2]["text"] == display
+    assert main.store.read((OIL["vehicle_id"], OIL["session_id"]))["messages"][-2]["text"] == command
+    assert calls == [("ru", "uz")]
+
+
+def test_translation_preserves_engine_units_and_part_number():
+    original = "ЯМЗ-236М2: 400–700 кПа при 2100 об/мин; 55,5 ± 0,5 мм; 40904.1006100; −20 °C; F14."
+    masked, values = localization.protect(original, "ЯМЗ-236М2")
+    assert {v.rstrip(".") for v in values} == {
+        "ЯМЗ-236М2", "400–700 кПа", "2100 об/мин", "55,5 ± 0,5 мм", "40904.1006100", "−20 °C", "F14",
+    }
+    assert localization.restore(masked, values) == original
+    with pytest.raises(localization.TranslationError):
+        localization.restore(masked.replace("⟦MECH_0⟧", "0"), values)
+    with pytest.raises(localization.TranslationError):
+        localization.restore(masked + " 500", values)
+
+
+def test_local_translation_preserves_standalone_units_and_punctuation(monkeypatch):
+    def translate(action, data):
+        assert action == "translate" and data["texts"] == ["Норма давления", "при номинальных оборотах"]
+        return {"texts": ["Təzyiq norması", "nominal dövrlərdə"]}
+
+    monkeypatch.setattr(localization, "local_request", translate)
+    text = "Норма давления, кПа (кгс/см²)\nпри номинальных оборотах: 400–700."
+    result, = localization.translate_local([text], "ru", "az", "ЯМЗ-236М2")
+    assert result == "Təzyiq norması, кПа (кгс/см²)\nnominal dövrlərdə: 400–700."
+
+
+def test_google_translation_uses_direction_glossary_and_protected_values(monkeypatch):
+    import google.auth
+
+    monkeypatch.setenv("GOOGLE_TRANSLATION_PROJECT", "test-project")
+    monkeypatch.setenv("GOOGLE_TRANSLATION_GLOSSARY", "engine-terms")
+
+    class Credentials:
+        def before_request(self, _transport, _method, _url, headers):
+            headers["authorization"] = "Bearer stub"
+
+    def translate(request):
+        assert str(request.url) == "https://translation.googleapis.com/v3/projects/test-project/locations/us-central1:translateText"
+        assert request.headers["authorization"] == "Bearer stub"
+        body = json.loads(request.content)
+        assert (body["sourceLanguageCode"], body["targetLanguageCode"]) == ("ru", "hy")
+        assert body["glossaryConfig"]["glossary"] == "projects/test-project/locations/us-central1/glossaries/engine-terms"
+        masked, = body["contents"]
+        assert 'translate="no"' in masked and "400" not in masked and "кПа" not in masked
+        return httpx.Response(200, json={"glossaryTranslations": [{"translatedText": masked.replace("Давление", "Ճնշում")}]})
+
+    client = httpx.Client(transport=httpx.MockTransport(translate))
+    monkeypatch.setattr(google.auth, "default", lambda **kwargs: (Credentials(), "test-project"))
+    monkeypatch.setattr(localization.httpx, "Client", lambda **kwargs: client)
+    assert localization.translate(["Давление 400 кПа"] * 2, "ru", "hy", engine="ЯМЗ-236М2") == ["Ճնշում 400 кПа"] * 2
 
 
 def test_actual_mock_outcomes_and_pair_isolation(stand):

@@ -12,6 +12,7 @@ Risk = Literal["low", "medium", "high", "unassessed"]
 Urgency = Literal["low", "medium", "high"]
 Origin = Literal["fixture", "team", "rule"]
 SectionKind = Literal["signs", "causes", "checks", "work", "clarify", "risk"]
+Language = Literal["ru", "be", "az", "kk", "ky", "tk", "uz", "hy", "tg", "hi"]
 
 
 class Pair(BaseModel):
@@ -90,6 +91,10 @@ class GeneratorReport(BaseModel):
 class ChatRequest(Pair):
     message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1600)]
     generator_reading: GeneratorReport | None = None
+    language: Language = "ru"
+    input_language: Language | None = None
+    match_input_language: bool = False
+    display_message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1600)] | None = None
 
 
 class Section(BaseModel):

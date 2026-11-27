@@ -18,7 +18,7 @@ from pydantic import ValidationError
 from backend.admission import evaluate_admission, diagnosis_revision
 from backend.mechanic import Mechanic as EvidenceMechanic, conflict_case
 
-from . import demo_agent, generator_check, sources, speech
+from . import demo_agent, generator_check, localization, sources, speech
 from agent import case_context
 from agent.dialog import incompatible_fault
 from .case_agent import CaseAgent
@@ -218,6 +218,7 @@ def catalog():
         "manual_search": "team" if retrieval else "fixture",
         "backend": "team" if team else "local",
         "confidence_threshold": LOW_CONFIDENCE,
+        "chat_languages": localization.catalog(),
     }
 
 
@@ -397,7 +398,7 @@ def session_response(pair: Pair, state: dict):
     return {
         **public_state(state),
         "generator_check": check,
-        "messages": chat_history(state),
+        "messages": localization.public_messages(chat_history(state)),
         "admission": decision,
         "draft_available": available,
         "draft_unavailable_reason": reason,
@@ -874,9 +875,30 @@ def chat(request: ChatRequest):
         raise ApiError(409, "diagnosis_needed", "Сначала получите результат диагностики этой сессии.")
     diagnosis = Diagnosis.model_validate(snapshot["diagnosis"])
     reading = request.generator_reading
-    message = request.message
+    engine = vehicle["engine_model"]
+    input_language = request.input_language or (
+        localization.detect_language(request.message, request.language, engine=engine)
+        if request.match_input_language and not reading else request.language
+    )
+    language = input_language if request.match_input_language and not reading else request.language
+    case = localization.demo_case(engine, diagnosis, request.message, input_language)
+    question = request.message
+    calls = []
+    if case:
+        question = localization.LOCALES["ru"][case][0]
+    elif not reading and input_language != "ru":
+        started = perf_counter()
+        try:
+            question, = localization.translate([question], input_language, "ru", engine=engine)
+            case = localization.demo_case(engine, diagnosis, question, "ru")
+            calls.append(audit("translation.input", started))
+        except localization.TranslationError as error:
+            add_call(request, "translation.input", started, "error")
+            raise ApiError(503, "translation_unavailable", str(error)) from error
+
     started = perf_counter()
     tool = "agent.chat" if TEAM_AGENT_URL or case_agent else "agent.fixture"
+    localized = {}
     try:
         if reading:
             tool = "agent.generator_check"
@@ -884,24 +906,43 @@ def chat(request: ChatRequest):
             if not check or check["diagnosis_revision"] != reading.diagnosis_revision:
                 raise ApiError(409, "diagnosis_changed", "Проверка изменилась. Сверьте актуальный результат.",
                                session_response(request, snapshot))
-            message = generator_check.REPORTS[reading.value]
-            reply, draft, origin, calls, agent_entry = generator_check.reply(reading.value), None, "rule", [], None
+            question = generator_check.REPORTS[reading.value]
+            reply, draft, origin, agent_entry = generator_check.reply(reading.value), None, "rule", None
+        elif case:
+            evidence = policy_mechanic.search
+            reply, quote = localization.demo_reply(case, "ru", evidence)
+            draft, origin, agent_entry = None, "fixture", None
+            calls.append(audit("manuals.lookup", started))
+            if language != "ru":
+                translated, _ = localization.demo_reply(case, language, evidence)
+                localized = {"language": language, "summary": translated.summary,
+                             "sections": [section.model_dump() for section in translated.sections]}
+            localized["source_quotes"] = [quote]
         else:
-            reply, draft, origin, calls, agent_entry = response_to_chat(vehicle, diagnosis, snapshot, message)
-            tool = {"team": "agent.chat", "fixture": "agent.fixture", "rule": "agent.generator_check"}[origin]
+            reply, draft, origin, agent_calls, agent_entry = response_to_chat(vehicle, diagnosis, snapshot, question)
+            calls.extend(agent_calls)
+        tool = {"team": "agent.chat", "fixture": "agent.fixture", "rule": "agent.generator_check"}[origin]
         for section in reply.sections:
             verify_references(section.references, vehicle, section.kind in ("causes", "checks", "work", "risk"))
         if draft is not None:
             verify_references(draft.references, vehicle, required=True)
-        if origin == "fixture":
+        if origin == "fixture" and not case:
             items = [*reply.sections, draft] if draft else reply.sections
-            calls.extend(bind_fixture_sources(items, vehicle, diagnosis, message))
+            calls.extend(bind_fixture_sources(items, vehicle, diagnosis, question))
     except ApiError as error:
         add_call(request, tool, started, status_for(error))
         raise
     except ValidationError as error:
         add_call(request, tool, started, "error")
         raise ApiError(502, "agent_invalid_response", "Ответ агента не соответствует схеме.") from error
+
+    if language != "ru" and not case:
+        translated_at = perf_counter()
+        try:
+            localized = localization.translated_reply(reply, language, engine)
+        except localization.TranslationError:
+            localized = {"language": "ru", "translation_failed": True}
+        calls.append(audit("translation.output", translated_at, "error" if localized.get("translation_failed") else "ok"))
 
     def save(state):
         current = team.stored_diagnosis(request) if team else state["diagnosis"]
@@ -919,10 +960,15 @@ def chat(request: ChatRequest):
             for call in calls:
                 record_call(state, call)
             return
-        state["messages"].extend([
-            {"role": "user", "text": message},
-            {"role": "assistant", "origin": origin, **reply.model_dump()},
-        ])
+        user = {"role": "user", "text": question}
+        if not reading and (request.display_message or request.message != question):
+            user["input_text"] = request.display_message or request.message
+        if not reading and request.match_input_language:
+            user["language"] = input_language
+        assistant = {"role": "assistant", "origin": origin, **reply.model_dump()}
+        if localized:
+            assistant["localized"] = localized
+        state["messages"].extend([user, assistant])
         if agent_entry is not None:
             state["agent_history"] = [*state["agent_history"][-5:], agent_entry]
         state["messages"] = chat_history(state)
