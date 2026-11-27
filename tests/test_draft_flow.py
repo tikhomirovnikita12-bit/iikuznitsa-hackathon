@@ -102,11 +102,15 @@ def test_missing_both_agent_and_checked_sources_returns_clarification(integrated
     client, adapter, sent = integrated
     provider = enable_agent(monkeypatch, tmp_path)
     monkeypatch.setattr(main.case_agent.mechanic, "defect_checks", {})
-    state = diagnose(client, FUEL)
+    diagnose(client, FUEL)
+    calls_after_diagnosis = provider.calls
+    current = client.get("/api/state", params=FUEL)
+    assert current.status_code == 200
+    state = current.json()
     assert state["diagnosis"]["anomaly_type"] == "F08"
     assert state["draft_available"] is False
     assert state["draft_unavailable_reason"]
-    assert provider.calls == 0, "Reading readiness must not invoke a paid model"
+    assert provider.calls == calls_after_diagnosis, "Reading readiness must not invoke a paid model"
 
     response = client.post("/api/draft", json=FUEL)
     assert response.status_code == 200, response.text
@@ -114,6 +118,7 @@ def test_missing_both_agent_and_checked_sources_returns_clarification(integrated
     assert result["draft"] is None
     assert result["draft_available"] is False
     assert result["draft_unavailable_reason"]
+    assert provider.calls == calls_after_diagnosis, "Unavailable draft must not invoke a paid model"
     assert any(section["kind"] == "clarify" for section in result["messages"][-1]["sections"])
     assert adapter.workflow.drafts(adapter.Pair(**FUEL)) == []
     assert sent == []

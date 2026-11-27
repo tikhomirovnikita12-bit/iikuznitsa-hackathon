@@ -191,7 +191,7 @@ def test_f08_curated_draft_keeps_operation_and_source_in_case_history(integrated
     state = diagnose(client, FUEL)
     vehicle = main.VEHICLE_BY_ID[FUEL["vehicle_id"]]
     diagnosis = Diagnosis.model_validate(state["diagnosis"])
-    _reply, draft, entry = agent.chat(vehicle, diagnosis, "Подготовь заявку", [])
+    _reply, draft, entry, _calls = agent.chat(vehicle, diagnosis, "Подготовь заявку", [])
     assert draft and entry[3], "A follow-up must know which check was just proposed"
     check = entry[3][0]
     assert check["text"] == draft.operations[0]

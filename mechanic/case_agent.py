@@ -3,6 +3,7 @@ from agent.tools.manual import Manuals
 from backend.mechanic import Mechanic
 from backend.models import Diagnosis as BackendDiagnosis
 
+from .sources import BY_NAME
 from .contracts import DraftFields, Reference, Reply, Section
 from .config import MATERIALS
 from .demo_agent import wants_draft
@@ -57,27 +58,38 @@ class CaseAgent:
 
     def chat(self, vehicle, diagnosis, question, history):
         context = {**diagnosis.model_dump(), "engine_model": vehicle["engine_model"], "fuel": vehicle["fuel"]}
-        fallback = self.checked_draft(vehicle, diagnosis)
-        if (wants_draft(question) and fallback and not any(
+        if (wants_draft(question) and not any(
             passages(hit) for hit in self.agent.manuals.find(ticket_query(context), context)
         )):
-            return self.checked_reply(question, fallback, vehicle, diagnosis)
-        result = self.agent.turn(diagnosis.vehicle_id, diagnosis.session_id, question, history,
-                                 diagnosis=context)
-        if result.get("intent") == "ticket" and not result["ticket_draft"] and fallback:
-            return self.checked_reply(question, fallback, vehicle, diagnosis)
+            if fallback := self.checked_draft(vehicle, diagnosis):
+                return *self.checked_reply(question, fallback, vehicle, diagnosis), []
+        trace = {}
+        result = self.agent.turn(
+            diagnosis.vehicle_id, diagnosis.session_id, question, history, trace_out=trace,
+            diagnosis=context,
+        )
+        calls = []
+        for tool in trace["tools"]:
+            calls.append(dict(tool="agent." + tool["name"], duration_ms=round(tool["seconds"] * 1000),
+                              status="ok", pages=tool.get("pages", [])))
+        for call in trace["calls"]:
+            calls.append(dict(tool="ollama.chat", duration_ms=round(call["seconds"] * 1000), status="ok",
+                              model=call["model"], input_tokens=call["input_tokens"], output_tokens=call["output_tokens"]))
+        if result.get("intent") == "ticket" and not result["ticket_draft"]:
+            if fallback := self.checked_draft(vehicle, diagnosis):
+                return *self.checked_reply(question, fallback, vehicle, diagnosis), calls
+
         references = {
             item["fragment_id"]: Reference(manual=item["manual"], pdf_page=item["pdf_page"])
             for item in result["references"]
         }
+        for item in result["references"]:
+            manual = BY_NAME[item["manual"]]
+            item["url"] = f"/sources/{manual.slug}/{item['pdf_page']}"
         sections = []
         for field, kind in (("possible_causes", "causes"), ("risk", "risk"), ("checks", "checks")):
-            if items := result[field]:
-                ids = dict.fromkeys(item["fragment_id"] for item in items)
-                sections.append(Section(
-                    kind=kind, items=[item["text"] for item in items],
-                    references=[references[fragment] for fragment in ids],
-                ))
+            for item in result[field]:
+                sections.append(Section(kind=kind, items=[item["text"]], references=[references[item["fragment_id"]]]))
         if question_to_clarify := result["clarifying_question"]:
             sections.append(Section(kind="clarify", items=[question_to_clarify],
                                     references=[] if sections else list(references.values())))
@@ -88,4 +100,4 @@ class CaseAgent:
         if draft:
             proposal = DraftFields.model_validate({key: draft[key] for key in DraftFields.model_fields})
             summary = "Черновик подготовлен. Проверьте поля и подтвердите приоритет."
-        return Reply(summary=summary, sections=sections), proposal, history_entry(question, result)
+        return Reply(summary=summary, sections=sections, analysis=result), proposal, history_entry(question, result), calls

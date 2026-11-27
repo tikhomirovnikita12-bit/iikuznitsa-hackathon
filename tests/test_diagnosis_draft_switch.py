@@ -85,10 +85,15 @@ def test_each_diagnosis_selects_its_draft_and_rejects_old_requests(changing_case
         def can_prepare(self, _vehicle, _diagnosis, _history=()):
             return True
 
-        def chat(self, vehicle, diagnosis, _question, _history):
+        def chat(self, vehicle, diagnosis, question, _history):
+            if question == "Покажи диагностику":
+                from agent.tools.diagnosis import describe
+
+                analysis = describe(diagnosis.model_dump())
+                return Reply(summary=analysis["verdict"], analysis=analysis), None, None, []
             fields = adapter.workflow.mechanic.suggest_draft(diagnosis, vehicle["engine_model"]).model_dump()
             fields["urgency"] = "medium"
-            return Reply(summary="Проверка по действующему диагнозу."), DraftFields.model_validate(fields), None
+            return Reply(summary="Проверка по действующему диагнозу."), DraftFields.model_validate(fields), None, []
 
     monkeypatch.setattr(main, "case_agent", VerifiedValveCheck())
     prepared = client.post("/api/draft", json=PAIR)

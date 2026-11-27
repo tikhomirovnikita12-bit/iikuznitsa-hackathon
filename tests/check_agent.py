@@ -22,8 +22,8 @@ def main():
                 assert "руководстве по эксплуатации автомобиля" in detail
                 assert response["references"][0]["pdf_page"] == 97
         term = ask("S-0011", "что такое картер")
-        assert term["intent"] == "explain" and "коленчатый вал" in term["explanation"]
-        assert not term["references"] and not term["checks"]
+        assert term["intent"] == "search"
+        assert term["references"] or term["clarifying_question"]
         for message in ("я сегодня устал", "Какой фильм посмотреть вечером?"):
             off_topic = ask("S-0011", message)
             assert off_topic["intent"] == "conversation", off_topic

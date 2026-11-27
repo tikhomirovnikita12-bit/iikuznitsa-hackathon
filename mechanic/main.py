@@ -16,10 +16,11 @@ from pydantic import ValidationError
 
 from . import demo_agent, sources
 from .case_agent import CaseAgent
+from agent.dialog import history_entry
 from .config import CORPUS, DEFAULT_ML, DEFAULT_TOIR, MOCKS, ROOT, WEB, endpoint
 from .contracts import (
-    Brief, ChatRequest, Diagnosis, DraftFields, DraftUpdate, Identifier, Pair, Reply, TicketReceipt,
-    TicketReconciliation, TicketRequest, TicketSubmit, ToolCall, Section,
+    Brief, ChatRequest, Diagnosis, DraftFields, DraftUpdate, Identifier, Pair, Reference, Reply, Section, TicketReceipt,
+    TicketReconciliation, TicketRequest, TicketSubmit, ToolCall,
 )
 from .retrieval import SEARCH_QUESTIONS, key, load_retrieval
 from .state import UNKNOWN, Store, empty_state, public_state, record_call
@@ -381,7 +382,29 @@ def bind_fixture_sources(items, vehicle, diagnosis, question=None):
     return [audit("manuals.search", started)]
 
 
+def local_agent_turn(vehicle, diagnosis, question, history):
+    try:
+        return case_agent.chat(vehicle, diagnosis, question, history)
+    except TimeoutError as error:
+        raise ApiError(504, "agent_timeout", "Агент не ответил вовремя. Повторите запрос.") from error
+    except URLError as error:
+        raise ApiError(503, "agent_unavailable", "Ollama или выбранная модель недоступны.") from error
+    except (KeyError, TypeError, ValueError) as error:
+        raise ApiError(502, "agent_invalid_response", "Агент вернул некорректный ответ.") from error
+
+
 def overview(vehicle: dict, diagnosis: Diagnosis):
+    if case_agent:
+        reply, _, _, calls = local_agent_turn(vehicle, diagnosis, "Покажи диагностику", [])
+        result = reply.analysis
+        references = [Reference(manual=item["manual"], pdf_page=item["pdf_page"]) for item in result["references"]]
+        verify_references(references, vehicle)
+        first = next((item["text"] for item in result["checks"]), None)
+        brief = Brief(risk="unassessed",
+                      rationale=" ".join(item["text"] for item in result["risk"]) or "Уровень риска по имеющимся данным не установлен.",
+                      first_check=first or result["clarifying_question"] or reply.summary,
+                      references=references)
+        return {"origin": "team", **brief.model_dump(), "analysis": result}, calls, "agent.overview"
     if not TEAM_AGENT_URL or demo_agent.case_for(vehicle, diagnosis) == "mismatch":
         brief = demo_agent.brief(vehicle, diagnosis)
         calls = bind_fixture_sources([brief], vehicle, diagnosis)
@@ -404,9 +427,9 @@ def diagnose(pair: Pair):
         raise
     calls = [audit("mock_ml.diagnose", started)]
     brief, brief_error = None, None
-    if diagnosis.status == "anomaly":
+    if diagnosis.status == "anomaly" or case_agent:
         started = perf_counter()
-        tool = "agent.overview" if TEAM_AGENT_URL else "agent.fixture"
+        tool = "agent.overview" if TEAM_AGENT_URL or case_agent else "agent.fixture"
         try:
             brief, related_calls, tool = overview(vehicle, diagnosis)
             calls.extend([audit(tool, started), *related_calls])
@@ -426,6 +449,9 @@ def diagnose(pair: Pair):
             state["agent_history"] = []
             state.update(draft=None, draft_id=None, draft_revision=None, draft_origin=None,
                          messages=[], ticket=empty_state()["ticket"])
+        if brief and brief.get("analysis") and not state["agent_history"]:
+            if entry := history_entry("Покажи диагностику", brief["analysis"]):
+                state["agent_history"] = [entry]
         state.update(diagnosis=diagnosis.model_dump(), brief=brief, brief_error=brief_error,
                      diagnosis_requested=requested, draft_unavailable_reason=None)
         state["messages"] = chat_history(state)
@@ -441,16 +467,9 @@ def response_to_chat(vehicle, diagnosis, state, question):
         return Reply(summary="Черновик уже открыт. Проверьте поля и подтвердите приоритет."), None, "fixture", [], None
 
     mismatch = demo_agent.case_for(vehicle, diagnosis) == "mismatch"
-    if case_agent and diagnosis.status != "check_failed" and not mismatch:
-        try:
-            reply, proposal, entry = case_agent.chat(vehicle, diagnosis, question, state["agent_history"])
-        except TimeoutError as error:
-            raise ApiError(504, "agent_timeout", "Агент не ответил вовремя. Повторите запрос.") from error
-        except URLError as error:
-            raise ApiError(503, "agent_unavailable", "Ollama или выбранная модель недоступны.") from error
-        except (KeyError, TypeError, ValueError) as error:
-            raise ApiError(502, "agent_invalid_response", "Агент вернул некорректный ответ.") from error
-        return reply, proposal, "team", [], entry
+    if case_agent:
+        reply, proposal, entry, calls = local_agent_turn(vehicle, diagnosis, question, state["agent_history"])
+        return reply, proposal, "team", calls, entry
 
     if TEAM_AGENT_URL and diagnosis.status != "check_failed" and not mismatch:
         body, calls = agent_call("chat", vehicle, diagnosis, state, question)

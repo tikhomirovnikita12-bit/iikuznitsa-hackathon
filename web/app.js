@@ -247,12 +247,21 @@ function renderDiagnosis() {
     result.append(notice);
   }
 
-  if (brief) {
+  if (brief && diagnosis.status === "anomaly") {
     const risk = element("div", "risk-line");
     const [label, theme] = riskLabels[brief.risk] || riskLabels.unassessed;
     risk.append(element("span", "flag " + theme, label), element("p", "", brief.rationale));
     result.append(risk);
     if (brief.origin === "fixture") result.append(element("p", "context-key", "Тестовая рекомендация"));
+  }
+  if (brief?.analysis?.possible_causes?.length) {
+    const details = element("details", "answer-block");
+    details.append(element("summary", "", "Возможные причины"));
+    for (const item of brief.analysis.possible_causes) {
+      details.append(element("p", "", item.text));
+      details.append(references(brief.analysis.references.filter(ref => ref.fragment_id === item.fragment_id)));
+    }
+    result.append(details);
   }
   if (view.state.brief_error) result.append(alert(view.state.brief_error, "error"));
 
@@ -683,6 +692,7 @@ function renderJournal() {
     const row = element("li");
     const parts = [callStatuses[call.status] || call.status, call.duration_ms + " мс"];
     if (call.model) parts.push(call.model);
+    if (call.pages?.length) parts.push(call.pages.map(([manual, page]) => manual + ", стр. " + page).join(" · "));
     if (call.input_tokens != null || call.output_tokens != null) {
       parts.push("вход " + (call.input_tokens ?? "—") + " / выход " + (call.output_tokens ?? "—"));
     }
@@ -1030,10 +1040,11 @@ async function sendQuestion(value) {
   const message = value.trim();
   if (!message || !view.state?.diagnosis || view.busy) return;
   const generation = view.generation;
+  const hadDraft = Boolean(view.state?.draft);
   const result = await action("chat", "chat", "POST", { message });
   if (!result || generation !== view.generation) return;
   ui.question.value = "";
-  if (result.draft && /заявк/i.test(message)) revealTicket();
+  if (result.draft && (!hadDraft || /заявк/i.test(message))) revealTicket();
   else ui.messages.lastElementChild?.scrollIntoView({ block: "nearest" });
 }
 

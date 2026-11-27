@@ -4,8 +4,8 @@ def diagnose(backend, vehicle_id, session_id):
 
 def describe(result):
     verdict = {
-        "normal": "По записи признаков отклонения нет.",
-        "check_failed": "Запись непригодна для оценки двигателя. Повторите запись.",
+        "normal": "По записи признаков отклонения нет. Продолжайте штатную эксплуатацию.",
+        "check_failed": f"Проверка не состоялась. {result['description']} Повторите запись.",
         "anomaly": f"Обнаружено отклонение: {result['anomaly_title']}.",
     }[result["status"]]
     return dict(vehicle_id=result["vehicle_id"], session_id=result["session_id"], verdict=verdict,
