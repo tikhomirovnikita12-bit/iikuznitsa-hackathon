@@ -240,6 +240,12 @@ function renderDiagnosis() {
     }
     result.append(controls);
   }
+  if (!view.state.draft && view.state.draft_unavailable_reason) {
+    const notice = alert(view.state.draft_unavailable_reason);
+    notice.id = "draft-unavailable-reason";
+    notice.setAttribute("role", "status");
+    result.append(notice);
+  }
 
   if (brief) {
     const risk = element("div", "risk-line");
@@ -921,7 +927,10 @@ async function prepareDraft() {
   const state = await action("prepare", "draft", "POST");
   if (generation !== view.generation) return;
   if (state?.draft) revealTicket();
-  else byId("diagnosis-draft")?.focus();
+  else if (state) {
+    ui.question.focus({ preventScroll: true });
+    ui.messages.lastElementChild?.scrollIntoView({ block: "nearest" });
+  } else byId("diagnosis-draft")?.focus();
 }
 
 function scheduleTicketCheck() {

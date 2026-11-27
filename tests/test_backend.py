@@ -280,6 +280,32 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(statuses["anomaly"], 69)
         self.assertEqual(self.toir_requests, [])
 
+    def test_f08_draft_requires_confirmation_and_survives_reopening(self):
+        pair = {"vehicle_id": "M333YK47", "session_id": "S-0005"}
+        path, draft = self.draft(pair)
+        self.assertEqual(draft["anomaly_type"], "F08")
+        self.assertEqual(draft["operations"], [
+            "При подготовке к первичному пуску нового двигателя или после длительной стоянки проверить соединения и надёжность крепления топливопроводов.",
+        ])
+        self.assertEqual(draft["references"], [{"manual": "236-3902150-Б РЭ", "pdf_page": 16}])
+        self.assertEqual(draft["spare_parts"], [])
+        self.assertEqual(self.toir_requests, [])
+        rejected = self.client.post(path + "/confirm", json={
+            "revision": draft["revision"], "urgency": "medium", "confirmed": False,
+        })
+        self.assertEqual(rejected.status_code, 422)
+        self.assertEqual(self.toir_requests, [])
+        request = {"revision": draft["revision"], "urgency": "medium", "confirmed": True}
+        sent = self.client.post(path + "/confirm", json=request)
+        self.assertEqual(sent.status_code, 200, sent.text)
+        self.assertEqual(sent.json()["state"], "sent")
+        self.assertEqual(self.client.post(path + "/confirm", json=request).json(), sent.json())
+        self.assertEqual(len(self.toir_requests), 1)
+        self.assertEqual(self.toir_requests[0]["vehicle_id"], pair["vehicle_id"])
+        self.assertEqual(self.toir_requests[0]["anomaly_type"], "F08")
+        with self.api() as reopened:
+            self.assertEqual(reopened.get(path).json(), sent.json())
+
     def test_latest_diagnosis_must_still_match_draft(self):
         path, _ = self.draft()
         changed = self.ml.post("/diagnose", json=NORMAL).json()

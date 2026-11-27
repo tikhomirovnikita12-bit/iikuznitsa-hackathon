@@ -20,6 +20,7 @@ def empty_state() -> dict:
         "draft_id": None,
         "draft_revision": None,
         "draft_origin": None,
+        "draft_unavailable_reason": None,
         "ticket": {"status": "idle", "ticket_id": None, "message": None},
         "calls": [],
     }

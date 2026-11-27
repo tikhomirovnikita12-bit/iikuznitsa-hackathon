@@ -23,6 +23,23 @@ GLOSSARY = {
 }
 PLAN = schema(action={"type": "string", "enum": ["diagnosis", "search", "ticket", "movement", "clarify", "off_topic", "next_step", "pause", "repair"]},
               query=STRING, question=STRING)
+OIL_NORM_QUESTION = re.compile(
+    r"^(?:а\s+)?(?:какое\s+(?:должно\s+быть\s+)?давление\s+масла|"
+    r"каким\s+должно\s+быть\s+давление\s+масла|какова\s+норма\s+давления\s+масла|"
+    r"норма\s+давления\s+масла)\b"
+)
+
+
+def ticket_query(diagnosis):
+    if diagnosis["anomaly_type"] == "F02":
+        return "Какие причины пониженного давления указаны в руководстве?"
+    return diagnosis["anomaly_title"] or ""
+
+
+def incompatible_fault(diagnosis):
+    diesel = "диз" in diagnosis["fuel"].lower()
+    return (diagnosis["anomaly_type"] == "F08" and not diesel
+            or diagnosis["anomaly_type"] in {"F12", "F13"} and diesel)
 
 
 def passages(hit):
@@ -83,8 +100,7 @@ class Agent:
             ml = reply["ml_observations"]
             if ml["status"] == "check_failed":
                 return reply
-            if (ml["anomaly_type"] == "F08" and "диз" not in ml["fuel"].lower()
-                    or ml["anomaly_type"] in {"F12", "F13"} and "диз" in ml["fuel"].lower()):
+            if incompatible_fault(ml):
                 reply["clarifying_question"] = (f"ML указала «{ml['anomaly_title']}», а в карточке "
                     f"{ml['engine_model']} ({ml['fuel']}). Подтвердите двигатель и выбранную запись.")
                 return reply
@@ -144,6 +160,17 @@ class Agent:
                                   or (previous_pressure is not None and
                                       (values != previous_pressure or oil_pressure.BARE_NUMBER.fullmatch(question.strip())))):
                 return self.pressure_reply(reply, values, trace)
+            if OIL_NORM_QUESTION.match(wording):
+                hits = self.manuals.find(question, ml)
+                source = next((hit for hit in hits if hit.get("verified")
+                               and hit["fragment_id"].endswith("-oil-pressure")), None)
+                if source:
+                    reference = self.manuals.reference(source["fragment_id"], ml["engine_model"])
+                    reply.update(intent="search", checks=[dict(text=source["text"], fragment_id=source["fragment_id"])],
+                                 references=[reference])
+                    trace["tools"].append(dict(name="search", query=question,
+                        pages=[(source["manual"], source["pdf_page"])]))
+                    return reply
             context = json.dumps([ml, [row[:4] for row in history], question], ensure_ascii=False)
             next_step = bool(re.fullmatch(
                 r"(?:(?:(?:сам )?(?:мне )?(?:скажи|подскажи|расскажи) )?"
@@ -229,6 +256,8 @@ class Agent:
                 reply["clarifying_question"] = "Для заявки нужна проверка с обнаруженным отклонением."
                 return reply
             query = plan["query"] or question
+            if action == "ticket" and ticket_request:
+                query = ticket_query(ml)
             # Preserve the mechanic's terminology for specific manual questions.
             if action == "search" and len(question.split()) >= 5 and not next_step:
                 query = question
@@ -360,11 +389,19 @@ class Agent:
             "Упоминание термина, заголовок и прежний совет не считаются ответом. Если прямого ответа нет, верни пустой массив. Вопрос: " + question + " " + action +
             "\n" + json.dumps({k:v[:800] for k,v in options.items()}, ensure_ascii=False),
             schema(items={"type":"array","items":item,"maxItems":limit}), trace)
+        seen = {(entry["fragment_id"], entry["text"]) for field in ("checks", "risk", "possible_causes")
+                for entry in reply[field]}
         for selected in answer["items"][:limit]:
+            if selected.get("field") not in fields:
+                continue
             key = selected["source"]
             if key not in options:
                 continue
             fid = key.rsplit(":", 1)[0]
+            identity = fid, options[key]
+            if identity in seen:
+                continue
+            seen.add(identity)
             ref = self.manuals.reference(fid, reply["ml_observations"]["engine_model"])
             if ref not in reply["references"]:
                 reply["references"].append(ref)
