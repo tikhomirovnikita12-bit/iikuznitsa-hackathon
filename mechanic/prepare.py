@@ -8,6 +8,10 @@ import shutil
 import subprocess
 from io import BytesIO
 from pathlib import Path, PurePosixPath
+from tempfile import NamedTemporaryFile
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode, urlsplit
+from urllib.request import urlopen
 from zipfile import BadZipFile, ZipFile
 
 from manual_search.corpus import build_corpus
@@ -28,6 +32,7 @@ PREVIEW_PAGES = {
     "zmz409": (107, 143, 144, 145, 146, 147), "zmz5234": (20, 21, 56),
 }
 ARCHIVE_NAME = "007_хакатон_ИИ.zip"
+MAX_DOWNLOAD_BYTES = 1024 ** 3
 
 
 class PreparationError(Exception):
@@ -103,6 +108,61 @@ def find(archive: ZipFile, path: str, basename=False):
     if len(matches) != 1:
         raise ValueError(f"В {archive.filename or CUSTOMER_ARCHIVE} нужен один файл {path}")
     return matches[0]
+
+
+def download_archive(url: str, *, refresh: bool) -> Path:
+    source = urlsplit(url)
+    if source.scheme != "https" or not source.hostname:
+        raise PreparationError("В CUSTOMER_ARCHIVE_URL нужна HTTPS-ссылка на ZIP или файл на Яндекс Диске.")
+
+    directory = ROOT / "artifacts" / "downloads"
+    directory.mkdir(parents=True, exist_ok=True)
+    cache_key = hashlib.sha256(url.encode()).hexdigest()
+    destination = directory / f"{cache_key}.zip"
+    expected_digest = os.environ.get("CUSTOMER_ARCHIVE_SHA256", "").strip().lower()
+    if destination.is_file() and not refresh and (not expected_digest or digest(destination) == expected_digest):
+        return destination
+
+    temporary = None
+    try:
+        if source.hostname in {"disk.yandex.ru", "disk.yandex.com", "yadi.sk"}:
+            query = urlencode({"public_key": url})
+            with urlopen(f"https://cloud-api.yandex.net/v1/disk/public/resources/download?{query}", timeout=30) as response:
+                url = json.load(response)["href"]
+            if urlsplit(url).scheme != "https":
+                raise PreparationError("Яндекс Диск не вернул HTTPS-ссылку на скачивание архива.")
+
+        print("[Подготовка] Скачивание архива заказчика…", flush=True)
+        with urlopen(url, timeout=60) as response:
+            if urlsplit(response.geturl()).scheme != "https":
+                raise PreparationError("Архив заказчика должен скачиваться по HTTPS.")
+            with NamedTemporaryFile(dir=directory, suffix=".part", delete=False) as output:
+                temporary = Path(output.name)
+                for block in iter(lambda: response.read(1024 * 1024), b""):
+                    if output.tell() + len(block) > MAX_DOWNLOAD_BYTES:
+                        raise PreparationError("Размер архива заказчика превышает 1 ГиБ.")
+                    output.write(block)
+
+        if expected_digest and digest(temporary) != expected_digest:
+            raise PreparationError("SHA-256 скачанного архива не совпадает с CUSTOMER_ARCHIVE_SHA256.")
+        with ZipFile(temporary) as archive:
+            mock_archive = find(archive, CUSTOMER_ARCHIVE, basename=True)
+            with ZipFile(BytesIO(archive.read(mock_archive))) as mocks:
+                for name in MOCK_FILES:
+                    find(mocks, name)
+            for manual in MANUALS:
+                find(archive, manual.filename, basename=True)
+        temporary.replace(destination)
+        return destination
+    except HTTPError as error:
+        raise PreparationError(f"Не удалось скачать архив заказчика (HTTP {error.code}). "
+                               "Проверьте ссылку или укажите локальный ZIP в CUSTOMER_ARCHIVE_PATH.") from None
+    except (URLError, TimeoutError, BadZipFile, KeyError, ValueError):
+        raise PreparationError("Не удалось скачать полный ZIP заказчика. "
+                               "Проверьте ссылку или укажите локальный ZIP в CUSTOMER_ARCHIVE_PATH.") from None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def extract(archive, member, destination: Path):
@@ -207,7 +267,10 @@ def _ensure_ready(archive: Path | None, *, force):
     except (OSError, ValueError):
         state = {}
 
-    archive = discover_archive(archive)
+    link = os.environ.get("CUSTOMER_ARCHIVE_URL", "").strip()
+    archive = discover_archive(archive) if archive or os.environ.get("CUSTOMER_ARCHIVE_PATH") or not link else None
+    if archive is None and link:
+        archive = download_archive(link, refresh=force)
     signature = None
     if archive:
         if archive.is_dir():

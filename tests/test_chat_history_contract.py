@@ -6,7 +6,8 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 import pytest
 
-from backend.app import ROOT, Settings, create_app
+from backend.app import Settings, create_app
+from mechanic.config import CUSTOMER_VEHICLES
 from backend.models import ChatReply, ChatRequest, ChatTurn
 
 
@@ -32,7 +33,7 @@ def test_chat_answer_and_history_share_lossless_text_contract():
 def test_q08_full_answer_round_trips_in_history(tmp_path):
     if not Settings.corpus.is_file():
         pytest.skip("Подготовьте исходные PDF и индекс: python -m mechanic.prepare")
-    vehicles = json.loads((ROOT / "data/vehicles.json").read_text(encoding="utf-8"))["vehicles"]
+    vehicles = json.loads(CUSTOMER_VEHICLES.read_text(encoding="utf-8"))["vehicles"]
     vehicle = next(item for item in vehicles if item["vehicle_id"] == PAIR["vehicle_id"])
     session = next(item for item in vehicle["sessions"] if item["session_id"] == PAIR["session_id"])
     app = create_app(

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from urllib.request import Request, urlopen
 from zipfile import ZipFile
+from mechanic.config import MATERIALS, MOCK_VEHICLES
 
 
 def post(url, payload, timeout=30):
@@ -21,8 +22,8 @@ class Backend:
                 path = next(name for name in archive.namelist() if name.endswith("data/vehicles.json"))
                 catalog = json.loads(archive.read(path))
         else:
-            self.materials = Path(os.getenv("MANUALS_DIR", "artifacts/manuals"))
-            catalog = json.loads(Path(os.getenv("MOCK_DATA_PATH", "data/vehicles.json")).read_text(encoding="utf-8"))
+            self.materials = MATERIALS
+            catalog = json.loads(MOCK_VEHICLES.read_text(encoding="utf-8"))
         self.fleet = {v["vehicle_id"]: v for v in catalog["vehicles"]}
 
     def diagnose(self, vehicle_id, session_id):

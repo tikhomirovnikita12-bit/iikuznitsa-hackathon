@@ -24,7 +24,7 @@ from agent.dialog import incompatible_fault
 from .case_agent import CaseAgent
 from agent.dialog import history_entry
 from agent.tools.ticket import wants_draft
-from .config import CORPUS, DEFAULT_ML, DEFAULT_TOIR, MATERIALS, MOCKS, ROOT, WEB, endpoint
+from .config import CORPUS, DEFAULT_ML, DEFAULT_TOIR, MATERIALS, MOCKS, MOCK_VEHICLES, ROOT, WEB, endpoint
 from .contracts import (
     Brief, ChatRequest, Diagnosis, DraftFields, DraftUpdate, Identifier, Pair, Reference, Reply, Section, TicketReceipt,
     TicketReconciliation, TicketRequest, TicketSubmit, ToolCall,
@@ -44,7 +44,7 @@ LOW_CONFIDENCE = float(os.environ.get("LOW_CONFIDENCE_THRESHOLD", "0.60"))
 if not 0 <= LOW_CONFIDENCE <= 1 or not 0 < MOCK_TIMEOUT <= 30 or not 0 < TEAM_TIMEOUT <= 40:
     raise ValueError("Проверьте настройку порога уверенности и тайм-аутов")
 
-CATALOG_PATH = ROOT / os.environ.get("MOCK_DATA_PATH", "data/vehicles.json")
+CATALOG_PATH = MOCK_VEHICLES
 VEHICLES = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))["vehicles"]
 fault_types = MOCKS / "data" / "fault_types.json"
 FAULTS = (

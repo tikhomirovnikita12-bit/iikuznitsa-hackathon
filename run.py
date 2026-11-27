@@ -54,7 +54,7 @@ def main():
         parser.error("--port должен быть от 1 до 65535")
     try:
         import uvicorn
-        from mechanic.config import DEFAULT_ML, DEFAULT_TOIR, MOCKS, endpoint
+        from mechanic.config import DEFAULT_ML, DEFAULT_TOIR, MOCKS, MOCK_VEHICLES, endpoint
         from mechanic.prepare import PreparationError, ensure_ready
     except ImportError as error:
         print(f"Не установлены зависимости проекта: {error.name}.\n"
@@ -70,9 +70,12 @@ def main():
         ("MOCK_TOIR_URL", DEFAULT_TOIR, "mock_toir.app:app", "mock-toir"),
     )
     try:
-        if not endpoint("TEAM_API_URL"):
+        if not endpoint("TEAM_API_URL") or not MOCK_VEHICLES.is_file():
             ensure_ready(args.archive, force=args.rebuild_index)
+        if not MOCK_VEHICLES.is_file():
+            raise PreparationError("Не найден каталог машин. Проверьте MOCK_DATA_PATH и CUSTOMER_DIR.")
         if not args.no_mocks and not endpoint("TEAM_API_URL"):
+            os.environ["MOCK_DATA_PATH"] = str(MOCK_VEHICLES)
             for variable, default, module, name in configs:
                 if endpoint(variable, default) == default:
                     start_mock(processes, module, default, name, MOCKS)

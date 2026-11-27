@@ -10,13 +10,14 @@ from backend.admission import incompatible_fault as server_incompatible_fault
 from backend.mechanic import Mechanic, conflict_case
 from backend.models import Diagnosis as BackendDiagnosis
 from mechanic.case_agent import CaseAgent
+from mechanic.config import MOCK_VEHICLES
 from mechanic.contracts import Diagnosis
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def context(vehicle_id='E549YT198', session_id='S-0011'):
-    fleet = json.loads((ROOT / 'data/vehicles.json').read_text(encoding='utf-8'))['vehicles']
+    fleet = json.loads(MOCK_VEHICLES.read_text(encoding='utf-8'))['vehicles']
     card = next(row for row in fleet if row['vehicle_id'] == vehicle_id)
     session = next(row for row in card['sessions'] if row['session_id'] == session_id)
     return card, {**session, 'engine_model': card['engine_model'], 'fuel': card['fuel']}

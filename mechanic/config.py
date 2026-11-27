@@ -26,9 +26,15 @@ def endpoint(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip().rstrip("/")
 
 
+def serve_manual_pdfs() -> bool:
+    return os.environ.get("SERVE_MANUAL_PDFS", "").strip() == "1"
+
+
 load_env()
 MATERIALS = ROOT / os.environ.get("MANUALS_DIR", "artifacts/manuals")
 MOCKS = ROOT / os.environ.get("CUSTOMER_DIR", "artifacts/customer")
+CUSTOMER_VEHICLES = MOCKS / "data" / "vehicles.json"
+MOCK_VEHICLES = ROOT / (os.environ.get("MOCK_DATA_PATH") or str(CUSTOMER_VEHICLES))
 PREVIEWS = ROOT / "artifacts" / "manual-previews"
 CORPUS = ROOT / os.environ.get("TEAM_MANUALS_INDEX",
                             os.environ.get("MANUAL_CORPUS_PATH", "artifacts/manual-corpus.json"))

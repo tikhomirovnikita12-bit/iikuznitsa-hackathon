@@ -3,6 +3,9 @@
 .env
 .env.*
 !.env.example
+**/.env
+**/.env.*
+!**/.env.example
 .venv
 .pytest_cache
 .runtime
@@ -12,9 +15,14 @@
 artifacts
 007_хакатон_ИИ
 output
+outputs
+data/vehicles.json
+data/fault_types.json
+contracts/openapi_ml.json
+contracts/openapi_toir.json
 *.[zZ][iI][pP]
 **/*.[zZ][iI][pP]
-**/*.pdf
+**/*.[pP][dD][fF]
 **/*.sqlite*
 **/*.db
 **/*.mp4

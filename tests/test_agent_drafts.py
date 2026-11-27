@@ -11,6 +11,7 @@ from agent.tools.diagnosis import describe
 from agent.tools.manual import Manuals
 from agent.tools.ticket import prepare
 from mechanic.case_agent import CaseAgent
+from mechanic.config import MOCK_VEHICLES
 from mechanic.contracts import Diagnosis
 
 
@@ -18,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def diagnosis():
-    fleet = json.loads((ROOT / "data/vehicles.json").read_text(encoding="utf-8"))["vehicles"]
+    fleet = json.loads(MOCK_VEHICLES.read_text(encoding="utf-8"))["vehicles"]
     vehicle = next(item for item in fleet if item["vehicle_id"] == "M333YK47")
     session = next(item for item in vehicle["sessions"] if item["session_id"] == "S-0005")
     return {**session, "vehicle_id": vehicle["vehicle_id"],
@@ -58,7 +59,7 @@ def test_capability_matches_ticket_sources_without_calling_model(tmp_path):
 
     agent = CaseAgent(ROOT / "artifacts/manual-corpus.json", tmp_path / "turns.jsonl")
     agent.agent.provider = NoCalls()
-    fleet = json.loads((ROOT / "data/vehicles.json").read_text(encoding="utf-8"))["vehicles"]
+    fleet = json.loads(MOCK_VEHICLES.read_text(encoding="utf-8"))["vehicles"]
     for plate, session, expected in [("M333YK47", "S-0005", True),
                                      ("E549YT198", "S-0011", True),
                                      ("E549YT198", "S-0010", False),

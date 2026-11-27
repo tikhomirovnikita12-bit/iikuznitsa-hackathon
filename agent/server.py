@@ -4,6 +4,7 @@ from collections import defaultdict, deque
 from threading import Lock
 from flask import Flask, abort, jsonify, request, send_file, session
 from werkzeug.exceptions import HTTPException
+from mechanic.config import serve_manual_pdfs
 from .backend import Backend
 from .dialog import Agent, history_entry
 from .tools.manual import Manuals
@@ -12,7 +13,11 @@ from .tools.manual import Manuals
 def create_app(agent=None):
     app = Flask(__name__, template_folder="web")
     app.secret_key = secrets.token_bytes(32)
-    agent = agent or Agent(Backend(), Manuals())
+    if agent is None:
+        manuals = Manuals()
+        if not serve_manual_pdfs():
+            manuals.urls.clear()
+        agent = Agent(Backend(), manuals)
     histories = defaultdict(lambda: deque(maxlen=6))
     drafts = {}
     lock = Lock()
@@ -38,7 +43,7 @@ def create_app(agent=None):
 
     @app.get("/manuals/<manual_id>")
     def manual(manual_id):
-        if manual_id not in agent.manuals.files:
+        if not serve_manual_pdfs() or manual_id not in agent.manuals.files:
             abort(404)
         return send_file((agent.backend.materials / agent.manuals.files[manual_id]).resolve())
 

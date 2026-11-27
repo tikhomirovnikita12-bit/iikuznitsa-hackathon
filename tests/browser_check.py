@@ -42,7 +42,7 @@ def stand(port, directory, **overrides):
             port = probe.getsockname()[1]
     base = f"http://127.0.0.1:{port}"
     token = f"{port}-{uuid4().hex[:8]}"
-    env = {**os.environ, "PYTHONUTF8": "1", "MECHANIC_DB": str(directory / f"{token}.sqlite3"),
+    env = {**os.environ, "PYTHONUTF8": "1", "SERVE_MANUAL_PDFS": "1", "MECHANIC_DB": str(directory / f"{token}.sqlite3"),
            "TEAM_DB_PATH": str(directory / f"{token}-team.sqlite3"), **overrides}
     python = PYTHON
     if os.name == "nt":

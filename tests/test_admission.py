@@ -6,7 +6,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app import ROOT, Settings, create_app
+from backend.app import Settings, create_app
+from mechanic.config import CUSTOMER_VEHICLES
 
 
 WARNING = {"vehicle_id": "O658MX98", "session_id": "S-0063"}
@@ -20,7 +21,7 @@ CHAIN = {"vehicle_id": "Y815BM178", "session_id": "S-0152"}
 
 @pytest.fixture
 def stand(tmp_path):
-    vehicles = json.loads((ROOT / "data/vehicles.json").read_text(encoding="utf-8"))["vehicles"]
+    vehicles = json.loads(CUSTOMER_VEHICLES.read_text(encoding="utf-8"))["vehicles"]
     sessions = {(vehicle["vehicle_id"], session["session_id"]): session
                 for vehicle in vehicles for session in vehicle["sessions"]}
     overrides, tickets = {}, []

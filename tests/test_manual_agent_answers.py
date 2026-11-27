@@ -12,13 +12,16 @@ from agent.tools.manual import Manuals
 from manual_search.corpus import verified_fragments
 
 
+from mechanic.config import MOCK_VEHICLES
+
+
 ROOT = Path(__file__).resolve().parents[1]
 NORM = 'yamz-536-01-02-rk-p013-oil-pressure'
 QUESTION = 'Какое давление масла на прогретом двигателе?'
 
 
 def diagnosis(vehicle_id, session_id):
-    fleet = json.loads((ROOT / 'data/vehicles.json').read_text(encoding='utf-8'))['vehicles']
+    fleet = json.loads(MOCK_VEHICLES.read_text(encoding='utf-8'))['vehicles']
     card = next(vehicle for vehicle in fleet if vehicle['vehicle_id'] == vehicle_id)
     check = next(session for session in card['sessions'] if session['session_id'] == session_id)
     return {**check, 'engine_model': card['engine_model'], 'fuel': card['fuel']}

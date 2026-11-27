@@ -6,6 +6,7 @@ from mechanic import sources
 
 
 def test_source_viewer_without_preview_and_page_validation(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERVE_MANUAL_PDFS", "1")
     monkeypatch.setattr(sources, "MATERIALS", tmp_path)
     monkeypatch.setattr(sources, "PREVIEWS", tmp_path / "previews")
     (tmp_path / sources.YAMZ236.filename).touch()
@@ -28,3 +29,13 @@ def test_source_viewer_without_preview_and_page_validation(tmp_path, monkeypatch
         response = client.get("/sources/yamz236-re/19")
         assert 'class="source-image"' in response.text
         assert 'id="source-preview-note" role="status" hidden' in response.text
+
+        monkeypatch.delenv("SERVE_MANUAL_PDFS")
+        response = client.get("/sources/yamz236-re/19")
+        assert response.status_code == 200
+        assert "Страница PDF 19 из 172" in response.text
+        assert 'id="source-return"' in response.text
+        assert "page.pdf" not in response.text
+        for path in ("/manuals/yamz236-re.pdf", "/sources/yamz236-re/19/page.pdf",
+                     "/sources/yamz236-re/19/preview.png"):
+            assert client.get(path).status_code == 404

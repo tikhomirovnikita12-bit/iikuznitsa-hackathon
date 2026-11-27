@@ -12,6 +12,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from mechanic.config import CUSTOMER_VEHICLES, serve_manual_pdfs
 
 from .agent import Agent
 from .mechanic import Mechanic
@@ -29,7 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @dataclass(frozen=True)
 class Settings:
-    vehicles: Path = ROOT / "data/vehicles.json"
+    vehicles: Path = CUSTOMER_VEHICLES
     corpus: Path = ROOT / "artifacts/manual-corpus.json"
     manuals: Path = ROOT / "artifacts/manuals"
     database: Path = ROOT / "artifacts/mechanic.sqlite3"
@@ -79,6 +80,8 @@ def create_app(settings: Settings | None = None, *, ml_transport=None, toir_tran
             raise ValueError("OLLAMA_TIMEOUT_SECONDS must be positive")
         catalog = Catalog(settings.vehicles)
         mechanic = Mechanic(settings.corpus, settings.manuals)
+        if not serve_manual_pdfs():
+            mechanic.urls.clear()
         store = Store(settings.database)
         with (
             httpx.Client(base_url=settings.ml_url, timeout=settings.timeout, transport=ml_transport, trust_env=False) as ml,
@@ -187,7 +190,7 @@ def create_app(settings: Settings | None = None, *, ml_transport=None, toir_tran
     @application.get("/manuals/{manual_id}.pdf")
     def manual(manual_id: str, workflow: Context):
         path = workflow.mechanic.pdf_paths.get(manual_id)
-        if path is None or not path.is_file():
+        if not serve_manual_pdfs() or path is None or not path.is_file():
             raise Problem(404, "manual_not_found", "PDF руководства отсутствует.")
         return FileResponse(path, media_type="application/pdf")
 

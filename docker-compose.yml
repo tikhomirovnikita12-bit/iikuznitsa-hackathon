@@ -6,12 +6,16 @@ services:
       - "127.0.0.1:${APP_PORT:-8000}:8000"
     environment:
       CUSTOMER_ARCHIVE_PATH: /input
+      CUSTOMER_ARCHIVE_URL: ${CUSTOMER_ARCHIVE_URL:-}
+      CUSTOMER_ARCHIVE_SHA256: ${CUSTOMER_ARCHIVE_SHA256:-}
+      SERVE_MANUAL_PDFS: ${SERVE_MANUAL_PDFS:-0}
       CASE_AGENT: ${CASE_AGENT:-0}
       AGENT_MODEL: ${AGENT_MODEL:-gemma2:2b}
       OLLAMA_GENERATION_MODEL: ${OLLAMA_GENERATION_MODEL:-}
       OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-180}
       OLLAMA_HOST_URL: ${OLLAMA_HOST_URL:-http://host.docker.internal:11434}
       CUSTOMER_DIR: ${CUSTOMER_DIR:-artifacts/customer}
+      MOCK_DATA_PATH: ${MOCK_DATA_PATH:-}
       MANUALS_DIR: ${MANUALS_DIR:-artifacts/manuals}
       TEAM_MANUALS_INDEX: ${TEAM_MANUALS_INDEX:-artifacts/manual-corpus.json}
       MECHANIC_DB: ${MECHANIC_DB:-artifacts/mechanic-assistant.sqlite3}

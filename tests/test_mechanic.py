@@ -693,7 +693,8 @@ def test_f03_fixture_explains_risk_and_checks_without_unlocking_draft(stand, mon
     ("B332BP98", "S-0159", 97, "охлаждающей жидкости"),
     ("Y439TH198", "S-0071", 161, "ремн"),
 ])
-def test_documented_first_check_and_handoff_do_not_create_a_draft(stand, plate, session, page, part):
+def test_documented_first_check_and_handoff_do_not_create_a_draft(stand, monkeypatch, plate, session, page, part):
+    monkeypatch.setenv("SERVE_MANUAL_PDFS", "1")
     client, submissions = stand
     pair = {"vehicle_id": plate, "session_id": session}
     initial = diagnose(client, pair)

@@ -9,6 +9,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from urllib.error import URLError
 from zipfile import ZipFile
 
 from mechanic import prepare
@@ -33,7 +34,8 @@ class PreparationTests(unittest.TestCase):
             "PREVIEW_PAGES": {},
         }.items():
             self.stack.enter_context(patch.object(prepare, name, value))
-        self.stack.enter_context(patch.dict("os.environ", {"CUSTOMER_ARCHIVE_PATH": ""}))
+        self.stack.enter_context(patch.dict("os.environ", {"CUSTOMER_ARCHIVE_PATH": "", "CUSTOMER_ARCHIVE_URL": "",
+                                                         "CUSTOMER_ARCHIVE_SHA256": ""}))
         self.stack.enter_context(patch.object(prepare.shutil, "which", return_value="/test/poppler"))
         self.build = self.stack.enter_context(patch.object(prepare, "build_corpus", return_value={
             "fragments": [{"fragment_id": "test-p001", "text": "Проверенная выдержка"}],
@@ -141,6 +143,31 @@ class PreparationTests(unittest.TestCase):
         self.assertTrue((prepare.MOCKS / "mock_ml/app.py").is_file())
         self.assertEqual(list(self.root.rglob("unexpected.py")), [])
         self.build.assert_called_once()
+
+    def test_downloaded_archive_prepares_materials_and_reuses_cache(self):
+        bundle = self.unpacked_bundle(self.root / "materials")
+        archive_data = BytesIO()
+        with ZipFile(archive_data, "w") as archive:
+            for path in bundle.iterdir():
+                archive.write(path, path.name)
+        response = BytesIO(archive_data.getvalue())
+        response.geturl = lambda: "https://example.invalid/customer.zip"
+        with patch.dict("os.environ", {"CUSTOMER_ARCHIVE_URL": response.geturl()}):
+            with patch.object(prepare, "urlopen", return_value=response) as request:
+                prepare.ensure_ready()
+                prepare.ensure_ready()
+        request.assert_called_once()
+        self.assertTrue((prepare.MOCKS / "data" / "vehicles.json").is_file())
+        self.build.assert_called_once()
+
+    def test_download_error_keeps_the_link_out_of_the_error_message(self):
+        url = "https://example.invalid/customer.zip?access=secret"
+        with patch.dict("os.environ", {"CUSTOMER_ARCHIVE_URL": url}):
+            with patch.object(prepare, "urlopen", side_effect=URLError(url)):
+                with self.assertRaises(prepare.PreparationError) as failure:
+                    prepare.ensure_ready()
+        self.assertNotIn(url, str(failure.exception))
+        self.build.assert_not_called()
 
     def unpacked_bundle(self, directory):
         directory.mkdir(parents=True, exist_ok=True)

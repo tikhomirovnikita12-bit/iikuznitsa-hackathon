@@ -61,13 +61,14 @@ def run(output):
     from backend.store import Store
     from backend.workflow import Catalog, Workflow
     from mechanic.case_agent import CaseAgent
+    from mechanic.config import MOCKS, MOCK_VEHICLES
     from mechanic.contracts import Diagnosis
 
-    sys.path.insert(0, str(root / 'artifacts/customer'))
+    sys.path.insert(0, str(MOCKS))
     from mock_ml.app import app as ml_app
     from mock_toir.app import app as toir_app
-    catalog = Catalog(root / 'data/vehicles.json')
-    vehicles = json.loads((root / 'data/vehicles.json').read_text(encoding='utf-8'))['vehicles']
+    catalog = Catalog(MOCK_VEHICLES)
+    vehicles = json.loads(MOCK_VEHICLES.read_text(encoding='utf-8'))['vehicles']
     fleet = {row['vehicle_id']: row for row in vehicles}
     with TemporaryDirectory(prefix='mechanic-acceptance-') as scratch, TestClient(ml_app) as ml_api, TestClient(toir_app) as toir_api:
         def relay(api, request):

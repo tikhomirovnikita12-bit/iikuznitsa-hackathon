@@ -18,7 +18,7 @@ PYTHON = VENV_PYTHON if VENV_PYTHON.exists() else Path(sys.executable)
 ARCHIVE = ROOT / "007_хакатон_ИИ.zip"
 POPPLER = ROOT / ".runtime/poppler/poppler-26.09.0/Library/bin"
 SOURCES = (
-    "agent", "backend", "mechanic", "web", "data", "contracts", "manual_search",
+    "agent", "backend", "mechanic", "web", "data", "manual_search",
     "tests", "scripts", "docs", "output", "main.py", "run.py", "requirements.txt",
     "README.md", ".env.example",
 )
@@ -34,6 +34,7 @@ def run(name: str, command: list[str], cwd: Path, env: dict[str, str]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", type=Path, help="directory for the clean copy")
+    parser.add_argument("--archive", type=Path, default=ARCHIVE, help="customer ZIP or unpacked bundle")
     parser.add_argument("--skip-selftest", action="store_true")
     args = parser.parse_args()
 
@@ -53,7 +54,7 @@ def main() -> None:
     if POPPLER.exists():
         env["PATH"] = str(POPPLER) + os.pathsep + env.get("PATH", "")
 
-    run("prepare", [str(PYTHON), "-m", "mechanic.prepare", str(ARCHIVE)], target, env)
+    run("prepare", [str(PYTHON), "-m", "mechanic.prepare", str(args.archive.resolve())], target, env)
     if not args.skip_selftest:
         run("selftest", [str(PYTHON), "scripts/selftest.py"], target, env)
     print(f"[cleanroom] ready: {target}", flush=True)

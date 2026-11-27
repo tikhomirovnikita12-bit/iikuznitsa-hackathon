@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pypdf import PdfReader, PdfWriter
 
-from .config import MATERIALS, PREVIEWS
+from .config import MATERIALS, PREVIEWS, serve_manual_pdfs
 from .contracts import Reference
 
 
@@ -67,22 +67,29 @@ def catalog() -> list[dict]:
 
 def find_manual(slug: str, page: int = 1) -> Manual:
     manual = BY_SLUG.get(slug)
-    if manual is None or not 1 <= page <= manual.pages or not (MATERIALS / manual.filename).is_file():
+    if manual is None or not 1 <= page <= manual.pages:
         raise HTTPException(404, "Страница руководства не найдена")
     return manual
 
 
+def pdf_path(slug: str, page: int = 1):
+    manual = find_manual(slug, page)
+    path = MATERIALS / manual.filename
+    if not serve_manual_pdfs() or not path.is_file():
+        raise HTTPException(404, "Файл руководства недоступен")
+    return path
+
+
 @router.get("/manuals/{slug}.pdf", include_in_schema=False)
 def original(slug: str):
-    manual = find_manual(slug)
-    return FileResponse(MATERIALS / manual.filename, media_type="application/pdf",
-                        filename=manual.filename, content_disposition_type="inline")
+    path = pdf_path(slug)
+    return FileResponse(path, media_type="application/pdf",
+                        filename=path.name, content_disposition_type="inline")
 
 
 @router.get("/sources/{slug}/{page}/page.pdf", include_in_schema=False)
 def single_page(slug: str, page: int):
-    manual = find_manual(slug, page)
-    with (MATERIALS / manual.filename).open("rb") as source:
+    with pdf_path(slug, page).open("rb") as source:
         writer = PdfWriter()
         writer.add_page(PdfReader(source).pages[page - 1])
         output = BytesIO()
@@ -95,10 +102,21 @@ def source_page(slug: str, page: int):
     manual = find_manual(slug, page)
     label = escape(manual.label)
     file = escape(manual.filename)
+    show_pdf = serve_manual_pdfs() and (MATERIALS / manual.filename).is_file()
     preview = PREVIEWS / f"{slug}-{page}.png"
     image = (
         f'<img class="source-image" src="/sources/{slug}/{page}/preview.png" '
-        f'alt="{label}, страница PDF {page}">' if preview.is_file() else ""
+        f'alt="{label}, страница PDF {page}">' if show_pdf and preview.is_file() else ""
+    )
+    pdf_links = ""
+    if show_pdf:
+        pdf_links = f"""
+      <a class="button primary" href="/sources/{slug}/{page}/page.pdf">Открыть только страницу {page}</a>
+      <a class="button secondary" href="/manuals/{slug}.pdf#page={page}">Открыть оригинал PDF</a>"""
+    preview_note = (
+        f'<p class="alert info" id="source-preview-note" role="status" {"hidden" if image else ""}>'
+        "Предпросмотр недоступен. Откройте отдельную страницу PDF кнопкой выше; оригинал руководства также доступен.</p>"
+        if show_pdf else ""
     )
     return HTMLResponse(f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -113,20 +131,19 @@ def source_page(slug: str, page: int):
     <p class="source-filename">{file}</p>
     <p class="muted">Руководство для: {escape(", ".join(manual.engines))}</p>
     <section id="source-context" class="source-context" aria-label="Контекст проверки" hidden></section>
-    <nav class="source-links" aria-label="Руководство в PDF">
+    <nav class="source-links" aria-label="Источник">
       <a class="button secondary" id="source-return" href="/">К проверке</a>
-      <a class="button primary" href="/sources/{slug}/{page}/page.pdf">Открыть только страницу {page}</a>
-      <a class="button secondary" href="/manuals/{slug}.pdf#page={page}">Открыть оригинал PDF</a>
+      {pdf_links}
     </nav>
   </header>
-  <p class="alert info" id="source-preview-note" role="status" {"hidden" if image else ""}>Предпросмотр недоступен. Откройте отдельную страницу PDF кнопкой выше; оригинал руководства также доступен.</p>
+  {preview_note}
   {image}
 </main></body></html>""")
 
 
 @router.get("/sources/{slug}/{page}/preview.png", include_in_schema=False)
 def source_image(slug: str, page: int):
-    find_manual(slug, page)
+    pdf_path(slug, page)
     preview = PREVIEWS / f"{slug}-{page}.png"
     if not preview.is_file():
         raise HTTPException(404, "Предпросмотр страницы отсутствует")
