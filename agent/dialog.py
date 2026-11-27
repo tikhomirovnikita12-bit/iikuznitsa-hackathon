@@ -18,9 +18,6 @@ def schema(**fields):
 
 STRING = {"type": "string"}
 TERM = re.compile(r"(?:а )?(?:что такое|что означает|что значит) ([а-яёa-z][а-яёa-z -]{1,55})")
-GLOSSARY = {
-    "картер": "Картер — корпус, в котором работает коленчатый вал. В этом контексте речь о масле в поддоне картера: поддон расположен снизу двигателя и служит резервуаром для масла.",
-}
 PLAN = schema(action={"type": "string", "enum": ["diagnosis", "search", "ticket", "movement", "clarify", "off_topic", "next_step", "pause", "repair"]},
               query=STRING, question=STRING)
 
@@ -55,11 +52,11 @@ def history_entry(question, reply):
 
 class Ollama:
     def ask(self, prompt, format_, trace):
-        model = os.getenv("AGENT_MODEL", "gemma2:2b")
+        model = os.getenv("AGENT_MODEL") or os.getenv("OLLAMA_MODEL") or "gemma2:2b"
         start = time.monotonic()
-        result = post(os.getenv("OLLAMA_HOST_URL", "http://127.0.0.1:11434").rstrip("/") + "/api/chat",
+        result = post((os.getenv("OLLAMA_HOST_URL") or os.getenv("OLLAMA_URL") or "http://127.0.0.1:11434").rstrip("/") + "/api/chat",
                       dict(model=model, stream=False, format=format_, options={"temperature": 0},
-                           messages=[dict(role="user", content=prompt)]), timeout=180)
+                           messages=[dict(role="user", content=prompt)]), timeout=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180")))
         trace["calls"].append(dict(model=result["model"], seconds=time.monotonic()-start,
                                    input_tokens=result.get("prompt_eval_count"),
                                    output_tokens=result.get("eval_count")))
@@ -73,14 +70,18 @@ class Agent:
         self.provider = provider or Ollama()
         self.log = Path(log)
 
-    def turn(self, vehicle_id, session_id, question, history=(), *, diagnosis=None):
+    def turn(self, vehicle_id, session_id, question, history=(), *, diagnosis=None, trace_out=None):
         start = time.monotonic()
         trace = dict(id=uuid4().hex, vehicle_id=vehicle_id, session_id=session_id,
                      question=question, tools=[], calls=[])
         try:
-            trace["tools"].append({"name": "diagnose"})
+            tool_start = time.monotonic()
             reply = describe(diagnosis) if diagnosis is not None else diagnose(self.backend, vehicle_id, session_id)
+            trace["tools"].append(dict(name="diagnose", source="session" if diagnosis is not None else "backend",
+                                       seconds=time.monotonic() - tool_start))
             ml = reply["ml_observations"]
+            if (ml["vehicle_id"], ml["session_id"]) != (vehicle_id, session_id):
+                raise ValueError("Ответ диагностики относится к другой машине или сессии")
             if ml["status"] == "check_failed":
                 return reply
             if (ml["anomaly_type"] == "F08" and "диз" not in ml["fuel"].lower()
@@ -89,24 +90,6 @@ class Agent:
                     f"{ml['engine_model']} ({ml['fuel']}). Подтвердите двигатель и выбранную запись.")
                 return reply
             wording = question.casefold().strip(" .!?")
-            if term := TERM.fullmatch(wording):
-                topic = term[1]
-                explanation = GLOSSARY.get(topic)
-                if explanation is None:
-                    result = self.provider.ask(
-                        "Дай краткое общепринятое определение термина из автотехники. "
-                        "До двух предложений. Без нормативов, чисел, диагноза, инструкций "
-                        "и рекомендаций для конкретной машины. Если это не термин или неясно, "
-                        "верни пустую строку. Термин: " + json.dumps(topic, ensure_ascii=False),
-                        schema(definition=STRING), trace)
-                    explanation = result["definition"].strip()
-                    if len(explanation) > 350 or re.search(r"\d|https?://", explanation):
-                        explanation = ""
-                if explanation:
-                    reply.update(intent="explain", explanation=explanation)
-                else:
-                    reply.update(intent="clarify", clarifying_question="Какой автомобильный термин нужно пояснить?")
-                return reply
             if wording in {"привет", "здравствуйте", "добрый день", "спасибо", "понятно"}:
                 message = ("Пожалуйста." if wording in {"спасибо", "понятно"}
                            else "Привет! Могу пояснить результат диагностики или поискать ответ в руководстве.")
@@ -137,7 +120,7 @@ class Agent:
                              "Предыдущий ответ запутал диалог. Можем вернуться к открытой проверке.")
                 return reply
             pressure_case = ml["engine_model"] == "ЯМЗ-236М2" and ml["anomaly_type"] == "F02"
-            previous_pressure = history[-1][4] if history and len(history[-1]) > 4 else None
+            previous_pressure = next((row[4] for row in reversed(history) if len(row) > 4 and row[4] is not None), None)
             movement = bool(re.search(r"перегна|перегон|своим ходом", question, re.I))
             values = oil_pressure.readings(question, previous_pressure) if pressure_case else {}
             if pressure_case and (movement or oil_pressure.PRESSURE.search(question)
@@ -158,7 +141,10 @@ class Agent:
                 short_request))
             ticket_request = bool(re.fullmatch(
                 r"(?:создай|создать|подготовь|оформи) заявку(?: на дефектовку)?", short_request))
-            if diagnosis_request or next_step or followup or ticket_request:
+            if term := TERM.fullmatch(wording):
+                action = "search"
+                plan = {"query": term[1], "question": ""}
+            elif diagnosis_request or next_step or followup or ticket_request:
                 action = "diagnosis" if diagnosis_request else "ticket" if ticket_request else "search"
                 plan = {"query": ml["anomaly_title"] or "", "question": ""}
             else:
@@ -198,7 +184,7 @@ class Agent:
             if ml["status"] == "normal" and (generic_check or next_step) and len(question.split()) <= 5:
                 reply["clarifying_question"] = "По этой записи отклонений нет. Какой узел или симптом вас интересует?"
                 return reply
-            if action in {"off_topic", "search", "clarify"} and not (next_step or followup):
+            if action in {"off_topic", "search", "clarify"} and not (term or next_step or followup):
                 relevance = self.provider.ask(
                     "Определи цель реплики. unrelated — личная реплика, мнение, разговор о кино "
                     "или о том, кому принадлежит автомобиль, даже если названа марка. "
@@ -229,6 +215,8 @@ class Agent:
                 reply["clarifying_question"] = "Для заявки нужна проверка с обнаруженным отклонением."
                 return reply
             query = plan["query"] or question
+            if action == "diagnosis":
+                query = " ".join(filter(None, [ml["anomaly_title"], ml["description"]]))
             # Preserve the mechanic's terminology for specific manual questions.
             if action == "search" and len(question.split()) >= 5 and not next_step:
                 query = question
@@ -236,7 +224,7 @@ class Agent:
             if first_coolant_check:
                 query = "Проверять уровень охлаждающей жидкости в расширительном бачке"
             if ml["anomaly_type"] == "F02":
-                if action == "movement" or "кпа" in question.lower():
+                if action == "movement" or (not term and "кпа" in question.lower() and "масл" in question.lower()):
                     query = "При каких условиях проверять давление масла?"
                     reply["clarifying_question"] = ("Укажите фактическое давление, обороты, прогрев "
                         "и применимость допуска после длительной эксплуатации.")
@@ -252,11 +240,11 @@ class Agent:
                 reply["verdict"] = "Возможность перегона по этой записи не подтверждена."
                 reply["clarifying_question"] = reply["clarifying_question"] or "Какие показания приборов получены и при каком режиме двигателя?"
             for attempt in range(2):
-                hits = self.manuals.find(query, ml)
-                trace["tools"].append(dict(name="search", query=query,
-                    pages=[(h["manual"], h["pdf_page"]) for h in hits]))
+                hits = self.search(query, ml, trace, initial_check=action in {"diagnosis", "ticket"} or next_step)
                 if hits:
                     selection_question = "Что проверить сначала?" if next_step else question
+                    if action in {"diagnosis", "ticket"}:
+                        selection_question += " " + ml["engine_model"] + " " + (ml["anomaly_title"] or "") + " " + ml["description"]
                     if followup:
                         selection_question += " " + previous["text"]
                     self.select(reply, action, selection_question, hits, trace,
@@ -269,10 +257,11 @@ class Agent:
                         schema(query=STRING), trace)["query"]
             if not reply["references"]:
                 reply["clarifying_question"] = reply["clarifying_question"] or (
-                    "В руководстве для этого двигателя прямого ответа не нашёл. Уточните узел или условия, если они известны.")
+                    "В руководстве этого двигателя нет подтверждения для ответа. Уточните узел и условия проверки. Если данных недостаточно, передайте машину на дефектовку.")
             if action == "ticket":
-                trace["tools"].append(dict(name="prepare_ticket"))
+                tool_start = time.monotonic()
                 reply["ticket_draft"] = prepare(reply)
+                trace["tools"].append(dict(name="prepare_ticket", seconds=time.monotonic() - tool_start))
                 if not reply["ticket_draft"]:
                     reply["clarifying_question"] = "Для заявки нужна подтверждённая руководством проверка. Уточните узел."
             if ml["anomaly_type"] == "F02" and any(
@@ -287,14 +276,21 @@ class Agent:
         finally:
             trace["seconds"] = time.monotonic() - start
             self.log.parent.mkdir(parents=True, exist_ok=True)
+            if trace_out is not None:
+                trace_out.update(trace)
             with self.log.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(trace, ensure_ascii=False) + "\n")
 
+    def search(self, query, diagnosis, trace, *, initial_check=False):
+        started = time.monotonic()
+        hits = self.manuals.find(query, diagnosis, initial_check=initial_check)
+        trace["tools"].append(dict(name="search", query=query, seconds=time.monotonic() - started,
+                                   pages=[(hit["manual"], hit["pdf_page"]) for hit in hits]))
+        return hits
+
     def fluid_reply(self, reply, state, trace):
         ml = reply["ml_observations"]
-        hits = self.manuals.find(fluid_check.QUERY, ml)
-        trace["tools"].append(dict(name="search", query=fluid_check.QUERY,
-            pages=[(hit["manual"], hit["pdf_page"]) for hit in hits]))
+        hits = self.search(fluid_check.QUERY, ml, trace)
         reply["fluid_check"] = state
         source = next((hit for hit in hits if hit["fragment_id"] == fluid_check.SOURCE), None)
         if source is None:
@@ -311,9 +307,7 @@ class Agent:
 
     def pressure_reply(self, reply, values, trace):
         ml = reply["ml_observations"]
-        hits = self.manuals.find(oil_pressure.QUERY, ml)
-        trace["tools"].append(dict(name="search", query=oil_pressure.QUERY,
-            pages=[(hit["manual"], hit["pdf_page"]) for hit in hits]))
+        hits = self.search(oil_pressure.QUERY, ml, trace)
         reply.update(intent="movement", pressure_measurement=values,
                      verdict="Возможность перегона по этим данным не подтверждена.")
         source = next((hit for hit in hits if hit["fragment_id"] == oil_pressure.SOURCE), None)
@@ -324,7 +318,7 @@ class Agent:
         reply["references"].append(ref)
         result, reply["clarifying_question"] = oil_pressure.compare(values)
         if result:
-            reply["checks"].append(dict(text=result, fragment_id=ref["fragment_id"]))
+            reply["checks"].append(dict(text=result + " " + source["text"], fragment_id=ref["fragment_id"]))
         reply["pressure_reference_text"] = source["text"]
         return reply
 
@@ -352,7 +346,7 @@ class Agent:
             reply["references"].append(self.manuals.reference(fid, reply["ml_observations"]["engine_model"]))
             return
         fields = ["checks"] if previous or next_step or action == "ticket" else ["checks", "risk", "possible_causes"]
-        limit = 1 if previous or next_step or action == "diagnosis" else 2
+        limit = 1 if previous or next_step else 3 if action == "diagnosis" else 2
         item = schema(source={"type":"string", "enum":list(options)},
                       field={"type":"string","enum":fields})
         answer = self.provider.ask("Выбери только прямой ответ на вопрос. Для 'сначала' или заявки "
@@ -362,7 +356,7 @@ class Agent:
             schema(items={"type":"array","items":item,"maxItems":limit}), trace)
         for selected in answer["items"][:limit]:
             key = selected["source"]
-            if key not in options:
+            if key not in options or selected["field"] not in fields:
                 continue
             fid = key.rsplit(":", 1)[0]
             ref = self.manuals.reference(fid, reply["ml_observations"]["engine_model"])

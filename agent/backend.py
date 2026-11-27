@@ -15,9 +15,15 @@ def post(url, payload, timeout=30):
 class Backend:
     def __init__(self):
         self.materials = Path(os.getenv("MATERIALS_DIR", "../007_хакатон_ИИ"))
-        with ZipFile(next(self.materials.glob("*mock*.zip"))) as archive:
-            path = next(name for name in archive.namelist() if name.endswith("/data/vehicles.json"))
-            self.fleet = {v["vehicle_id"]: v for v in json.loads(archive.read(path))["vehicles"]}
+        archive_path = next(self.materials.glob("*mock*.zip"), None)
+        if archive_path:
+            with ZipFile(archive_path) as archive:
+                path = next(name for name in archive.namelist() if name.endswith("data/vehicles.json"))
+                catalog = json.loads(archive.read(path))
+        else:
+            self.materials = Path(os.getenv("MANUALS_DIR", "artifacts/manuals"))
+            catalog = json.loads(Path(os.getenv("MOCK_DATA_PATH", "data/vehicles.json")).read_text(encoding="utf-8"))
+        self.fleet = {v["vehicle_id"]: v for v in catalog["vehicles"]}
 
     def diagnose(self, vehicle_id, session_id):
         card = self.fleet[vehicle_id]
@@ -26,7 +32,7 @@ class Backend:
             raise ValueError("Проверка принадлежит другому ТС")
         ids = dict(vehicle_id=vehicle_id, session_id=session_id)
         if os.getenv("AGENT_FIXTURE_MODE") == "1":
-            result = dict(session)
+            result = {**session, **ids}
         else:
             base = os.getenv("MOCK_ML_URL", "http://127.0.0.1:8001")
             result = post(base.rstrip("/") + "/diagnose", ids)

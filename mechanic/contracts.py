@@ -87,6 +87,7 @@ class Section(BaseModel):
 
 
 class Reply(BaseModel):
+    analysis: dict | None = None
     summary: Text
     sections: list[Section] = Field(default_factory=list, max_length=12)
 
