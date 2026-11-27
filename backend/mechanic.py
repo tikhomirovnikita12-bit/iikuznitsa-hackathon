@@ -2,6 +2,7 @@
 
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from manual_search.corpus import DATA_DIR, load_catalog, verified_fragments
@@ -57,6 +58,11 @@ def load_defect_checks(catalog):
                              "Уточнить применимость кода ML перед назначением работ по узлу.")
             checks[model][code] = (fragment, operation, code in fitment)
     return checks, fragments
+
+
+def answer_from_evidence(evidence: list[Evidence], compose: Callable[[list[Evidence]], str | None] | None) -> ChatReply:
+    answer = compose(evidence) if compose else None
+    return ChatReply(answer=answer or "\n\n".join(item.text for item in evidence), evidence=evidence)
 
 
 class Mechanic:
@@ -230,7 +236,9 @@ class Mechanic:
                              for item in references}.values()),
         )
 
-    def answer(self, question: str, diagnosis: Diagnosis, engine_model: str, *, search_query: str | None = None) -> ChatReply:
+    def answer(self, question: str, diagnosis: Diagnosis, engine_model: str, *,
+               search_query: str | None = None,
+               compose: Callable[[list[Evidence]], str | None] | None = None) -> ChatReply:
         if diagnosis.status == "check_failed" or diagnosis.signal_quality == "bad":
             return ChatReply(answer="Запись непригодна для оценки двигателя. Повторите запись и выберите новую сессию.",
                              needs_clarification=True)
@@ -261,7 +269,7 @@ class Mechanic:
                 and re.search(r"давлени\w* масла", search_query.casefold())
                 and re.fullmatch(r"(?:а\s+)?(?:на холостых|при (?:холостых|минимальных) оборотах)[?.! ]*", normalized)):
             source = self.evidence(OIL_PRESSURE, engine_model)
-            return ChatReply(answer=source.text, evidence=[source])
+            return answer_from_evidence([source], compose)
 
         if (engine_model == "ЯМЗ-236М2"
                 and re.search(r"(?:температур\w*|норматив\w*).*охлаждающ|охлаждающ\w*.*(?:температур\w*|норматив\w*)",
@@ -313,5 +321,4 @@ class Mechanic:
                 evidence.insert(0, self.evidence(fragment_id, engine_model))
         evidence.extend(self.evidence(fragment_id, engine_model)
                         for fragment_id in hits[0].get("supporting_fragments", ()))
-        answer = "\n\n".join(item.text for item in evidence)
-        return ChatReply(answer=answer, evidence=evidence)
+        return answer_from_evidence(evidence, compose)

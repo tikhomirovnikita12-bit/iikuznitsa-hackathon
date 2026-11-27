@@ -8,6 +8,8 @@ services:
       CUSTOMER_ARCHIVE_PATH: /input
       CASE_AGENT: ${CASE_AGENT:-0}
       AGENT_MODEL: ${AGENT_MODEL:-gemma2:2b}
+      OLLAMA_GENERATION_MODEL: ${OLLAMA_GENERATION_MODEL:-}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-180}
       OLLAMA_HOST_URL: ${OLLAMA_HOST_URL:-http://host.docker.internal:11434}
       CUSTOMER_DIR: ${CUSTOMER_DIR:-artifacts/customer}
       MANUALS_DIR: ${MANUALS_DIR:-artifacts/manuals}

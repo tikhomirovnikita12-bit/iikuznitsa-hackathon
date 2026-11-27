@@ -12,6 +12,7 @@ from backend.mechanic import conflict_case
 from . import case_context
 from .backend import post
 from .diagnostic_agent import DiagnosticAgent, MOVEMENT
+from .generation import answer_request, read_answer
 from .manual_agent import ManualAgent, STRING, schema
 from .measurement_agent import MeasurementAgent
 from .tools.ticket import wants_draft
@@ -68,11 +69,22 @@ def history_entry(question, reply):
 class Ollama:
     def ask(self, prompt, format_, trace):
         model = os.getenv("AGENT_MODEL") or os.getenv("OLLAMA_MODEL") or "gemma2:2b"
+        body = dict(model=model, stream=False, format=format_, options={"temperature": 0},
+                    messages=[dict(role="user", content=prompt)])
+        return json.loads(self.request(body, trace)["message"]["content"])
+
+    def summarize(self, model, question, query, engine, excerpts, trace):
+        try:
+            return read_answer(self.request(answer_request(model, question, query, engine, excerpts), trace))
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def request(self, body, trace):
+        model = body["model"]
+        base = os.getenv("OLLAMA_HOST_URL") or os.getenv("OLLAMA_URL") or "http://127.0.0.1:11434"
         start = time.monotonic()
         try:
-            result = post((os.getenv("OLLAMA_HOST_URL") or os.getenv("OLLAMA_URL") or "http://127.0.0.1:11434").rstrip("/") + "/api/chat",
-                          dict(model=model, stream=False, format=format_, options={"temperature": 0},
-                               messages=[dict(role="user", content=prompt)]), timeout=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180")))
+            result = post(base.rstrip("/") + "/api/chat", body, timeout=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180")))
         except (OSError, ValueError):
             trace["calls"].append(dict(model=model, seconds=time.monotonic()-start, status="error",
                                        input_tokens=None, output_tokens=None))
@@ -80,7 +92,7 @@ class Ollama:
         trace["calls"].append(dict(model=result["model"], seconds=time.monotonic()-start,
                                    input_tokens=result.get("prompt_eval_count"),
                                    output_tokens=result.get("eval_count")))
-        return json.loads(result["message"]["content"])
+        return result
 
 class Agent:
     def __init__(self, backend, manuals, provider=None, log="artifacts/agent-turns.jsonl", *, mechanic=None):
@@ -133,6 +145,7 @@ class Agent:
                 reply.update(explanation=message, clarifying_question=reason["next_action"])
                 return reply
             reply = self.respond(reply, question, history, trace)
+            self.summarize_manual_search(reply, question, history, trace)
             if self.mechanic and ml["status"] == "anomaly" and ml["anomaly_type"] == "F03":
                 self.merge_assessment(reply, self.assess(ml))
             return reply
@@ -146,6 +159,21 @@ class Agent:
             self.log.parent.mkdir(parents=True, exist_ok=True)
             with self.log.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(trace, ensure_ascii=False) + "\n")
+
+    def summarize_manual_search(self, reply, question, history, trace):
+        model = os.getenv("OLLAMA_GENERATION_MODEL", "").strip()
+        if (not model or not isinstance(self.provider, Ollama) or reply["intent"] != "search"
+                or reply["clarifying_question"] or reply.get("explanation")
+                or reply.get("pressure_measurement") or reply.get("fluid_check")):
+            return
+        cited = {source["fragment_id"] for source in reply["references"]}
+        excerpts = [{"text": check["text"]} for check in reply["checks"] if check.get("fragment_id") in cited]
+        if not excerpts:
+            return
+        query = case_context.subject(question, [turn[0] for turn in history])
+        summary = self.provider.summarize(model, question, query, reply["ml_observations"]["engine_model"], excerpts, trace)
+        if summary:
+            reply["explanation"] = summary
 
     def respond(self, reply, question, history, trace):
         ml = reply["ml_observations"]

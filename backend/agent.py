@@ -1,9 +1,5 @@
 """Route the mechanic's chat to the available workflow tools."""
 
-from agent import case_context
-from agent.tools import oil_pressure
-from agent.dialog import incompatible_fault
-
 import logging
 import re
 from typing import Annotated, Literal
@@ -11,7 +7,12 @@ from typing import Annotated, Literal
 import httpx
 from pydantic import Field
 
-from .models import ChatReply, ChatRequest, Input, Pair, Text
+from agent import case_context
+from agent.dialog import incompatible_fault
+from agent.generation import answer_request, read_answer
+from agent.tools import oil_pressure
+
+from .models import ChatReply, ChatRequest, Evidence, Input, Pair, Text
 from .workflow import Workflow
 
 
@@ -102,10 +103,11 @@ def grounded_query(plan: Plan | None, request: ChatRequest) -> str | None:
 
 
 class Agent:
-    def __init__(self, workflow: Workflow, client: httpx.Client, model: str):
+    def __init__(self, workflow: Workflow, client: httpx.Client, model: str, *, generation_model: str = ""):
         self.workflow = workflow
         self.client = client
         self.model = model
+        self.generation_model = generation_model
 
     def plan(self, request: ChatRequest, engine: str) -> Plan | None:
         if not self.model:
@@ -215,4 +217,22 @@ class Agent:
             # Standalone wording like «какие причины?» refers to the conversation here.
             if query and re.match(r"^(?:а\s+)?какие (?:возможны )?причины", question.casefold()):
                 question = "Какие причины описаны для этого признака?"
-        return self.workflow.mechanic.answer(question, diagnosis, engine, search_query=query)
+
+        def compose(evidence: list[Evidence]) -> str | None:
+            return self.generate_answer(request.question, query, engine, evidence)
+
+        return self.workflow.mechanic.answer(
+            question, diagnosis, engine, search_query=query, compose=compose if self.generation_model else None,
+        )
+
+    def generate_answer(self, question: str, query: str | None, engine: str, evidence: list[Evidence]) -> str | None:
+        excerpts = [{"section": item.section, "text": item.text} for item in evidence]
+        try:
+            response = self.client.post(
+                "/api/chat", json=answer_request(self.generation_model, question, query, engine, excerpts),
+            )
+            response.raise_for_status()
+            return read_answer(response.json())
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
+            log.warning("Ollama answer generation unavailable (%s)", type(error).__name__)
+            return None
