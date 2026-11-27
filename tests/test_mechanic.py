@@ -73,6 +73,23 @@ def prepare(client, pair=CHAIN):
             "diagnosis_revision": result["admission"]["diagnosis_revision"]}
 
 
+def test_q05_on_demo_screen_route(stand, monkeypatch):
+    client, _ = stand
+    monkeypatch.setattr(main, "case_agent", None)
+    pair = {"vehicle_id": "A464EP47", "session_id": "S-0096"}
+    diagnose(client, pair)
+    response = client.post("/api/chat", json={
+        **pair, "message": "Какое давление масла на прогретом двигателе?",
+    })
+    assert response.status_code == 200, response.text
+    nominal, idle = [section for section in response.json()["messages"][-1]["sections"]
+                     if section["kind"] == "checks"]
+    assert "400–635 кПа" in nominal["items"][0] and "80–100 °C" in nominal["items"][0]
+    assert nominal["references"][0]["pdf_page"] == 13
+    assert "не менее 100 кПа" in idle["items"][0]
+    assert idle["references"][0]["pdf_page"] == 49
+
+
 def test_actual_mock_outcomes_and_pair_isolation(stand):
     client, _ = stand
     result = diagnose(client)

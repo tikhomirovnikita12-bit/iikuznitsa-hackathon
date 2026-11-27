@@ -9,7 +9,8 @@ from pathlib import Path
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "manuals"
 SHARED_ZMZ = "zmz-40904-40905-rk"
 VERIFIED_FILES = ("yamz-236m2-oil-pressure.json", "zmz-timing-chain.json", "yamz-236m2-valves.json",
-                  "yamz-536-oil-pressure.json", "reviewed-procedures.json")
+                  "yamz-536-oil-pressure.json", "reviewed-procedures.json", "yamz-236m2-repair.json",
+                  "work-evidence.json")
 YAMZ_MODEL = re.compile(r"ЯМЗ\s*[-–]\s*(\d{3}(?:[А-Яа-яЁё]*\d*)?)", re.I)
 ZMZ_MODEL = re.compile(r"(?<!\d)(4090[45])(?:\.10(?!\d)|\.1000400-\d+)")
 CONTINUATION = re.compile(r"^(?:продолжение\s+табл|продолжение\s+рис)", re.I)
@@ -41,7 +42,7 @@ def strip_footer(page, number):
 
 
 def make_fragment(manual, page, line, section, models, text):
-    return {
+    return correct_extracted_fragment({
         "fragment_id": f"{manual['manual_id']}-p{page:03d}-l{line:03d}",
         "manual_id": manual["manual_id"],
         "manual": manual["manual"],
@@ -50,7 +51,16 @@ def make_fragment(manual, page, line, section, models, text):
         "section": section,
         "applicable_engine_models": models,
         "text": text.strip(),
-    }
+    })
+
+
+def correct_extracted_fragment(entry):
+    # Only this table uses a superscript zero that Poppler appends to 100.
+    if entry["manual_id"] == "yamz-536-01-02-rk" and entry["pdf_page"] == 13:
+        corrected = re.sub(r"80-1000\s+[СC](?=, кПа)", "80–100 °C", entry["text"])
+        if corrected != entry["text"]:
+            return {**entry, "text": corrected}
+    return entry
 
 
 def page_blocks(page_text):
@@ -184,7 +194,8 @@ def build_corpus(pdf_dir):
         fragments.extend(extracted)
         issues.extend(flagged)
     fragments.extend(verified_fragments(catalog))
-    return {"fragments": fragments, "extraction_issues": issues}
+    conflicts = json.loads((DATA_DIR / "manual-conflicts.json").read_text(encoding="utf-8"))
+    return {"fragments": fragments, "conflicts": conflicts, "extraction_issues": issues}
 
 
 def verified_fragments(catalog=None):

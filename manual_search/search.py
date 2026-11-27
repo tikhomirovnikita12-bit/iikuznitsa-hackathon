@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from .corpus import DATA_DIR, load_catalog
+from .corpus import DATA_DIR, correct_extracted_fragment, load_catalog
 
 STOP_WORDS = set("""
 а в во для до и из или к как какие какой какая каких какие когда ли на над
@@ -37,7 +37,9 @@ def tokens(words):
 class ManualSearch:
     def __init__(self, corpus):
         self.catalog = {manual["manual_id"]: manual for manual in load_catalog()}
-        self.fragments = {entry["fragment_id"]: entry for entry in corpus["fragments"]}
+        self.fragments = {
+            entry["fragment_id"]: correct_extracted_fragment(entry) for entry in corpus["fragments"]
+        }
         self.by_model = defaultdict(list)
         self.frequencies = defaultdict(Counter)
         terms = json.loads((DATA_DIR / "search-terms.json").read_text(encoding="utf-8"))
@@ -47,7 +49,7 @@ class ManualSearch:
             for group in terms["synonyms"]
         ]
         for fragment_id, entry in self.fragments.items():
-            if entry.get("conflict_only"):
+            if entry.get("conflict_only") or entry.get("reference_only"):
                 continue
             section = tokens(normalized_words(entry["section"]))
             body = tokens(normalized_words(entry["text"]))

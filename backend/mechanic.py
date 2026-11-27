@@ -227,5 +227,7 @@ class Mechanic:
             previous = self.search.fragments.get(fragment_id)
             if previous and engine_model in previous["applicable_engine_models"]:
                 evidence.insert(0, self.evidence(fragment_id, engine_model))
+        evidence.extend(self.evidence(fragment_id, engine_model)
+                        for fragment_id in hits[0].get("supporting_fragments", ()))
         answer = "\n\n".join(item.text for item in evidence)
         return ChatReply(answer=answer, evidence=evidence)

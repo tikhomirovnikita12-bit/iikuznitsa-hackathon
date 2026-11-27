@@ -344,6 +344,24 @@ class BackendTests(unittest.TestCase):
                 self.assertEqual(file_response.status_code, 206)
                 self.assertEqual(file_response.content, b"%PDF-")
 
+    def test_q05_chat_links_nominal_pressure_and_temperature_to_repair_manual(self):
+        pair = {"vehicle_id": "A464EP47", "session_id": "S-0096"}
+        self.assertEqual(self.client.post("/api/diagnose", json=pair).status_code, 200)
+        response = self.client.post("/api/chat", json={
+            **pair, "question": "Какое давление масла на прогретом двигателе?",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        answer = response.json()
+        evidence = answer["evidence"][0]
+        for value in ("80–100 °C", "400–635 кПа", "номинальной частоте вращения"):
+            self.assertIn(value, evidence["text"])
+            self.assertIn(value, answer["answer"])
+        self.assertNotIn("1000", answer["answer"])
+        self.assertEqual(evidence["source"]["manual"], "536.01.02 РК")
+        self.assertEqual(evidence["source"]["pdf_page"], 13)
+        self.assertEqual(answer["evidence"][1]["source"]["pdf_page"], 49)
+        self.assertIn("не менее 100 кПа", answer["answer"])
+
     def test_chat_follows_topic_and_ignores_history_for_a_new_question(self):
         initial_question = "При каких условиях проверять давление масла?"
         reply = self.client.post("/api/chat", json={

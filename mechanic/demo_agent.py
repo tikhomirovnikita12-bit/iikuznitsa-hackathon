@@ -2,7 +2,9 @@
 
 import re
 
-from .contracts import Brief, Diagnosis, DraftFields, Reply, Section
+from manual_search.corpus import verified_fragments
+
+from .contracts import Brief, Diagnosis, DraftFields, Reference, Reply, Section
 from .sources import YAMZ236, ZMZ409, ZMZ5234
 from backend.mechanic import conflict_case
 from manual_search.corpus import verified_fragments
@@ -10,6 +12,13 @@ from manual_search.corpus import verified_fragments
 
 OIL_LEVELS = YAMZ236.reference(53)
 OIL_PRESSURE = YAMZ236.reference(19)
+YAMZ536_OIL_PRESSURE = [
+    fragment for fragment in verified_fragments()
+    if fragment["fragment_id"] in {
+        "yamz-536-01-02-rk-p013-oil-pressure",
+        "yamz-536-3902150-re-p049-idle-oil-pressure",
+    }
+]
 CHAIN = ZMZ409.reference(107)
 VALVE_TEMP = ZMZ5234.reference(20)
 VALVE_CLEARANCE = ZMZ5234.reference(21)
@@ -233,6 +242,15 @@ def answer(vehicle: dict, diagnosis: Diagnosis, question: str) -> Reply:
                     "для двигателя после длительной эксплуатации.",
             sections=[signs, source_section("checks", OIL_NORMS, OIL_PRESSURE)],
         )
+    if vehicle["engine_model"] == "ЯМЗ-536" and re.fullmatch(
+        r"(?:какое|какое должно быть) давление масла на прогретом двигателе[?.! ]*", text
+    ):
+        return Reply(summary="Норматив давления масла на прогретом ЯМЗ-536.", sections=[
+            signs,
+            *(source_section("checks", [fragment["text"]], Reference(
+                manual=fragment["manual"], pdf_page=fragment["pdf_page"],
+            )) for fragment in YAMZ536_OIL_PRESSURE),
+        ])
     topic = TOPICS.get(case)
     if topic and not OTHER_SPEC.search(text) and (topic.search(text) or FIRST.search(text)):
         if case == "oil":
