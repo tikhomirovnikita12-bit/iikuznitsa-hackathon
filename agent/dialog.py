@@ -203,7 +203,7 @@ class Agent:
             ))
             return reply
 
-        next_step = bool(NEXT_STEP.fullmatch(short)) or (
+        next_step = bool(NEXT_STEP.fullmatch(short) or case_context.FIRST_CHECK.fullmatch(short)) or (
             short.startswith("не ") and bool(DRAFT_HELP.match(short))
             and bool(re.search(r"[,;] (?:скажи,? |подскажи,? )?что проверить(?: сначала)?$", short))
         )

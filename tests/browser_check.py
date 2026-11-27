@@ -245,7 +245,10 @@ def admission_checks(browser, base, out, results, *, mobile=False):
             open_pair(page, base, pair)
             state = page_state(page, base, pair)
             assert state["admission"]["block_reason"]["code"] == code
-            expect(page.locator("#result .admission-notice")).to_contain_text(state["admission"]["block_reason"]["message"])
+            notice = ("Автоматическое оформление заявки недоступно."
+                      if code == "procedure_unavailable" and state["admission"]["has_documented_first_check"]
+                      else state["admission"]["block_reason"]["message"])
+            expect(page.locator("#result .admission-notice")).to_contain_text(notice)
             expect(prepare_ticket_button(page)).to_have_count(0)
             assert not any(call["tool"] == "mock_toir.tickets" for call in state["calls"])
             if pair == LOW_CONFIDENCE:
@@ -335,7 +338,11 @@ def admission_checks(browser, base, out, results, *, mobile=False):
 
         # F14 is the default end-to-end scenario after reviewing the evidence.
         open_pair(page, base, CHAIN)
-        ask(page, "Как проверить гидронатяжитель?", "гидронатяж")
+        ask(page, "Стук спереди на средних оборотах. Как различить цепь и гидронатяжитель?", "гидронатяж")
+        answer = "#messages .bubble:not(.user):last-child"
+        for number in (107, 143):
+            pdf_source(page, f"/sources/zmz409/{number}", number, None, section=answer)
+        assert not any(call["tool"] == "mock_toir.tickets" for call in page_state(page, base, CHAIN)["calls"])
         draft(page, from_result=True)
         expect(page.locator('#ticket-panel a[href="/sources/zmz409/143"]').first).to_be_visible()
         pdf_source(page, "/sources/zmz409/143", 143, None, original=True, section="#ticket-panel")
@@ -526,7 +533,8 @@ def dictation_check(browser, base, results):
         with page.expect_response(lambda response: response.url.endswith("/api/chat")) as response:
             send.tap()
         assert response.value.ok
-        assert requests == [{"vehicle_id": OIL[0], "session_id": OIL[1], "message": OIL_QUESTION}]
+        assert requests == [{"vehicle_id": OIL[0], "session_id": OIL[1], "message": OIL_QUESTION,
+                             "match_input_language": True}]
         expect(page.locator("#messages .bubble:not(.user) a[href='/sources/yamz236-re/19']").first).to_be_visible()
         expect(question).to_be_empty()
 

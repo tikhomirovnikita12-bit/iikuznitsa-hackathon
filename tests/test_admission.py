@@ -6,6 +6,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from backend import admission
 from backend.app import ROOT, Settings, create_app
 
 
@@ -179,6 +180,61 @@ def test_confirmation_rechecks_persisted_operation_source(stand):
     response = api.post(f"/api/drafts/{value['draft_id']}/confirm", json=confirmation(value, warning_acknowledged=True))
     assert response.status_code == 422 and response.json()["error"]["code"] == "operation_source_mismatch"
     assert tickets == []
+
+
+def test_unconfirmed_spare_part_is_rejected_on_edit_and_delivery(stand):
+    api, _, tickets = stand
+    value = draft(api, WARNING)
+    path = f"/api/drafts/{value['draft_id']}"
+    parts = ["Произвольная деталь X-999"]
+    edited = api.patch(path, json={"revision": value["revision"], "spare_parts": parts})
+    assert edited.status_code == 422, edited.text
+    assert edited.json()["error"]["code"] == "spare_part_not_approved"
+
+    workflow = api.app.state.workflow
+    with workflow.store.connection(write=True) as conn:
+        fields = json.loads(workflow.row(conn, value["draft_id"])["fields"])
+        fields["spare_parts"] = parts
+        conn.execute("UPDATE drafts SET fields=? WHERE draft_id=?", (json.dumps(fields), value["draft_id"]))
+
+    refused = api.post(path + "/confirm", json=confirmation(value, warning_acknowledged=True))
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["error"]["code"] == "spare_part_not_approved"
+    assert tickets == []
+
+    cleared = api.patch(path, json={"revision": value["revision"], "spare_parts": []})
+    assert cleared.status_code == 200, cleared.text
+    sent = api.post(path + "/confirm", json=confirmation(cleared.json(), warning_acknowledged=True))
+    assert sent.status_code == 200 and sent.json()["ticket_id"] == "TKT-0001", sent.text
+    assert len(tickets) == 1 and tickets[0]["spare_parts"] == []
+
+
+def test_spare_part_requires_a_verified_fragment_of_a_selected_operation(stand, tmp_path, monkeypatch):
+    api, _, tickets = stand
+    rows = json.loads(admission.REGISTRY.read_text(encoding="utf-8"))
+    row = next(row for row in rows if row["id"] == "yamz536-f01-valve-clearance-check")
+    name = "контргайку"
+    part = {"name": name, "fragment_id": row["fragment_id"], "quote": "ослабить контргайку 3"}
+    second = {**row, "id": "test-operation", "operation": "Тестовая работа",
+              "spare_parts": [part]}
+    row["spare_parts"] = [{**part, "quote": "заменить контргайку 3"}]
+    registry = tmp_path / "operations.json"
+    registry.write_text(json.dumps([*rows, second]), encoding="utf-8")
+    monkeypatch.setattr(admission, "REGISTRY", registry)
+
+    value = draft(api, WARNING)
+    path = f"/api/drafts/{value['draft_id']}"
+    edit = {"revision": value["revision"], "spare_parts": [name]}
+    refused = api.patch(path, json={**edit, "operations": [row["operation"]]})
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["error"]["code"] == "spare_part_not_approved"
+    assert tickets == []
+
+    accepted = api.patch(path, json={**edit, "operations": [second["operation"]]})
+    assert accepted.status_code == 200, accepted.text
+    sent = api.post(path + "/confirm", json=confirmation(accepted.json(), warning_acknowledged=True))
+    assert sent.status_code == 200 and sent.json()["ticket_id"] == "TKT-0001", sent.text
+    assert len(tickets) == 1 and tickets[0]["spare_parts"] == [name]
 
 
 def test_legacy_allowed_draft_refreshes_reviewed_work_preserving_edits(stand):

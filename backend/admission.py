@@ -37,6 +37,18 @@ def block(code, message, next_action):
     return {"code": code, "message": message, "next_action": next_action}
 
 
+def confirmed_spare_parts(parts, fragments):
+    """Check reviewed part entries against the fragments attached to this operation."""
+    sources = {item["fragment_id"]: " ".join(item["text"].split()).casefold() for item in fragments}
+    confirmed = []
+    for part in parts:
+        name = part["name"].strip()
+        quote = " ".join(part["quote"].split()).casefold()
+        if name and " ".join(name.split()).casefold() in quote and quote in sources.get(part["fragment_id"], ""):
+            confirmed.append({**part, "name": name})
+    return confirmed
+
+
 class AdmissionPolicy:
     def __init__(self, mechanic):
         self.mechanic = mechanic
@@ -72,8 +84,9 @@ class AdmissionPolicy:
                                for item in [source, *supporting]}.values())
             evidence = [self.mechanic.evidence(item["fragment_id"], engine).model_dump()
                         for item in [source, *supporting]]
+            spare_parts = confirmed_spare_parts(row.get("spare_parts", []), [source, *supporting])
             approved.append({**row, "manual": source["manual"], "references": references, "evidence": evidence,
-                             "url": evidence[0]["source"]["url"]})
+                             "url": evidence[0]["source"]["url"], "spare_parts": spare_parts})
         return approved
 
 
@@ -123,6 +136,10 @@ def evaluate_admission(vehicle, diagnosis, fields=None, *, mechanic, draft_id=No
             actual = {(item["manual"], item["pdf_page"]) for item in fields.get("references", [])}
             if not actual or actual != sources:
                 reason = block("operation_source_mismatch", "Источник не подтверждает выбранную работу для этого узла.", "Используйте источник, закреплённый за выбранной проверенной работой.")
+        allowed_parts = {part["name"] for row in selected for part in row["spare_parts"]}
+        if reason is None and set(fields.get("spare_parts", [])) - allowed_parts:
+            reason = block("spare_part_not_approved", "Запчасть не подтверждена источником для выбранных работ.",
+                           "Укажите подтверждённые запчасти или оставьте список пустым.")
         if reason is None and not fields.get("conclusion"):
             reason = block("conclusion_required", "Для заявки нужно заключение механика.", "Проверьте и заполните заключение.")
     required = {condition["id"] for row in (selected or operations) for condition in row.get("conditions", [])

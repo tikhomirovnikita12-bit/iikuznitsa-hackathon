@@ -239,7 +239,7 @@ class Workflow:
                 draft_id=draft.draft_id, draft_revision=draft.revision,
                 diagnosis_revision=draft.diagnosis_revision, applicability_confirmations=confirmations)
             if admission["block_reason"] and admission["block_reason"]["code"] in {
-                "operation_not_approved", "operation_source_mismatch", "diagnosis_changed",
+                "operation_not_approved", "operation_source_mismatch", "spare_part_not_approved", "diagnosis_changed",
             }:
                 self.require_admission(admission, draft=draft)
             conn.execute("""

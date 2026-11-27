@@ -79,6 +79,23 @@ def test_screen_rejects_free_form_work_and_f08_unknown_condition(integrated):
 from test_mechanic import stand as local_stand
 
 
+@pytest.mark.parametrize("fixture", ["integrated", "local_stand"])
+def test_screen_rejects_unconfirmed_parts_and_delivers_empty_list(request, fixture):
+    api, *_, sent = request.getfixturevalue(fixture)
+    _, payload = prepare(api, CHAIN)
+    payload["edits"]["spare_parts"] = ["Произвольная деталь X-999"]
+    refused = api.post("/api/ticket", json=payload)
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["admission"]["block_reason"]["code"] == "spare_part_not_approved"
+    assert not sent
+
+    payload["edits"]["spare_parts"] = []
+    accepted = api.post("/api/ticket", json=payload)
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["ticket"]["ticket_id"]
+    assert len(sent) == 1 and sent[0]["spare_parts"] == []
+
+
 def test_local_warning_requires_diagnosis_fingerprint(local_stand):
     api, sent = local_stand
     _state, request = prepare(api, WARNING)
