@@ -242,11 +242,14 @@ def test_localized_free_question_and_output_fallback(stand, monkeypatch):
         return [f"Հայերեն {item}" for item in texts]
 
     monkeypatch.setattr(localization, "translate", translate)
-    payload = {**OIL, "message": "Ի՞նչ ստուգել սկզբում։", "language": "hy"}
+    payload = {**OIL, "message": "Ի՞նչ պետք է նախ ստուգեմ այս մեքենայում։", "language": "hy"}
     out = client.post("/api/chat", json=payload).json()
     user, answer = out["messages"][-2:]
     assert user["text"] == payload["message"]
-    assert answer["summary"].startswith("Հայերեն ") and answer["language"] == "hy"
+    dictionary = localization.interface_dictionary("hy")
+    assert answer["summary"] == dictionary["Проверка по руководству выбранного двигателя."]
+    assert answer["language"] == "hy"
+    assert any(item.startswith("Հայերեն ") for section in answer["sections"] for item in section["items"])
     assert answer["original_sections"] and any(s["references"] for s in answer["sections"])
     stored = main.store.read((OIL["vehicle_id"], OIL["session_id"]))["messages"][-2:]
     assert stored[0]["text"] == "Что проверить сначала?" and not stored[1]["summary"].startswith("Հայերեն ")
@@ -450,6 +453,7 @@ def test_mock_payload_receipt_and_concurrent_duplicate(stand, monkeypatch):
     ["Результат проверки по руководству (PDF, стр. 53):\n"
      "уровень масла в норме, уровень охлаждающей жидкости в норме"],
     ["Уровень масла в норме", "Уровень охлаждающей жидкости в норме"],
+    ["Всё в норме"],
 ])
 def test_demo_f02_continues_after_fluid_check(stand, monkeypatch, reports):
     client, deliveries = stand
@@ -740,3 +744,212 @@ def test_documented_first_check_and_handoff_do_not_create_a_draft(stand, monkeyp
     assert "добавлено в чат" in handoff.json()["messages"][-1]["summary"]
     assert handoff.json()["draft"] is None
     assert submissions == []
+
+
+@pytest.mark.parametrize("report", [
+    "Всё в норме",
+    "Проверил, всё нормально. Что дальше?",
+    "Результат проверки по руководству (PDF, стр. 161):\n"
+    "состояние и натяжение ремней привода агрегатов в порядке",
+    "состояние и натяжение ремней привода агрегатов в номре",
+])
+@pytest.mark.parametrize("built_in_agent", [False, True])
+def test_normal_belt_check_leads_to_tensioner_hypothesis(stand, monkeypatch, tmp_path, report, built_in_agent):
+    client, deliveries = stand
+    agent = CaseAgent(main.CORPUS, tmp_path / "agent.jsonl") if built_in_agent else None
+    monkeypatch.setattr(main, "case_agent", agent)
+    if agent:
+        def unexpected_model_call(*args, **kwargs):
+            pytest.fail("Проверка и переход к следующей гипотезе опираются на руководство.")
+        monkeypatch.setattr(agent.agent.provider, "ask", unexpected_model_call)
+    pair = {"vehicle_id": "Y439TH198", "session_id": "S-0071"}
+    initial = diagnose(client, pair)
+    assert initial["brief"]["risk"] == "unassessed"
+    assert "перегреву" in initial["brief"]["consequences"]
+    assert "разряду аккумулятора" in initial["brief"]["consequences"]
+
+    def ask(message):
+        response = client.post("/api/chat", json={**pair, "message": message})
+        assert response.status_code == 200, response.text
+        return response.json()["messages"][-1]
+
+    first = ask("Что проверить сначала?")
+    assert any(ref["pdf_page"] == 161 for section in first["sections"] for ref in section["references"])
+    next_reply = ask(report)
+    assert "гипотеза — износ натяжителя" in next_reply["summary"]
+    check, = next_reply["sections"]
+    assert "шум и люфт" in check["items"][0]
+    assert [ref["pdf_page"] for ref in check["references"]] == [162]
+    assert state(client, pair)["messages"][-1] == next_reply
+    assert "перегреву" in ask("Какие возможны последствия?")["summary"]
+    assert "натяжителя" not in ask("Натяжитель в норме")["summary"]
+    assert deliveries == []
+
+
+def test_valve_noise_followups_use_distinct_checks(stand):
+    client, _ = stand
+    pair = {"vehicle_id": "A001MC178", "session_id": "S-0167"}
+    diagnose(client, pair)
+
+    for report, hypothesis in [
+        ("Гидротолкатели исправны", "подача масла"),
+        ("Подача масла в норме", "износ кулачков"),
+    ]:
+        response = client.post("/api/chat", json={**pair, "message": report})
+        assert response.status_code == 200, response.text
+        reply = response.json()["messages"][-1]
+        assert hypothesis in reply["summary"]
+        assert reply["sections"][0]["references"][0]["pdf_page"] == 143
+
+
+@pytest.mark.parametrize("report", ["Ремень не в норме", "Ремень неисправен", "Ремни в норме?",
+                                     "Если ремни в норме", "Ремни не исправны"])
+def test_uncertain_or_negative_report_does_not_complete_check(report):
+    assert main.followup.normal_report(report) is None
+
+
+@pytest.mark.parametrize("mechanic_answer", [
+    "масла на фрикционных накладках ведомого диска нет",
+    "масла нет",
+    "Накладки сухие. Что дальше?",
+    "Результат проверки по руководству (PDF, стр. 195):\nмасла на накладках нет",
+])
+@pytest.mark.parametrize("built_in_agent", [False, True])
+def test_clutch_dry_linings_advance_the_check(stand, monkeypatch, tmp_path, mechanic_answer, built_in_agent):
+    client, submissions = stand
+    agent = CaseAgent(main.CORPUS, tmp_path / "agent.jsonl") if built_in_agent else None
+    monkeypatch.setattr(main, "case_agent", agent)
+    pair = {"vehicle_id": "H672OP78", "session_id": "S-0155"}
+    diagnose(client, pair)
+
+    def ask(message):
+        response = client.post("/api/chat", json={**pair, "message": message})
+        assert response.status_code == 200, response.text
+        return response.json()["messages"][-1]
+
+    for question in (mechanic_answer, "Что проверить сначала?"):
+        reply = ask(question)
+        assert "демпфера ведомого диска" in reply["sections"][0]["items"][0]
+        assert reply["sections"][0]["references"][0]["pdf_page"] == 195
+    assert "фрикционную шайбу" in ask("Демпфер исправен")["sections"][0]["items"][0]
+    assert submissions == []
+
+
+@pytest.mark.parametrize("language", list(main.localization.LOCALES))
+@pytest.mark.parametrize("example_case,pair,values,page", [
+    ("oil", OIL, ("400–700", "2100"), 19),
+    ("chain", CHAIN, ("55,5 ± 0,5", "40904.1006100"), 146),
+])
+def test_demo_chat_localization_preserves_original_question_and_source(
+    stand, monkeypatch, language, example_case, pair, values, page,
+):
+    client, _ = stand
+    monkeypatch.setattr(main, "case_agent", None)
+    diagnose(client, pair)
+    example = main.localization.LOCALES[language][example_case][0]
+    response = client.post("/api/chat", json={**pair, "message": example, "match_input_language": True})
+    assert response.status_code == 200, response.text
+    user, reply = response.json()["messages"][-2:]
+    assert user["text"] == example and reply["language"] == language
+    assert all(value in " ".join(reply["sections"][0]["items"]) for value in values)
+    assert reply["source_quote"]["references"][0]["pdf_page"] == page
+    assert state(client, pair)["messages"][-2:] == [user, reply]
+
+
+def test_localized_clutch_report_advances_without_translation_provider(stand, monkeypatch):
+    client, _ = stand
+    monkeypatch.setattr(main, "case_agent", None)
+    monkeypatch.delenv("LOCAL_TRANSLATION_URL", raising=False)
+    monkeypatch.delenv("GOOGLE_TRANSLATION_PROJECT", raising=False)
+    pair = {"vehicle_id": "H672OP78", "session_id": "S-0155"}
+    diagnose(client, pair)
+    dictionary = main.localization.interface_dictionary("hy")
+    response = client.post("/api/chat", json={
+        **pair, "language": "hy", "match_input_language": True,
+        "message": dictionary["Результат проверки:"] + "\n" + dictionary["Масла нет"],
+    })
+    assert response.status_code == 200, response.text
+    user, reply = response.json()["messages"][-2:]
+    assert user["language"] == "hy" and reply["language"] == "hy"
+    assert reply["summary"] == dictionary[main.followup.CLUTCH_SUMMARY]
+    assert reply["sections"][0]["items"][0] == dictionary[main.followup.CLUTCH_CHECK]
+    assert reply["original_sections"][0]["references"][0]["pdf_page"] == 195
+
+
+def test_arbitrary_input_uses_translator_and_preserves_russian_evidence(stand, monkeypatch):
+    client, _ = stand
+    monkeypatch.setattr(main, "case_agent", None)
+    pair = {"vehicle_id": "H672OP78", "session_id": "S-0155"}
+    diagnose(client, pair)
+    question = "Կցորդիչի սկավառակը ստուգել եմ, յուղի հետքեր չկան։"
+
+    def translate(texts, source, target, *, engine):
+        assert (source, target, engine) == ("hy", "ru", "ЗМЗ-40905.10")
+        assert texts == [question]
+        return ["На накладках нет масла"]
+
+    monkeypatch.setattr(main.localization, "translate", translate)
+    response = client.post("/api/chat", json={**pair, "language": "hy", "match_input_language": True,
+                                                "message": question})
+    assert response.status_code == 200, response.text
+    user, reply = response.json()["messages"][-2:]
+    assert user["text"] == question and user["language"] == "hy"
+    assert reply["language"] == "hy" and reply["original_sections"][0]["references"][0]["pdf_page"] == 195
+    stored = main.store.read((pair["vehicle_id"], pair["session_id"]))["messages"]
+    assert stored[-2]["text"] == "На накладках нет масла"
+    assert stored[-1]["summary"] == main.followup.CLUTCH_SUMMARY
+
+
+@pytest.mark.parametrize("pair, report, page, expected", [
+    ({"vehicle_id": "Y439TH198", "session_id": "S-0071"}, "Ремень ослаблен", 162, "натяжитель ремня"),
+    ({"vehicle_id": "C206CC178", "session_id": "S-0059"}, "Соединительные рукава в норме", 216, "люфт его вала"),
+    ({"vehicle_id": "B332BP98", "session_id": "S-0159"}, "Уровень охлаждающей жидкости ниже нормы", 97, "на утечки"),
+    ({"vehicle_id": "H672OP78", "session_id": "S-0155"}, "Масло на накладках есть", 195, "откуда масло"),
+])
+def test_diagnostic_report_advances_across_sessions(stand, monkeypatch, pair, report, page, expected):
+    client, _ = stand
+    monkeypatch.setattr(main, "case_agent", None)
+    diagnose(client, pair)
+
+    def ask(question):
+        response = client.post("/api/chat", json={**pair, "message": question})
+        assert response.status_code == 200, response.text
+        return response.json()["messages"][-1]
+
+    first = ask("Что проверить первым?")
+    result = ask(report)
+    assert result["summary"] != first["summary"]
+    checks = [section for section in result["sections"] if section["kind"] == "checks"]
+    assert any(expected in text for section in checks for text in section["items"])
+    assert any(ref["pdf_page"] == page for section in checks for ref in section["references"])
+    assert ask("Что проверить первым?")["summary"] == result["summary"]
+
+
+def test_typed_generator_report_updates_check(stand):
+    client, _ = stand
+    vehicle = next(vehicle for vehicle in main.VEHICLES if vehicle["engine_model"] == "ЯМЗ-236М2"
+                   and any(item["anomaly_type"] == "F05" and item["signal_quality"] == "good" for item in vehicle["sessions"]))
+    session = next(item for item in vehicle["sessions"] if item["anomaly_type"] == "F05" and item["signal_quality"] == "good")
+    pair = {"vehicle_id": vehicle["vehicle_id"], "session_id": session["session_id"]}
+    diagnose(client, pair)
+    response = client.post("/api/chat", json={**pair, "message": "Амперметр показывает разряд"})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["generator_check"]["value"] == "discharge"
+    assert "подшипников генератора" in result["brief"]["first_check"]
+
+
+def test_guided_result_for_all_compatible_catalog_sessions():
+    covered = 0
+    for vehicle in main.VEHICLES:
+        for session in vehicle["sessions"]:
+            if not main.consequences.for_diagnosis(vehicle, session):
+                continue
+            diagnosis = main.Diagnosis.model_validate(session)
+            state = {"brief": {"first_check": "Проверьте узел по руководству."}, "messages": []}
+            reply = main.followup.next_hypothesis(vehicle, diagnosis, state, "Есть отклонение")
+            assert reply and reply.analysis
+            for section in reply.sections:
+                assert all(main.sources.valid_reference(ref, vehicle["engine_model"]) for ref in section.references)
+            covered += 1
+    assert covered > 50

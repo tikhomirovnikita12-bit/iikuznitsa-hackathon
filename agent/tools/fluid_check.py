@@ -26,7 +26,7 @@ GAUGE_REPORT = re.compile(
 GAUGE_SHORT = re.compile(r"(?:проверил[аи]?[, ]+)?(?:да[, ]+)?(?:он )?(?:" + GAUGE_RESULT + ")")
 NEXT_QUESTION = re.compile(
     r"(?:(?:ну|а|и|так|теперь)[, ]+)*(?:(?:подскажи|скажи)[, ]+)?(?:"
-    r"что(?: из (?:этого|них))? (?:(?:мне|нужно|надо|теперь|дальше|сначала|первым делом|в первую очередь) )*"
+    r"что(?: из (?:этого|них))? (?:(?:мне|нужно|надо|теперь|дальше|сначала|первым(?: делом)?|в первую очередь) )*"
     r"(?:провер(?:ить|ять)|делать|сделать|посмотреть)"
     r"(?: (?:первым(?: делом)?|сначала|в первую очередь|теперь|дальше))?|"
     r"с чего (?:начать|продолжить|начн[её]м)|с какой гипотезы начать|что дальше|"
@@ -63,7 +63,9 @@ def report(text, previous, *, gauge_expected=False):
     if "?" in text or re.search(r"\b(?:сколько|когда|почему|как|ли)\b", text):
         return None
     state = dict(previous or {})
-    if previous is not None and re.fullmatch(r"вс[её] (?:достаточно|в норме)|(?:оба|оба уровня) в норме", text):
+    if gauge_expected and re.fullmatch(r"вс[её] в (?:норме|порядке)", text):
+        return dict(state, gauge="ok")
+    if previous is not None and re.fullmatch(r"вс[её] (?:достаточно|в норме|в порядке)|(?:оба|оба уровня) в норме", text):
         state.pop("unspecified_low", None)
         return dict(state, oil="ok", coolant="ok")
 
@@ -80,6 +82,8 @@ def report(text, previous, *, gauge_expected=False):
         parts = re.split(r"\s+и\s+", clause) if len(levels) > 1 else [clause]
         for part in parts:
             levels = {match.lastgroup for match in LEVEL.finditer(part)}
+            if re.fullmatch(r"(?:масла|антифриза|охлаждающей жидкости)(?: в картере)? нет|нет (?:масла|антифриза|охлаждающей жидкости)", part.strip()):
+                levels = {"low"}
             if len(levels) != 1:
                 continue
             level = next(iter(levels))

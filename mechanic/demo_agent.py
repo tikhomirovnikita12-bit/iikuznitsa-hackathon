@@ -310,7 +310,7 @@ def valve_reply(signs: Section, signal_quality: str) -> Reply:
     )
 
 
-def oil_followup_reply(question: str, history) -> Reply | None:
+def oil_followup_reply(question: str, history, first_check: str = "") -> Reply | None:
     if DRIVE.search(question.casefold()):
         return None
     turns = (
@@ -319,7 +319,9 @@ def oil_followup_reply(question: str, history) -> Reply | None:
         if user["role"] == "user" and assistant["role"] == "assistant"
     )
     previous, gauge_expected = fluid_check.restore(turns)
-    reported = fluid_check.report(question, previous, gauge_expected=gauge_expected)
+    expected_levels = fluid_check.OIL.search(first_check.casefold()) and fluid_check.COOLANT.search(first_check.casefold())
+    report_context = {} if previous is None and expected_levels else previous
+    reported = fluid_check.report(question, report_context, gauge_expected=gauge_expected)
     guide = fluid_check.wants_next_check(question)
     if reported is None and previous is None and FIRST.search(question.casefold()):
         return None

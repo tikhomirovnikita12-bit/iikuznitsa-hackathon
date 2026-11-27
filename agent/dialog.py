@@ -21,7 +21,7 @@ from .tools.ticket import wants_draft
 TERM = re.compile(r"(?:а )?(?:что такое|что означает|что значит) ([а-яёa-z][а-яёa-z -]{1,55})")
 NEXT_STEP = re.compile(
     r"(?:(?:(?:сам )?(?:мне )?(?:скажи|подскажи|расскажи) )?"
-    r"что (?:(?:мне(?:-то)?|надо|нужно|теперь|дальше) )*"
+    r"что (?:(?:мне(?:-то)?|надо|нужно|теперь|дальше|сначала) )*"
     r"(?:делать|сделать|проверить|посмотреть)(?: (?:надо|нужно|дальше|сначала))?"
     r"|скажи как делать|с чего начать|(?:подскажи|посоветуй)(?: мне)?|что дальше)"
 )
@@ -204,7 +204,7 @@ class Agent:
             ))
             return reply
 
-        next_step = bool(case_context.FIRST_CHECK.fullmatch(short) or NEXT_STEP.fullmatch(short)) or (
+        next_step = bool(NEXT_STEP.fullmatch(short) or case_context.FIRST_CHECK.fullmatch(short)) or (
             short.startswith("не ") and bool(DRAFT_HELP.match(short))
             and bool(re.search(r"[,;] (?:скажи,? |подскажи,? )?что проверить(?: сначала)?$", short))
         )

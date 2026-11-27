@@ -2,6 +2,7 @@
 
 from collections import Counter
 import csv
+from functools import lru_cache
 from html import escape
 from html.parser import HTMLParser
 import json
@@ -11,7 +12,7 @@ import unicodedata
 
 import httpx
 
-from .config import ROOT, endpoint
+from .config import ROOT, WEB, endpoint
 from .contracts import Reference, Reply, Section
 
 
@@ -30,6 +31,7 @@ PROTECTED = re.compile(rf"{IDENTIFIER}|(?<!\w){VALUE}|(?<!\w)(?:{TERM_UNIT})(?!\
 TOKEN = re.compile(r"⟦MECH_([0-9]+)⟧")
 HAS_VALUE = re.compile(r"\d")
 UNAVAILABLE = "Переводчик недоступен. Выберите русский или один из демо-вопросов."
+REPLY_FALLBACK = "Перевод недоступен. Показан исходный ответ на русском."
 SCRIPT = {"hy": re.compile(r"[\u0531-\u0587]"), "hi": re.compile(r"[\u0900-\u097f]")}
 NO_SOURCE = ("Для этого вопроса в тестовом режиме нет подтверждённой страницы для двигателя {engine}. "
              "Уточните узел и что именно нужно проверить. При необходимости передайте вопрос на дефектовку.")
@@ -39,6 +41,8 @@ NORMAL_NEXT_STEP = "По сессии {session} значимых отклоне�
 NORMAL_NEXT_STEP_PATTERN = re.compile(re.escape(NORMAL_NEXT_STEP).replace(r"\{session\}", r"[^\s]+"))
 SUGGESTED_QUESTIONS = {
     "Что проверить сначала?",
+    "Что проверить первым?",
+    "Что проверить дальше?",
     "Как повторить запись?",
     "На каких оборотах замеряют давление масла?",
     "Какие причины отклонения указаны в руководстве?",
@@ -56,6 +60,30 @@ QUESTION_WORDS = {
     "uz": "mashinada avval nimani tekshirishim dvigatelda bosimi qancha kerak nima",
     "tg": "дар ин мошин аввал чиро бояд тафтиш кунам муҳаррик фишори қадар чаро",
 }
+
+
+OFFLINE_REPORTS = (
+    "Масла на фрикционных накладках ведомого диска нет",
+    "Масла нет",
+    "Всё в норме",
+    "Что проверить первым?",
+    "Что проверить дальше?",
+    "Есть отклонение",
+)
+
+
+@lru_cache(maxsize=None)
+def interface_dictionary(code):
+    return {} if code == "ru" else json.loads((WEB / "locales" / f"{code}.json").read_text(encoding="utf-8"))
+
+
+def report_translation(text, locale):
+    dictionary = interface_dictionary(locale)
+    canonical = canonical_question(text)
+    for report in OFFLINE_REPORTS:
+        if report in dictionary and canonical == canonical_question(dictionary[report]):
+            return report
+    return None
 
 
 class TranslationError(Exception):
@@ -78,10 +106,21 @@ def canonical_question(text):
                     .translate(str.maketrans("’‘՚", "'''", "؟՞")).split()).rstrip("?!.։।")
 
 
+def strip_report_heading(text):
+    heading, separator, body = text.partition("\n")
+    if separator and any(heading.strip() == interface_dictionary(code).get("Результат проверки:")
+                         for code in LOCALES if code != "ru"):
+        return body.strip() or text
+    return text
+
+
 def detect_language(text, fallback, *, engine):
     normalized = canonical_question(text)
     for code, entry in LOCALES.items():
         if any(normalized == canonical_question(entry[case][0]) for case in DEMO_CASES):
+            return code
+    for code in LOCALES:
+        if report_translation(text, code):
             return code
     sample = PROTECTED.sub("", text.replace(engine, "")).strip()
     letters = sum(character.isalpha() for character in sample)
@@ -95,6 +134,11 @@ def detect_language(text, fallback, *, engine):
                          for code, signature in QUESTION_WORDS.items()), reverse=True)
     if signatures[0][0] >= 2 and signatures[0][0] > signatures[1][0]:
         return signatures[0][1]
+    if fallback == "ru" or not re.search(r"[A-Za-z]", sample):
+        if (normalized in {"да", "нет", "все в норме", "всё в норме", "все в порядке", "всё в порядке",
+                           "спасибо", "привет", "что дальше", "масла нет"}
+                or re.search(r"\b(?:сцеплен|дребезж|накладк|манометр|натяжител|замеря|проверь|проверил|охлаждающ)\w*", normalized)):
+            return "ru"
     try:
         if endpoint("LOCAL_TRANSLATION_URL"):
             scores = local_request("detect", {"text": sample})["languages"]
@@ -180,9 +224,10 @@ def cloud_configured():
 
 def local_request(action, payload):
     try:
-        response = httpx.post(f"{endpoint('LOCAL_TRANSLATION_URL')}/{action}", json=payload, timeout=22)
-        response.raise_for_status()
-        return response.json()
+        with httpx.Client(timeout=22, trust_env=False) as client:
+            response = client.post(f"{endpoint('LOCAL_TRANSLATION_URL')}/{action}", json=payload)
+            response.raise_for_status()
+            return response.json()
     except (httpx.HTTPError, ValueError) as error:
         raise TranslationError(UNAVAILABLE) from error
 
@@ -280,7 +325,12 @@ def translated_reply(reply, language, engine):
         return {"language": language, "summary": LOCALES[language]["no_source"].format(engine=engine),
                 "sections": [], "original_sections": []}
     texts = [reply.summary, *(item for section in reply.sections for item in section.items)]
-    summary, *items = translate(texts, "ru", language, engine=engine)
+    dictionary = interface_dictionary(language)
+    known = {text: dictionary[text] for text in texts if text in dictionary}
+    missing = list(dict.fromkeys(text for text in texts if text not in known))
+    if missing:
+        known.update(zip(missing, translate(missing, "ru", language, engine=engine), strict=True))
+    summary, *items = (known[text] for text in texts)
     translated = iter(items)
     sections = [section.model_copy(update={"items": [next(translated) for _ in section.items]})
                 for section in reply.sections]
@@ -295,6 +345,10 @@ def public_messages(messages):
         if "input_text" in visible:
             visible["text"] = visible.pop("input_text")
         visible.update(visible.pop("localized", {}))
+        if visible.get("source_quotes"):
+            visible.setdefault("source_quote", visible["source_quotes"][0])
+        elif visible.get("source_quote"):
+            visible["source_quotes"] = [visible["source_quote"]]
         if message["role"] == "user" and not message.get("language") and message.get("text") in SUGGESTED_QUESTIONS:
             visible["suggested_question"] = message["text"]
         summary = message.get("summary") or ""

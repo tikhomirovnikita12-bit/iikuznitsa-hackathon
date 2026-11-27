@@ -31,11 +31,11 @@ function escapePattern(value) {
 
 function composePatterns(entries) {
   return Object.keys(entries)
-    .filter((key) => /\{\w+\}/u.test(key))
+    .filter((key) => /\{[\w.]+\}/u.test(key))
     .map((key) => {
       const slots = [];
-      const pattern = key.split(/(\{\w+\})/g).map((token) => {
-        if (!/^\{\w+\}$/.test(token)) return escapePattern(token);
+      const pattern = key.split(/(\{[\w.]+\})/g).map((token) => {
+        if (!/^\{[\w.]+\}$/.test(token)) return escapePattern(token);
         slots.push(token);
         return "(.+?)";
       }).join("");
