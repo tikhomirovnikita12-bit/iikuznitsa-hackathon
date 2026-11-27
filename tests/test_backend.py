@@ -292,6 +292,7 @@ class BackendTests(unittest.TestCase):
         self.client.post("/api/diagnose", json=ANOMALY)
         for question, needs_clarification in (
             ("При каких условиях проверять давление масла?", False),
+            ("Какое давление масла должно быть на минимальных оборотах холостого хода?", False),
             ("Измерили 90 кПа. Это нормально?", True),
             ("Можно ли своим ходом перегнать машину на базу?", True),
             ("Как обновить прошивку мультимедиа?", True),
@@ -366,3 +367,48 @@ class BackendTests(unittest.TestCase):
         self.assertIn("format", requests[0])
         self.assertEqual(self.ml_requests, [ANOMALY])
         self.assertEqual(self.toir_requests, [])
+
+
+    def test_ollama_generation_uses_only_search_evidence_and_falls_back(self):
+        question = "При каких условиях проверять давление масла?"
+        self.assertEqual(self.client.post("/api/diagnose", json=ANOMALY).status_code, 200)
+        baseline = self.client.post("/api/chat", json={**ANOMALY, "question": question}).json()
+        settings = replace(self.settings, ollama_model="router", ollama_generation_model="writer")
+        requests = []
+        answers = iter([
+            {"message": {"content": '{"answer":"Проверяйте давление на прогретом двигателе."}'}},
+            {"message": {"content": '{"answer":null}'}},
+            {"message": {"content": "invalid JSON"}},
+            {"message": {"content": '{"answer":"Оборванный ответ."}'}, "done_reason": "length"},
+        ])
+
+        def ollama(request):
+            body = json.loads(request.content)
+            requests.append(body)
+            if body["model"] == "router":
+                return httpx.Response(200, json={"message": {"content": '{"tool":"manual_search","query":null}'}})
+            return httpx.Response(200, json=next(answers))
+
+        with self.api(settings, ollama_transport=httpx.MockTransport(ollama)) as api:
+            response = api.post("/api/chat", json={**ANOMALY, "question": question})
+            self.assertEqual(response.status_code, 200, response.text)
+            reply = response.json()
+            self.assertEqual(reply["answer"], "Проверяйте давление на прогретом двигателе.")
+            self.assertEqual(reply["evidence"], baseline["evidence"])
+            self.assertEqual([body["model"] for body in requests], ["router", "writer"])
+            context = json.loads(requests[-1]["messages"][-1]["content"])
+            self.assertEqual(context["engine_model"], "ЯМЗ-236М2")
+            self.assertEqual(context["question"], question)
+            self.assertEqual(context["excerpts"], [
+                {"section": item["section"], "text": item["text"]} for item in baseline["evidence"]
+            ])
+
+            for _ in range(3):
+                self.assertEqual(api.post("/api/chat", json={**ANOMALY, "question": question}).json(), baseline)
+
+            for clarification in ("Можно ли своим ходом перегнать машину на базу?",
+                                  "Как обновить прошивку мультимедиа?"):
+                before = len(requests)
+                reply = api.post("/api/chat", json={**ANOMALY, "question": clarification}).json()
+                self.assertTrue(reply["needs_clarification"])
+                self.assertEqual([body["model"] for body in requests[before:]], ["router"])

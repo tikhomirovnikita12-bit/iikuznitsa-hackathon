@@ -40,6 +40,7 @@ class Settings:
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = ""
     ollama_timeout: float = 30
+    ollama_generation_model: str = ""
 
     @classmethod
     def from_environment(cls):
@@ -55,6 +56,7 @@ class Settings:
             ollama_url=os.getenv("OLLAMA_URL", cls.ollama_url),
             ollama_model=os.getenv("OLLAMA_MODEL", cls.ollama_model),
             ollama_timeout=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", str(cls.ollama_timeout))),
+            ollama_generation_model=os.getenv("OLLAMA_GENERATION_MODEL", cls.ollama_generation_model).strip(),
         )
 
 
@@ -86,7 +88,8 @@ def create_app(settings: Settings | None = None, *, ml_transport=None, toir_tran
         ):
             application.state.workflow = Workflow(catalog, store, mechanic, ml, toir,
                                                   sending_deadline=max(60, 4 * settings.timeout))
-            application.state.agent = Agent(application.state.workflow, ollama, settings.ollama_model)
+            application.state.agent = Agent(application.state.workflow, ollama, settings.ollama_model,
+                                            generation_model=settings.ollama_generation_model)
             yield
 
     application = FastAPI(title="Цифровой механик", version="0.1.0", lifespan=lifespan)

@@ -2,6 +2,7 @@
 
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from manual_search.corpus import DATA_DIR, load_catalog, verified_fragments
@@ -45,6 +46,11 @@ def load_defect_checks(catalog):
                              "Уточнить применимость кода ML перед назначением работ по узлу.")
             checks[model][code] = (fragment, operation, code in fitment)
     return checks, fragments
+
+
+def answer_from_evidence(evidence: list[Evidence], compose: Callable[[list[Evidence]], str | None] | None) -> ChatReply:
+    answer = compose(evidence) if compose else None
+    return ChatReply(answer=answer or "\n\n".join(item.text for item in evidence), evidence=evidence)
 
 
 class Mechanic:
@@ -155,7 +161,9 @@ class Mechanic:
             ],
         )
 
-    def answer(self, question: str, diagnosis: Diagnosis, engine_model: str, *, search_query: str | None = None) -> ChatReply:
+    def answer(self, question: str, diagnosis: Diagnosis, engine_model: str, *,
+               search_query: str | None = None,
+               compose: Callable[[list[Evidence]], str | None] | None = None) -> ChatReply:
         normalized = question.casefold().replace("ё", "е")
         assess_pressure = re.search(r"\d+[\s,]*(кпа|мпа|бар|кгс)", normalized)
         travel = re.search(r"перегн|своим ходом|можно ли (ехать|доехать|продолжать)", normalized)
@@ -175,7 +183,7 @@ class Mechanic:
                 and re.search(r"давлени\w* масла", search_query.casefold())
                 and re.search(r"холост|оборот|прогрев|температур|услови", normalized)):
             source = self.evidence(OIL_PRESSURE, engine_model)
-            return ChatReply(answer=source.text, evidence=[source])
+            return answer_from_evidence([source], compose)
 
         assessment = self.assess(diagnosis, engine_model)
         if re.fullmatch(r"(почему (это )?опасно|чем (это )?грозит|какой риск)[?.! ]*", normalized):
@@ -200,5 +208,4 @@ class Mechanic:
             previous = self.search.fragments.get(fragment_id)
             if previous and engine_model in previous["applicable_engine_models"]:
                 evidence.insert(0, self.evidence(fragment_id, engine_model))
-        answer = "\n\n".join(item.text for item in evidence)
-        return ChatReply(answer=answer, evidence=evidence)
+        return answer_from_evidence(evidence, compose)
