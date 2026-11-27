@@ -243,14 +243,20 @@ function renderDiagnosis() {
   }
   if (!view.diagnosisError) result.replaceChildren(context);
   else result.append(context);
-  const heading = element(view.diagnosisError ? "h3" : "h2", "", outcomes[diagnosis.status]);
-  if (!view.diagnosisError) heading.id = "result-title";
-  result.append(heading);
-  if (diagnosis.status === "anomaly" && diagnosis.anomaly_type) {
-    result.append(element("p", "diagnosis-type",
-      diagnosis.anomaly_title || view.catalog?.fault_types?.[diagnosis.anomaly_type] || "Возможное отклонение"));
+  const finding = element("div", "ml-finding");
+  const abnormal = diagnosis.status === "anomaly";
+  const label = diagnosis.status === "check_failed" ? "Качество записи" : abnormal ? "Наблюдение ML" : "Результат ML";
+  const caption = element("p", "ml-caption", label);
+  if (abnormal && diagnosis.anomaly_type) {
+    caption.append(element("span", "ml-code", diagnosis.anomaly_type));
   }
-  result.append(element("p", "diagnosis-description", diagnosis.description));
+  const title = (abnormal && (diagnosis.anomaly_title || view.catalog?.fault_types?.[diagnosis.anomaly_type]))
+    || outcomes[diagnosis.status];
+  const heading = element(view.diagnosisError ? "h3" : "h2", "", title);
+  heading.tabIndex = -1;
+  if (!view.diagnosisError) heading.id = "result-title";
+  finding.append(caption, heading, element("p", "diagnosis-description", diagnosis.description));
+  result.append(finding);
   const admission = view.state.admission;
   const blocked = admission?.block_reason;
   if (blocked && !admission.can_prepare && diagnosis.status !== "normal" && !view.state.draft) {
@@ -334,7 +340,7 @@ function renderDiagnosis() {
   details.append(element("summary", "", "Технические данные"));
   const facts = element("dl", "technical-facts");
   for (const [label, value] of [
-    ["Сессия", diagnosis.session_id], ["Код отклонения ML", diagnosis.anomaly_type || "Нет"],
+    ["Сессия", diagnosis.session_id],
     ["Балл отклонения · 0–1", diagnosis.anomaly_score == null ? "Нет значения" : score.format(diagnosis.anomaly_score)],
     ["Уверенность ML · 0–1", diagnosis.confidence == null ? "Нет значения" : score.format(diagnosis.confidence)],
     ["Качество записи", qualityNames[diagnosis.signal_quality]],
@@ -362,15 +368,43 @@ function renderDiagnosis() {
   result.append(details);
 }
 
+function answerTextKey(text) {
+  return text.trim().replace(/\s+/g, " ");
+}
+
+function uniqueAnswerParts(sections) {
+  const byText = new Map();
+  for (const section of sections) {
+    for (const text of section.items) {
+      const key = answerTextKey(text);
+      if (!byText.has(key)) byText.set(key, { text, sources: new Map() });
+      const { sources } = byText.get(key);
+      for (const source of section.references || []) {
+        sources.set(JSON.stringify([source.manual, source.pdf_page]), source);
+      }
+    }
+  }
+  const parts = [];
+  let previousSources;
+  for (const { text, sources } of byText.values()) {
+    const sourceKey = JSON.stringify([...sources.keys()].sort());
+    if (sourceKey === previousSources) parts.at(-1).items.push(text);
+    else parts.push({ items: [text], references: [...sources.values()] });
+    previousSources = sourceKey;
+  }
+  return parts;
+}
+
 function answerBlock(kind, sections, title = sectionNames[kind] || "Рекомендации") {
   const expandable = kind === "work";
   const block = element(expandable ? "details" : "section", "answer-block");
   block.dataset.kind = kind;
   block.dataset.sourceContext = "";
   block.append(element(expandable ? "summary" : "h3", "", title));
-  const numbered = kind === "checks" && sections.reduce((count, part) => count + part.items.length, 0) > 1;
+  const parts = uniqueAnswerParts(sections);
+  const numbered = kind === "checks" && parts.reduce((count, part) => count + part.items.length, 0) > 1;
   let number = 1;
-  for (const section of sections) {
+  for (const section of parts) {
     const part = element("div", "answer-part");
     if (!numbered && section.items.length === 1) {
       part.append(element("p", "", section.items[0]));
@@ -385,7 +419,7 @@ function answerBlock(kind, sections, title = sectionNames[kind] || "Рекоме
     block.append(part);
   }
   if (kind === "checks" && title === sectionNames.checks) {
-    const pages = new Set(sections.flatMap((part) => (part.references || []).map((item) => item.pdf_page)));
+    const pages = new Set(parts.flatMap((part) => part.references.map((item) => item.pdf_page)));
     const report = button("Сообщить результат");
     report.disabled = Boolean(view.busy);
     report.addEventListener("click", () => composeAnswer(pages.size
@@ -417,36 +451,23 @@ function userMessage(text) {
   return bubble;
 }
 
-function diagnosisMessage(message) {
-  const entry = element("details", "bubble diagnosis-message");
-  entry.dataset.status = message.status;
-  entry.dataset.sourceContext = "";
-  const summary = element("summary");
-  summary.append(element("span", "", "Отчёт диагностики"),
-    element("span", "diagnosis-archive-status", message.summary));
-  const body = element("div", "diagnosis-archive");
-  body.append(element("p", "", message.description),
-    element("p", "diagnosis-next-step", message.next_step));
-  if (message.origin === "fixture") body.append(element("p", "context-key", "Тестовая рекомендация"));
-  if (message.references?.length) body.append(references(message.references));
-  entry.append(summary, body);
-  return entry;
-}
-
 function renderChat() {
   const diagnosis = view.state?.diagnosis;
   const engine = vehiclePicker.selected?.engine_model;
-  const messages = view.state?.messages || [];
+  const history = view.state?.messages || [];
+  const report = history.find((message) => message.role === "diagnosis");
+  const reportTexts = new Set([report?.summary, diagnosis?.description, diagnosis?.anomaly_title]
+    .filter(Boolean).map(answerTextKey));
+  if (diagnosis?.status === "anomaly" && diagnosis.anomaly_title) {
+    reportTexts.add(`${outcomes.anomaly}: ${diagnosis.anomaly_title}.`);
+  }
+  const messages = history.filter((message) => message.role !== "diagnosis");
   ui.chat.hidden = !diagnosis;
   ui["chat-context"].textContent = diagnosis ? "Сессия " + view.pair.session_id : "";
   ui["ask-question"].hidden = messages.length <= 2;
   const openDetails = [...ui.messages.querySelectorAll("details")].map((node) => node.open);
   const fragment = document.createDocumentFragment();
   for (const message of messages) {
-    if (message.role === "diagnosis") {
-      fragment.append(diagnosisMessage(message));
-      continue;
-    }
     if (message.role === "user") {
       fragment.append(userMessage(message.text));
       continue;
@@ -454,8 +475,19 @@ function renderChat() {
     const bubble = element("article", "bubble");
     bubble.tabIndex = -1;
     bubble.append(element("p", "message-meta", message.origin === "fixture" ? "Механик · тестовый ответ" : "Механик"));
-    const parts = message.sections || [];
-    if (!parts.some((part) => part.kind !== "work" && part.items.includes(message.summary))) {
+    const parts = (message.sections || []).flatMap((part) => {
+      if (part.kind !== "signs" || part.references?.length) return [part];
+      const items = part.items.filter((item) => !reportTexts.has(answerTextKey(item)));
+      return items.length ? [{ ...part, items }] : [];
+    });
+    const summary = answerTextKey(message.summary);
+    if (reportTexts.has(summary)) {
+      if (!parts.length) {
+        const link = element("a", "", "К результату проверки");
+        link.href = "#result-title";
+        bubble.append(link);
+      }
+    } else if (!parts.some((part) => part.kind !== "work" && part.items.some((item) => answerTextKey(item) === summary))) {
       bubble.append(element("p", "answer-title", message.summary));
     }
     const sections = new Map();
@@ -1090,7 +1122,7 @@ function renderHistory() {
     const list = element("ul", "history-list");
     for (const step of sessions) {
       const row = element("li", step.session_id === view.pair.session_id ? "current" : "");
-      const verdict = outcomes[step.status] + (step.anomaly_title ? ": " + step.anomaly_title : "");
+      const verdict = step.anomaly_title || outcomes[step.status];
       const checkedAt = element("time", "", formatDate(step.checked_at));
       checkedAt.dateTime = step.checked_at;
       row.append(checkedAt, element("span", "", verdict));

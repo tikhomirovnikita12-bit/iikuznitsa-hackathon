@@ -132,8 +132,16 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
   display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .55rem; margin-bottom: .52rem;
   color: var(--muted); font-size: .875rem; font-variant-numeric: tabular-nums;
 }
-.result-context::before { content: ""; width: .46rem; height: .46rem; border-radius: 50%; background: var(--status-rule); }
 .result-vehicle { color: var(--ink); font-weight: 680; }
+.ml-finding {
+  padding: .8rem 1rem; border-inline-start: 3px solid var(--status-rule);
+  border-radius: 0 var(--radius) var(--radius) 0; background: var(--surface);
+}
+.ml-caption {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem .6rem;
+  margin-bottom: .25rem; color: var(--muted); font-size: .85rem; font-weight: 650;
+}
+.ml-code { color: var(--warn); font-variant-numeric: tabular-nums; }
 .diagnosis-details { margin-top: .35rem; border-top: 1px solid var(--line); }
 .diagnosis-details > summary, .vehicle-history > summary, .journal > summary {
   min-height: 44px; padding-block: .65rem; color: var(--accent); font-size: .9rem; font-weight: 650;
@@ -150,12 +158,10 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
 .flag.warn { color: var(--warn); }
 .flag.danger { color: var(--danger); }
 .flag.neutral { color: var(--muted); }
-.diagnosis-type { margin-top: .23rem; font-size: 1.08rem; font-weight: 680; overflow-wrap: anywhere; }
-.diagnosis-description { margin-top: .26rem; max-width: 74ch; color: var(--muted); }
+.diagnosis-description { margin-top: .35rem; max-width: 74ch; color: var(--muted); }
 .risk-detail { margin-top: .62rem; }
 .first-check {
-  display: grid; gap: .22rem; margin-top: .9rem; padding: .75rem .9rem;
-  border-radius: var(--radius); background: var(--surface);
+  display: grid; gap: .22rem; margin-top: .85rem; padding-top: .7rem; border-top: 1px solid var(--line);
 }
 .first-check h3 { color: var(--muted); font-size: .85rem; }
 .first-check .action { max-width: 74ch; font-weight: 650; }
@@ -189,13 +195,6 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
   border-top: 1px solid var(--line); scroll-margin-top: .75rem;
 }
 .bubble.user > p:not(.message-meta) { font-weight: 600; }
-.diagnosis-message { padding: 0; }
-.diagnosis-message > summary { padding-block: .6rem; min-height: 44px; color: var(--muted); font-size: .875rem; }
-.diagnosis-message > summary > :first-child { color: var(--accent); font-weight: 650; }
-.diagnosis-archive-status { margin-inline-start: .55rem; }
-.diagnosis-archive { padding: 0 0 .7rem 1rem; font-size: .92rem; }
-.diagnosis-next-step { margin-top: .35rem; font-weight: 650; }
-.diagnosis-message .refs { margin-top: .4rem; }
 .messages > .progress { margin: .6rem 0; }
 .bubble p { white-space: pre-wrap; }
 .message-meta { font-size: .87rem; font-weight: 650; color: var(--muted); margin-bottom: .18rem; }
@@ -422,7 +421,6 @@ button.fleet-chip:hover, button.fleet-chip[aria-pressed="true"] { background: va
   .diagnosis-actions .primary { flex: 1.2 1 10rem; }
   .composer-row { gap: .4rem; }
   .composer-row .button { padding-inline: .6rem; font-size: .875rem; }
-  .diagnosis-archive-status { margin-inline-start: .35rem; }
   .pressure-grid { grid-template-columns: minmax(0, 1fr); gap: .25rem; }
   .pressure-grid label:not(:first-child) { margin-top: .25rem; }
   .pressure-helper .button { width: 100%; }

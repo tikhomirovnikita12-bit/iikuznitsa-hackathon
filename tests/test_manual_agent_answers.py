@@ -118,6 +118,14 @@ def test_distinct_passages_from_one_fragment_are_preserved():
     assert len(reply['references']) == 1
 
 
+def test_identical_passages_with_different_candidate_ids_are_shown_once():
+    reply = chain_select(ChoosePassages(duplicate=False, cross_field=True),
+                         text='Проверить гидронатяжитель цепи.\nПроверить  гидронатяжитель цепи.')
+    assert len(reply['checks']) == 1
+    assert not reply['risk']
+    assert [ref['pdf_page'] for ref in reply['references']] == [107]
+
+
 def test_personal_message_still_goes_through_relevance_filter(tmp_path):
     class Unrelated:
         def ask(self, _prompt, response_schema, _trace):

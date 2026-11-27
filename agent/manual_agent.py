@@ -116,9 +116,16 @@ class ManualAgent:
             "\n" + json.dumps(options, ensure_ascii=False),
             schema(items={"type": "array", "items": item, "maxItems": limit}), trace,
         )
+        pages = {hit["fragment_id"]: (hit.get("manual_id") or hit.get("manual") or hit["fragment_id"], hit.get("pdf_page"))
+                 for hit in hits}
         seen = set()
         for selected in answer["items"][:limit]:
             key, field = selected["source"], selected["field"]
-            if key in options and key not in seen and field in fields:
-                self.cite(reply, field, options[key], key.rsplit(":", 1)[0])
-                seen.add(key)
+            if key not in options or field not in fields:
+                continue
+            fragment_id = key.rsplit(":", 1)[0]
+            text = options[key]
+            passage = (pages[fragment_id], " ".join(text.split()))
+            if passage not in seen:
+                self.cite(reply, field, text, fragment_id)
+                seen.add(passage)

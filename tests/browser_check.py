@@ -98,16 +98,7 @@ def diagnose(page, title):
     """Selection starts the request; this helper only waits for its result."""
     expect(page.locator("#diagnose")).to_have_count(0)
     expect(page.locator("#result-title")).to_have_text(title)
-    if title in {"Обнаружено отклонение", "Отклонений по записи не обнаружено", "Запись не удалось проверить"}:
-        expect(page.locator("#chat-context")).to_contain_text(page.locator("#session").input_value())
-
-
-def verdict_entry(page, status, summary):
-    entry = page.locator("#messages .diagnosis-message")
-    expect(entry).to_have_count(1)
-    expect(entry).to_have_attribute("data-status", status)
-    expect(entry).to_contain_text(summary)
-    return entry
+    expect(page.locator("#chat-context")).to_contain_text(page.locator("#session").input_value())
 
 
 def ask(page, text, expected, keyboard=False):
@@ -150,7 +141,7 @@ def copy_ticket_number(page, base, number, *, touch=False):
     assert page.evaluate("navigator.clipboard.readText()") == number
 
 
-def pdf_source(page, path, expected_page, phrase, *, original=False, section="#messages .bubble:not(.diagnosis-message)"):
+def pdf_source(page, path, expected_page, phrase, *, original=False, section="#messages .bubble"):
     source = page.locator(section).locator(f'a[href="{path}"]').first
     origin = page.url
     source.scroll_into_view_if_needed()
@@ -200,18 +191,23 @@ def auto_report_checks(browser, directory, results):
         expect(page.locator("#session")).to_be_enabled()
         assert not requests, "Выбор только машины не должен запускать диагностику"
         page.locator("#session").select_option(OIL[1])
-        diagnose(page, "Обнаружено отклонение")
+        diagnose(page, "Низкое давление масла")
         assert requests == [{"vehicle_id": OIL[0], "session_id": OIL[1]}]
-        verdict_entry(page, "anomaly", "Обнаружено отклонение")
+        expect(page.locator(".ml-finding .ml-code")).to_have_text("F02")
+        saved = page_state(page, base, OIL)
+        expect(page.locator(".ml-finding .diagnosis-description")).to_have_text(saved["diagnosis"]["description"])
+        assert [message["role"] for message in saved["messages"]] == ["diagnosis"]
+        expect(page.locator("#messages")).to_be_empty()
 
         page.reload()
-        diagnose(page, "Обнаружено отклонение")
+        diagnose(page, "Низкое давление масла")
+        expect(page.locator("#messages")).to_be_empty()
         assert len(requests) == 1, "Обновление страницы должно восстановить отчёт без нового ML-вызова"
         page.locator("#session").select_option(NORMAL[1])
         diagnose(page, "Отклонений по записи не обнаружено")
         assert len(requests) == 2
         page.locator("#session").select_option(OIL[1])
-        diagnose(page, "Обнаружено отклонение")
+        diagnose(page, "Низкое давление масла")
         assert len(requests) == 2, "Возврат к сохранённой сессии не должен повторять диагностику"
 
         page.goto(base + f"/?vehicle_id={FAILED[0]}&session_id={FAILED[1]}")
@@ -230,7 +226,9 @@ def page_state(page, base, pair):
 
 def open_pair(page, base, pair):
     page.goto(base + "/?" + "&".join(f"{key}={value}" for key, value in zip(("vehicle_id", "session_id"), pair)))
-    title = "Запись не удалось проверить" if pair == FAILED else "Обнаружено отклонение"
+    expect(page.locator(".ml-finding")).to_be_visible()
+    diagnosis = page_state(page, base, pair)["diagnosis"]
+    title = "Запись не удалось проверить" if pair == FAILED else diagnosis["anomaly_title"]
     diagnose(page, title)
 
 
@@ -412,12 +410,46 @@ def pressure_form_check(browser, directory, results):
             page.get_by_role("button", name="Сравнить с нормой").tap()
             reply = page.locator("#messages .bubble:not(.user)").last
             expect(reply).to_contain_text("350,5 кПа — ниже")
+            expect(reply.locator('[data-kind="signs"]')).to_have_count(0)
             expect(reply.locator('a[href="/sources/yamz236-re/19"]').first).to_be_visible()
             expect(page.locator("#question")).to_have_value("Сохранённый вопрос")
             assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
             results.append({"pair": OIL, "step": "Сверка давления, PDF и сохранение вопроса на 390 px", "result": "passed"})
         finally:
             context.close()
+
+
+def stored_recommendations_check(browser, base, results):
+    with browser.new_context(viewport={"width": 1280, "height": 850}) as context:
+        page = context.new_page()
+        open_pair(page, base, CHAIN)
+        state = page_state(page, base, CHAIN)
+        catalog = page.request.get(base + "/api/catalog").json()
+        manual = next(item["manual"] for item in catalog["manuals"] if item["slug"] == "zmz409")
+        passage = json.loads((ROOT / "data/manuals/zmz-timing-chain.json").read_text(encoding="utf-8"))[0]["text"]
+        distinct = "Локализовать стук у крышки гидронатяжителя."
+        cause = {"manual": manual, "pdf_page": 107}
+        check = {"manual": manual, "pdf_page": 143}
+        state["messages"] = [state["messages"][0],
+            {"role": "user", "text": "Что проверить у цепи?"},
+            {"role": "assistant", "summary": f"Обнаружено отклонение: {state['diagnosis']['anomaly_title']}.", "sections": [
+                {"kind": "signs", "items": [state["diagnosis"]["description"]]},
+                {"kind": "checks", "items": [passage], "references": [cause]},
+                {"kind": "checks", "items": [passage.replace(". ", ".  ")], "references": [cause, check]},
+                {"kind": "checks", "items": [distinct], "references": [check]},
+            ]},
+        ]
+        page.route("**/api/state?*", lambda route: route.fulfill(json=state))
+        page.reload()
+        checks = page.locator('#messages .answer-block[data-kind="checks"]')
+        expect(checks.locator("li")).to_have_text([passage, distinct])
+        first = checks.locator(".answer-part").first
+        for number in (107, 143):
+            expect(first.locator(f'a[href="/sources/zmz409/{number}"]')).to_have_count(1)
+        expect(checks.locator('a[href="/sources/zmz409/107"]')).to_have_count(1)
+        expect(page.locator("#messages .answer-title")).to_have_count(0)
+        expect(page.locator('#messages [data-kind="signs"]')).to_have_count(0)
+        results.append({"step": "Одна сохранённая рекомендация с объединёнными ссылками", "result": "passed"})
 
 
 def record(browser, base, folder):
@@ -444,7 +476,7 @@ def record(browser, base, folder):
         page.locator("#session").select_option(CHAIN[1])
         until(6)
         checkpoint("launch")
-        expect(page.locator("#result-title")).to_have_text("Обнаружено отклонение")
+        expect(page.locator(".ml-finding .ml-code")).to_have_text("F14")
         checkpoint("anomaly")
         until(10)
         page.locator("#question").press_sequentially("Как проверить гидронатяжитель?", delay=23)
@@ -531,6 +563,7 @@ def main():
                 late_response_check(browser, directory, results)
                 fleet_and_history_check(browser, base, results)
                 pressure_form_check(browser, directory, results)
+                stored_recommendations_check(browser, base, results)
                 (out / "browser-results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
                 print(f"{len(results)} browser checks passed", flush=True)
         browser.close()
