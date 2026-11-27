@@ -95,6 +95,26 @@ def test_q05_on_demo_screen_route(stand, monkeypatch):
     assert idle["references"][0]["pdf_page"] == 49
 
 
+def test_manual_torque_question_after_normal_diagnosis(stand, monkeypatch):
+    client, _ = stand
+    monkeypatch.setattr(main, "case_agent", None)
+    pair = {"vehicle_id": "P456AT178", "session_id": "S-0001"}
+    assert diagnose(client, pair)["diagnosis"]["status"] == "normal"
+
+    response = client.post("/api/chat", json={
+        **pair, "message": "Какой момент затяжки крышек коренных подшипников?",
+    })
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    reply = result["messages"][-1]
+    assert "421-461 Н·м" in reply["summary"]
+    assert "расхождение" in reply["summary"].casefold()
+    assert {ref["pdf_page"] for section in reply["sections"] if section["kind"] == "checks"
+            for ref in section["references"]} == {41, 248}
+    assert result["draft"] is None
+
+
 def test_vehicle_history_remembers_ticket(stand):
     client, _ = stand
     request = prepare(client)

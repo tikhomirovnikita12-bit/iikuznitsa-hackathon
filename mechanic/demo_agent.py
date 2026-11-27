@@ -266,7 +266,7 @@ def coolant_reply(signs: Section, *, work_only: bool = False) -> Reply:
     )
 
 
-def chain_reply(signs: Section) -> Reply:
+def chain_reply(signs: Section, approved_operations) -> Reply:
     return Reply(
         summary="Руководство связывает такой шум с возможным увеличением длины цепи.",
         sections=[
@@ -277,6 +277,8 @@ def chain_reply(signs: Section) -> Reply:
                 "Неисправный гидронатяжитель указан как отдельная возможная причина стука.",
             ], CHAIN),
             source_section("checks", [CHAIN_FIRST], CHAIN),
+            *(Section(kind="checks", items=[item["operation"]], references=item["references"])
+              for item in approved_operations),
             source_section("work", [
                 "При подтверждённой неисправности гидронатяжитель подлежит замене.",
                 "При подтверждённом удлинении цепей руководство предусматривает при необходимости "
@@ -346,21 +348,12 @@ def oil_followup_reply(question: str, history) -> Reply | None:
     return Reply(summary=checks[0][1] if checks else clarification, sections=sections, analysis=analysis)
 
 
-def answer(vehicle: dict, diagnosis: Diagnosis, question: str) -> Reply:
+def answer(vehicle: dict, diagnosis: Diagnosis, question: str, *, approved_operations=()) -> Reply:
     text = question.casefold()
     signs = source_section("signs", [diagnosis.description])
     if diagnosis.status == "check_failed":
         return Reply(summary="Повторите запись и запустите проверку новой сессии. "
                              "По этой записи вывод о двигателе невозможен.", sections=[signs])
-    if diagnosis.status == "normal":
-        if DRIVE.search(text):
-            return Reply(summary="По акустической проверке нельзя принять решение о перегоне. "
-                                 "Сообщите, почему возник вопрос, и укажите показания приборов этой сессии.",
-                         sections=[signs])
-        if FIRST.search(text):
-            return Reply(summary=NORMAL_NEXT_STEP.format(session=diagnosis.session_id), sections=[signs])
-        return Reply(summary=NORMAL_NOTICE, sections=[signs])
-
     case = case_for(vehicle, diagnosis)
     if case == "mismatch":
         return Reply(summary=mismatch(vehicle, diagnosis), sections=[signs])
@@ -383,6 +376,14 @@ def answer(vehicle: dict, diagnosis: Diagnosis, question: str) -> Reply:
             if conflict.get("limitations"):
                 sections.append(source_section("clarify", ["Ограничения: " + conflict["limitations"]]))
             return Reply(summary=conflict["explanation"], sections=sections)
+    if diagnosis.status == "normal":
+        if DRIVE.search(text):
+            return Reply(summary="По акустической проверке нельзя принять решение о перегоне. "
+                                 "Сообщите, почему возник вопрос, и укажите показания приборов этой сессии.",
+                         sections=[signs])
+        if FIRST.search(text):
+            return Reply(summary=NORMAL_NEXT_STEP.format(session=diagnosis.session_id), sections=[signs])
+        return Reply(summary=NORMAL_NOTICE, sections=[signs])
     if DRIVE.search(text):
         sections = [signs]
         if case == "oil":
@@ -427,7 +428,7 @@ def answer(vehicle: dict, diagnosis: Diagnosis, question: str) -> Reply:
         if case == "oil":
             return oil_reply(signs)
         if case == "chain":
-            return chain_reply(signs)
+            return chain_reply(signs, approved_operations)
         if case == "coolant":
             return coolant_reply(signs)
         return valve_reply(signs, diagnosis.signal_quality)

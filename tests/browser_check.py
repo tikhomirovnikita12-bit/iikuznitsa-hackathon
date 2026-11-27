@@ -339,7 +339,11 @@ def admission_checks(browser, base, out, results, *, mobile=False):
 
         # F14 is the default end-to-end scenario after reviewing the evidence.
         open_pair(page, base, CHAIN)
-        ask(page, "Как проверить гидронатяжитель?", "гидронатяж")
+        ask(page, "Стук спереди на средних оборотах. Как различить цепь и гидронатяжитель?", "гидронатяж")
+        answer = "#messages .bubble:not(.user):last-child"
+        for number in (107, 143):
+            pdf_source(page, f"/sources/zmz409/{number}", number, None, section=answer)
+        assert not any(call["tool"] == "mock_toir.tickets" for call in page_state(page, base, CHAIN)["calls"])
         draft(page, from_result=True)
         expect(page.locator('#ticket-panel a[href="/sources/zmz409/143"]').first).to_be_visible()
         pdf_source(page, "/sources/zmz409/143", 143, None, original=True, section="#ticket-panel")

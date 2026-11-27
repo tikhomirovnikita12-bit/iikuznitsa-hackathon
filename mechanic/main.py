@@ -787,7 +787,7 @@ def response_to_chat(vehicle, diagnosis, state, question):
             Section(kind="clarify", items=["Ограничения и условия: " + " ".join(conditions)]),
         ], analysis={"fluid_check": {}} if demo_case == "oil" else None)
         return reply, None, "fixture", [], None
-    reply = demo_agent.answer(vehicle, diagnosis, question)
+    reply = demo_agent.answer(vehicle, diagnosis, question, approved_operations=decision["approved_operations"])
     if (diagnosis.status == "anomaly" and case_context.FIRST_CHECK.fullmatch(question.strip())
             and not any(section.kind == "checks" for section in reply.sections)):
         reply = demo_agent.diagnostic_reply(vehicle, diagnosis, policy_mechanic)
@@ -811,6 +811,7 @@ def save_proposal(state: dict, pair: Pair, diagnosis: Diagnosis, draft, origin: 
     draft = DraftFields.model_validate({**draft.model_dump(),
         "urgency": decision["suggested_urgency"],
         "operations": [item["operation"] for item in approved],
+        "spare_parts": [],
         "references": list({(reference["manual"], reference["pdf_page"]): reference
                             for item in approved for reference in item.get("references", [{"manual": item["manual"], "pdf_page": item["pdf_page"]}])}.values()),
     })
