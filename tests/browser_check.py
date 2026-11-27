@@ -120,12 +120,15 @@ def pick(page, vehicle, session, *, touch=False):
     expect(field).to_have_value(vehicle)
     expect(field).to_have_attribute("aria-expanded", "false")
     page.locator("#session").select_option(session)
-    expect(page.locator("#diagnose")).to_be_enabled()
+    expect(page.locator("#session")).to_have_value(session)
 
 
 def diagnose(page, title):
-    page.locator("#diagnose").click()
+    """Selection starts the request; this helper only waits for its result."""
+    expect(page.locator("#diagnose")).to_have_count(0)
     expect(page.locator("#result-title")).to_have_text(title)
+    if title in {"Обнаружено отклонение", "Отклонений по записи не обнаружено", "Запись не удалось проверить"}:
+        expect(page.locator("#chat-context")).to_contain_text(page.locator("#session").input_value())
 
 
 def verdict_entry(page, status, summary):
@@ -204,6 +207,90 @@ def pdf_source(page, path, expected_page, phrase, *, original=False, section="#m
     assert abs(source.bounding_box()["y"] - offset) <= 8
 
 
+def mechanic_ux_checks(page, results):
+    risk = page.locator("#result .risk-line")
+    checks = page.locator("#diagnosis-checks")
+    expect(risk).to_be_visible()
+    expect(checks).to_be_visible()
+    assert risk.bounding_box()["y"] < checks.bounding_box()["y"]
+
+    requests = []
+
+    def chat_request(request):
+        if request.method == "POST" and request.url.endswith("/api/chat"):
+            requests.append(request)
+
+    page.on("request", chat_request)
+    question = page.locator("#question")
+    try:
+        note = "Манометр ещё не подключал."
+        question.fill(note)
+        page.locator("#reply-options").get_by_role("button", name="После прогрева", exact=True).click()
+        expect(question).to_have_value(note + "\nДвигатель прогрет.")
+        page.locator("#reply-options").get_by_role("button", name="На холодном", exact=True).click()
+        expect(question).to_have_value(note + "\nДвигатель холодный.")
+        assert not requests, "Быстрый ответ не должен отправляться без подтверждения механика"
+
+        ask(page, OIL_QUESTION, "400–700 кПа", keyboard=True)
+        assert len(requests) == 1
+        card = page.locator("#messages .bubble:not(.user)").last.locator(".check-card").filter(has_text="400–700 кПа")
+        expect(card.locator(".check-instructions")).to_contain_text("На прогретом двигателе")
+        expect(card.locator(".check-instructions")).to_contain_text("2100 об/мин")
+        expect(card.locator(".check-instructions")).to_contain_text("После длительной эксплуатации")
+        question.fill("Снял показание: 350 кПа.")
+        card.get_by_role("button", name="Сообщить результат", exact=True).click()
+        composed = question.input_value()
+        assert composed.startswith("Снял показание: 350 кПа.\n")
+        assert "PDF, стр. 19" in composed
+        assert "400" not in composed and "700" not in composed and "100" not in composed
+        assert len(requests) == 1, "Подстановка результата не должна вызывать агента"
+        pdf_source(page, "/sources/yamz236-re/19", 19, "400-700 кПа", original=True,
+                   section="#messages .check-card")
+        expect(question).to_have_value(composed)
+        question.fill("")
+    finally:
+        page.remove_listener("request", chat_request)
+    results.append({"pair": OIL, "step": "Риск перед действием, проверяемые быстрые ответы и возврат из источника",
+                    "result": "passed"})
+
+
+def auto_report_checks(browser, directory, results):
+    """One request for a fresh pair; navigation restores saved reports."""
+    with stand(0, directory) as base:
+        context = browser.new_context(viewport={"width": 1280, "height": 850})
+        page = context.new_page()
+        requests = []
+        page.on("request", lambda request: requests.append(request.post_data_json)
+                if request.method == "POST" and request.url.endswith("/api/diagnose") else None)
+        page.goto(base)
+        expect(page.locator("#diagnose")).to_have_count(0)
+        page.locator("#vehicle").fill(OIL[0])
+        vehicle_option(page, OIL[0]).click()
+        expect(page.locator("#session")).to_be_enabled()
+        assert not requests, "Выбор только машины не должен запускать диагностику"
+        page.locator("#session").select_option(OIL[1])
+        diagnose(page, "Обнаружено отклонение")
+        assert requests == [{"vehicle_id": OIL[0], "session_id": OIL[1]}]
+        verdict_entry(page, "anomaly", "Обнаружено отклонение")
+
+        page.reload()
+        diagnose(page, "Обнаружено отклонение")
+        assert len(requests) == 1, "Обновление страницы должно восстановить отчёт без нового ML-вызова"
+        page.locator("#session").select_option(NORMAL[1])
+        diagnose(page, "Отклонений по записи не обнаружено")
+        assert len(requests) == 2
+        page.locator("#session").select_option(OIL[1])
+        diagnose(page, "Обнаружено отклонение")
+        assert len(requests) == 2, "Возврат к сохранённой сессии не должен повторять диагностику"
+
+        page.goto(base + f"/?vehicle_id={FAILED[0]}&session_id={FAILED[1]}")
+        diagnose(page, "Запись не удалось проверить")
+        assert len(requests) == 3, "Свежая пара из URL должна сформировать отчёт автоматически"
+        expect(prepare_ticket_button(page)).to_have_count(0)
+        context.close()
+    results.append({"pair": OIL, "step": "Автоотчёт при выборе и из URL, без повторного ML при восстановлении", "result": "passed"})
+
+
 def desktop_checks(browser, base, out, results):
     context = browser.new_context(viewport={"width": 1280, "height": 850}, locale="ru-RU")
     page = context.new_page()
@@ -225,16 +312,17 @@ def desktop_checks(browser, base, out, results):
     expect(field).to_have_value(OIL[0])
     expect(field).to_have_attribute("aria-expanded", "false")
     page.locator("#session").select_option(OIL[1])
-    expect(page.locator("#diagnose")).to_be_enabled()
+    expect(page.locator("#session")).to_be_enabled()
     diagnose(page, "Обнаружено отклонение")
     expect(page.locator("#context > #journal-panel")).to_be_visible()
     field.fill("P456")
     expect(vehicle_option(page, FAILED[0])).to_be_visible()
-    expect(page.locator("#diagnose")).to_be_disabled()
+    expect(page.locator("#session")).to_be_disabled()
+    expect(page.locator("#chat-context")).to_contain_text(OIL[1])
     field.press("Escape")
     expect(field).to_have_value(OIL[0])
     expect(page.locator("#session")).to_have_value(OIL[1])
-    expect(page.locator("#diagnose")).to_be_enabled()
+    expect(page.locator("#session")).to_be_enabled()
     results.append({"pair": OIL, "step": "Поиск ТС по двигателю и номеру, выбор клавиатурой и отмена", "result": "passed"})
     expect(page.locator("#result")).to_contain_text("Высокий риск")
     expect(page.locator("#result")).to_contain_text("0,84")
@@ -247,14 +335,13 @@ def desktop_checks(browser, base, out, results):
     manual = page.locator("#result .ref-manual")
     expect(manual).to_have_count(1)
     expect(manual.locator(".ref-title")).to_have_text("ЯМЗ-236. Руководство по эксплуатации")
-    expect(manual.locator('a[href="/sources/yamz236-re/19"]')).to_have_text("стр. 19 — нормы давления")
-    expect(manual.locator('a[href="/sources/yamz236-re/53"]')).to_have_text("стр. 53 — причины падения")
+    expect(manual.locator('a[href="/sources/yamz236-re/19"]')).to_have_text("PDF, стр. 19 — нормы давления")
+    expect(manual.locator('a[href="/sources/yamz236-re/53"]')).to_have_text("PDF, стр. 53 — причины падения")
     page.screenshot(path=out / "desktop.png")
-    ask(page, OIL_QUESTION, "400–700 кПа", keyboard=True)
+    mechanic_ux_checks(page, results)
     expect(page.locator("#messages")).to_contain_text("После длительной эксплуатации")
     page.get_by_text("Возможные работы", exact=True).click()
     expect(page.get_by_text("Промыть заборник.", exact=False)).to_be_visible()
-    pdf_source(page, "/sources/yamz236-re/19", 19, "400-700 кПа", original=True)
     pdf_source(page, "/sources/yamz236-re/53", 53, "Пониженное давление масла в системе смазки",
                original=True, section="#result")
     ask(page, "Можно ли своим ходом перегнать машину до бокса?", "Данных для допуска к перегону")
@@ -302,7 +389,7 @@ def desktop_checks(browser, base, out, results):
                     "result": number})
 
     page.locator("#session").select_option(NORMAL[1])
-    diagnose(page, "Значимых отклонений не обнаружено")
+    diagnose(page, "Отклонений по записи не обнаружено")
     page.reload()
     expect(verdict_entry(page, "normal", "Значимых отклонений не обнаружено")).to_contain_text(
         "Продолжайте штатный контроль двигателя")
@@ -314,7 +401,7 @@ def desktop_checks(browser, base, out, results):
     results.append({"pair": NORMAL, "step": "Смена сессии и отдельный диалог", "result": "passed"})
 
     pick(page, *FAILED)
-    diagnose(page, "Сбой проверки записи")
+    diagnose(page, "Запись не удалось проверить")
     page.reload()
     failed = verdict_entry(page, "check_failed", "Сбой проверки записи")
     expect(failed).to_contain_text("перегрузка микрофона")
@@ -376,7 +463,6 @@ def mobile_and_race(playwright, browser, base, directory, out, results):
         diagnose(page, "Обнаружено отклонение")
         expect(page.locator("#context-summary")).to_be_visible()
         expect(page.locator("#context-summary")).to_contain_text(OIL[0])
-        expect(page.locator("#context-summary")).to_contain_text(OIL[1])
         expect(page.locator("#context-summary")).to_contain_text("ЯМЗ-236М2")
         expect(page.locator("#selection")).to_be_hidden()
         expect(page.locator("#workarea > #journal-panel:last-child")).to_be_visible()
@@ -403,24 +489,34 @@ def mobile_and_race(playwright, browser, base, directory, out, results):
                         "result": "passed"})
     mobile.close()
 
-    context = browser.new_context()
-    page = context.new_page()
-    page.goto(base)
-    pick(page, *OIL)
-    delayed = []
-    page.route("**/api/diagnose", lambda route: delayed.append(route))
-    page.locator("#diagnose").click()
-    expect(page.locator("#result-title")).to_have_text("Запрашиваем диагностику")
-    page.locator("#session").select_option(NORMAL[1])
-    expect(page.locator("#result-title")).to_have_text("Значимых отклонений не обнаружено")
-    with page.expect_response("**/api/diagnose"):
-        delayed.pop().continue_()
-    page.wait_for_timeout(150)
-    expect(page.locator("#result-title")).to_have_text("Значимых отклонений не обнаружено")
-    expect(page.locator("#chat-context")).to_contain_text(NORMAL[1])
-    assert OIL[1] not in page.locator("#result").inner_text()
-    results.append({"pair": OIL, "step": "Опоздавший HTTP-ответ после перехода к S-0010", "result": "passed"})
-    context.close()
+    # A fresh state is essential: the desktop scenario already cached OIL.
+    with stand(0, directory) as race_base:
+        context = browser.new_context()
+        page = context.new_page()
+        delayed = []
+
+        def delay_oil(route):
+            if route.request.post_data_json["session_id"] == OIL[1]:
+                delayed.append(route)
+            else:
+                route.continue_()
+
+        page.route("**/api/diagnose", delay_oil)
+        page.goto(race_base)
+        pick(page, *OIL)
+        expect(page.locator("#result-title")).to_have_text("Запрашиваем диагностику")
+        page.locator("#session").select_option(NORMAL[1])
+        diagnose(page, "Отклонений по записи не обнаружено")
+        assert len(delayed) == 1
+        with page.expect_response(lambda response: response.url.endswith("/api/diagnose") and
+                                  response.request.post_data_json["session_id"] == OIL[1]):
+            delayed.pop().continue_()
+        page.wait_for_timeout(150)
+        expect(page.locator("#result-title")).to_have_text("Отклонений по записи не обнаружено")
+        expect(page.locator("#chat-context")).to_contain_text(NORMAL[1])
+        assert OIL[1] not in page.locator("#result").inner_text()
+        results.append({"pair": OIL, "step": "Опоздавший автоматический HTTP-ответ после перехода к S-0010", "result": "passed"})
+        context.close()
 
 
 def stale_draft_across_tabs(browser, directory, results):
@@ -504,9 +600,18 @@ def stale_draft_across_tabs(browser, directory, results):
 def failure_checks(browser, directory, results):
     with stand(0, directory, MOCK_ML_URL="http://127.0.0.1:65534") as base:
         page = browser.new_page()
+        failures = []
+        page.on("request", lambda request: failures.append(request)
+                if request.method == "POST" and request.url.endswith("/api/diagnose") else None)
         page.goto(base)
         pick(page, *OIL)
         diagnose(page, "Сервис диагностики недоступен")
+        assert len(failures) == 1
+        expect(page.locator("#retry-diagnosis")).to_be_visible()
+        with page.expect_response("**/api/diagnose"):
+            page.locator("#retry-diagnosis").click()
+        diagnose(page, "Сервис диагностики недоступен")
+        assert len(failures) == 2, "Повторный запрос выполняется только по нажатию Retry"
         page.close()
     with stand(0, directory, MOCK_TOIR_URL="http://127.0.0.1:65534") as base:
         page = browser.new_page()
@@ -585,7 +690,6 @@ def record(browser, base, folder):
         until(4.5)
         page.locator("#session").select_option(OIL[1])
         until(6)
-        page.locator("#diagnose").click()
         checkpoint("launch")
         expect(page.locator("#result-title")).to_have_text("Обнаружено отклонение")
         checkpoint("anomaly")
@@ -620,7 +724,7 @@ def record(browser, base, folder):
         until(48)
         page.locator("#session").select_option(FAILED[1])
         until(50)
-        diagnose(page, "Сбой проверки записи")
+        diagnose(page, "Запись не удалось проверить")
         expect(page.locator("#result")).to_contain_text("Повторите запись")
         checkpoint("repeat_recording")
         until(55)
@@ -664,6 +768,7 @@ def main():
                 print(timings, flush=True)
             else:
                 results = []
+                auto_report_checks(browser, directory, results)
                 desktop_checks(browser, base, out, results)
                 mobile_and_race(playwright, browser, base, directory, out, results)
                 stale_draft_across_tabs(browser, directory, results)

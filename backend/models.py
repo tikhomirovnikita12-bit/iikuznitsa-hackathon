@@ -97,11 +97,12 @@ class DiagnosticResult(BaseModel):
 
 
 Question = Annotated[Text, Field(max_length=2000)]
+Answer = Annotated[str, Field(description="Полный текст ответа без сокращения для передачи в history.")]
 
 
 class ChatTurn(Input):
     question: Question
-    answer: Annotated[Text, Field(max_length=2000)]
+    answer: Answer
 
 
 class ChatRequest(Pair):
@@ -110,7 +111,7 @@ class ChatRequest(Pair):
 
 
 class ChatReply(BaseModel):
-    answer: str
+    answer: Answer
     needs_clarification: bool = False
     evidence: list[Evidence] = empty_list()
     diagnostic_result: DiagnosticResult | None = None

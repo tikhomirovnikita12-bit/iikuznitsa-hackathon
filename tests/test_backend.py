@@ -364,6 +364,37 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(reply["draft"]["state"], "draft")
         self.assertEqual(self.toir_requests, [])
 
+    def test_chat_keeps_explicit_valve_topic_despite_oil_diagnosis(self):
+        self.assertEqual(self.client.post("/api/diagnose", json=ANOMALY).status_code, 200)
+        topic = "Какие тепловые зазоры клапанного механизма?"
+        first = self.client.post("/api/chat", json={**ANOMALY, "question": topic})
+        self.assertEqual(first.status_code, 200, first.text)
+        reply = first.json()
+        self.assertEqual([row["source"]["pdf_page"] for row in reply["evidence"]], [31])
+        history = [{"question": topic, "answer": reply["answer"]}]
+        for question in ("Как это проверить?", "А как это проверить?", "При каких условиях проверять?"):
+            with self.subTest(question=question):
+                response = self.client.post("/api/chat", json={**ANOMALY, "question": question, "history": history})
+                self.assertEqual(response.status_code, 200, response.text)
+                reply = response.json()
+                self.assertEqual([row["source"]["pdf_page"] for row in reply["evidence"]], [31])
+                self.assertIn("зазор", reply["answer"])
+                self.assertNotIn("давление масла", reply["answer"])
+                history.append({"question": question, "answer": reply["answer"]})
+
+        # A new explicit subject must override the valve history.
+        question = "При каких условиях проверять давление масла?"
+        response = self.client.post("/api/chat", json={**ANOMALY, "question": question, "history": history})
+        self.assertEqual(response.status_code, 200, response.text)
+        reply = response.json()
+        self.assertEqual([row["source"]["pdf_page"] for row in reply["evidence"]], [19])
+        history.append({"question": question, "answer": reply["answer"]})
+        response = self.client.post("/api/chat", json={**ANOMALY, "question": "А на холостых?", "history": history})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["evidence"][0]["source"]["pdf_page"], 19)
+        self.assertIn("холостом ходу", response.json()["answer"])
+        self.assertEqual(self.toir_requests, [])
+
     def test_ollama_plans_a_scoped_action_and_recovers_from_bad_output(self):
         settings = replace(self.settings, ollama_model="test-model")
         history = [{"question": "Что проверить при низком давлении масла?", "answer": "Сверьте условия измерения."}]
