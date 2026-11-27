@@ -144,15 +144,21 @@ class Agent:
                                       (values != previous_pressure or oil_pressure.BARE_NUMBER.fullmatch(question.strip())))):
                 return self.pressure_reply(reply, values, trace)
             if OIL_NORM_QUESTION.match(wording):
-                hits = self.manuals.find(question, ml)
+                hits = self.search(question, ml, trace)
                 source = next((hit for hit in hits if hit.get("verified")
                                and hit["fragment_id"].endswith("-oil-pressure")), None)
                 if source:
-                    reference = self.manuals.reference(source["fragment_id"], ml["engine_model"])
-                    reply.update(intent="search", checks=[dict(text=source["text"], fragment_id=source["fragment_id"])],
-                                 references=[reference])
-                    trace["tools"].append(dict(name="search", query=question,
-                        pages=[(source["manual"], source["pdf_page"])]))
+                    sources = [source]
+                    for fragment_id in source.get("supporting_fragments", ()):
+                        related = self.manuals.searcher.fragments.get(fragment_id)
+                        if related and ml["engine_model"] in related["applicable_engine_models"]:
+                            sources.append(related)
+                    reply.update(
+                        intent="search",
+                        checks=[dict(text=item["text"], fragment_id=item["fragment_id"]) for item in sources],
+                        references=[self.manuals.reference(item["fragment_id"], ml["engine_model"])
+                                    for item in sources],
+                    )
                     return reply
             context = json.dumps([ml, [row[:4] for row in history], question], ensure_ascii=False)
             next_step = bool(re.fullmatch(

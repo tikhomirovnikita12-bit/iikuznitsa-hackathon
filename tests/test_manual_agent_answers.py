@@ -12,7 +12,7 @@ from manual_search.corpus import verified_fragments
 
 
 ROOT = Path(__file__).resolve().parents[1]
-NORM = 'yamz-536-3902150-re-p049-oil-pressure'
+NORM = 'yamz-536-01-02-rk-p013-oil-pressure'
 QUESTION = 'Какое давление масла на прогретом двигателе?'
 
 
@@ -35,21 +35,38 @@ def test_yamz536_pressure_answer_keeps_conditions_units_and_source(tmp_path):
                         diagnosis=diagnosis('A464EP47', 'S-0096'))
     assert result['intent'] == 'search'
     assert result['clarifying_question'] is None
-    assert len(result['checks']) == 1
+    assert len(result['checks']) == 2
     text = result['checks'][0]['text']
-    for term in ['80–100 °C', '400–635 кПа', '4,1–6,5 кгс/см²',
-                 'номинальной', 'минимальной', 'не менее 100 кПа', '1,0 кгс/см²']:
+    for term in ['80–100 °C', '400–635 кПа', '4,1–6,5 кгс/см²', 'номинальной']:
         assert term in text
+    assert '1000' not in text
+    for term in ['минимальной', 'не менее 100 кПа', '1,0 кгс/см²']:
+        assert term in result['checks'][1]['text']
     assert result['references'][0]['fragment_id'] == NORM
-    assert result['references'][0]['manual'] == '536.3902150 РЭ'
-    assert result['references'][0]['pdf_page'] == 49
+    assert [(ref['manual'], ref['pdf_page']) for ref in result['references']] == [
+        ('536.01.02 РК', 13), ('536.3902150 РЭ', 49),
+    ]
 
 
-def test_reviewed_norm_overlays_old_index_without_leaking_other_engine():
-    manuals = Manuals(ROOT / 'artifacts/manual-corpus.json')
+def test_reviewed_norm_overlays_old_index_without_leaking_other_engine(tmp_path):
+    path = tmp_path / 'old-corpus.json'
+    raw = {
+        'fragment_id': 'yamz-536-01-02-rk-p013-l001',
+        'manual_id': 'yamz-536-01-02-rk',
+        'manual': '536.01.02 РК',
+        'pdf_page': 13,
+        'source_file': 'yamz-536_rk_2013.pdf',
+        'section': 'Техническая характеристика двигателей',
+        'applicable_engine_models': ['ЯМЗ-536'],
+        'text': 'Давление масла в системе смазки двигателя, прогретого до\n80-1000 С, кПа',
+    }
+    path.write_text(json.dumps({'fragments': [raw]}, ensure_ascii=False), encoding='utf-8')
+    manuals = Manuals(path)
+    assert '80–100 °C' in manuals.searcher.fragments[raw['fragment_id']]['text']
     context = diagnosis('A464EP47', 'S-0096')
     hits = manuals.find(QUESTION, context)
-    norm = next(hit for hit in hits if hit['fragment_id'] == NORM)
+    norm = hits[0]
+    assert norm['fragment_id'] == NORM
     assert passages(norm) == [norm['text']], 'Do not split the table into disconnected values'
     other = diagnosis('E549YT198', 'S-0011')
     assert all(hit['fragment_id'] != NORM for hit in manuals.find(QUESTION, other))

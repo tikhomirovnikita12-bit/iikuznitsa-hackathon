@@ -1,0 +1,28 @@
+[
+  {
+    "engine_model": "ЯМЗ-236М2",
+    "topic": "Тепловые зазоры клапанного механизма",
+    "fragment_ids": [
+      "yamz-236-3902150-b-re-p031-valve-clearance",
+      "yamz-236-01-01-rk-p269-valve-clearance-run-in",
+      "yamz-236-01-01-rk-p276-valve-clearance-inspection"
+    ],
+    "demo_rule": "Проверку и регулировку для демо проводить на холодном двигателе."
+  },
+  {
+    "engine_model": "ЯМЗ-236М2",
+    "topic": "Давление масла",
+    "fragment_ids": [
+      "yamz-236-3902150-b-re-p019-oil-pressure",
+      "yamz-236-01-01-rk-p012-oil-pressure-specification"
+    ]
+  },
+  {
+    "engine_model": "ЯМЗ-236М2",
+    "topic": "Затяжка болтов крышек коренных подшипников",
+    "fragment_ids": [
+      "yamz-236-01-01-rk-p041-main-bearing-cap-bolts-requirements",
+      "yamz-236-01-01-rk-p248-main-bearing-cap-bolts-assembly"
+    ]
+  }
+]
