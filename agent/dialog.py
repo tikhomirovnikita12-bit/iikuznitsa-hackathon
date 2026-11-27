@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from backend.admission import evaluate_admission, incompatible_fault
-from backend.mechanic import RISK_QUESTION, UNKNOWN_RISK, conflict_case
+from backend.mechanic import conflict_case
 
 from . import case_context
 from .backend import post
@@ -21,7 +21,7 @@ from .tools.ticket import wants_draft
 TERM = re.compile(r"(?:а )?(?:что такое|что означает|что значит) ([а-яёa-z][а-яёa-z -]{1,55})")
 NEXT_STEP = re.compile(
     r"(?:(?:(?:сам )?(?:мне )?(?:скажи|подскажи|расскажи) )?"
-    r"что (?:(?:мне(?:-то)?|надо|нужно|теперь|дальше) )*"
+    r"что (?:(?:мне(?:-то)?|надо|нужно|теперь|дальше|сначала) )*"
     r"(?:делать|сделать|проверить|посмотреть)(?: (?:надо|нужно|дальше|сначала))?"
     r"|скажи как делать|с чего начать|(?:подскажи|посоветуй)(?: мне)?|что дальше)"
 )
@@ -152,15 +152,8 @@ class Agent:
                 return reply
             reply = self.respond(reply, question, history, trace)
             self.summarize_manual_search(reply, question, history, trace)
-            if self.mechanic and ml["status"] == "anomaly":
-                if ml["anomaly_type"] == "F03":
-                    self.merge_assessment(reply, self.assess(ml))
-                elif reply["intent"] == "diagnosis":
-                    assessment = self.assess(ml)
-                    if assessment.risk and assessment.risk != UNKNOWN_RISK and assessment.evidence:
-                        self.manual_agent.cite(reply, "risk", assessment.risk,
-                                               assessment.evidence[0].source.fragment_id)
-                        reply["risk_level"] = assessment.risk_level
+            if self.mechanic and ml["status"] == "anomaly" and ml["anomaly_type"] == "F03":
+                self.merge_assessment(reply, self.assess(ml))
             return reply
         except Exception as exc:
             trace["error"] = type(exc).__name__
@@ -210,7 +203,7 @@ class Agent:
             ))
             return reply
 
-        next_step = bool(case_context.FIRST_CHECK.fullmatch(short) or NEXT_STEP.fullmatch(short)) or (
+        next_step = bool(NEXT_STEP.fullmatch(short) or case_context.FIRST_CHECK.fullmatch(short)) or (
             short.startswith("не ") and bool(DRAFT_HELP.match(short))
             and bool(re.search(r"[,;] (?:скажи,? |подскажи,? )?что проверить(?: сначала)?$", short))
         )
@@ -248,7 +241,7 @@ class Agent:
         guidance_query = " ".join(filter(None, [ml["anomaly_title"], ml["description"]]))
         if next_step:
             action, query = "search", guidance_query
-        elif EXPLAIN_RESULT.fullmatch(short) or RISK_QUESTION.match(short):
+        elif EXPLAIN_RESULT.fullmatch(short):
             action, query = "diagnosis", guidance_query
         elif DRAFT_HELP.match(short):
             action, query = "ticket", ""

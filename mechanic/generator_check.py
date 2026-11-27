@@ -22,6 +22,21 @@ TOPIC = re.compile(
 )
 
 
+def reported_reading(message: str) -> GeneratorReading | None:
+    text = " ".join(message.casefold().split()).strip(" .!")
+    if text.startswith("результат проверки") and ":" in text:
+        text = text.split(":", 1)[1].strip()
+    result = re.fullmatch(
+        r"(?:на номинальных оборотах )?(?:амперметр )?"
+        r"(?P<negative>нет разряда|разряда нет|не показывает разряд)|"
+        r"(?:на номинальных оборотах )?(?:амперметр )?(?:показывает разряд|есть разряд)",
+        text,
+    )
+    if result:
+        return "no_discharge" if result.group("negative") else "discharge"
+    return None
+
+
 def applies(vehicle: dict, diagnosis: dict | None) -> bool:
     return bool(
         diagnosis and diagnosis["status"] == "anomaly" and diagnosis["anomaly_type"] == "F05"

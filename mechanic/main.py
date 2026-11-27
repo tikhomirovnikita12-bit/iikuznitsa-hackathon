@@ -16,17 +16,17 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from backend.admission import evaluate_admission, diagnosis_revision
-from backend.mechanic import Mechanic as EvidenceMechanic, RISK_QUESTION, UNKNOWN_RISK, conflict_case
+from backend.mechanic import Mechanic as EvidenceMechanic, conflict_case
 
-from . import demo_agent, generator_check, localization, sources, speech
+from . import consequences, demo_agent, followup, generator_check, localization, sources, speech
 from agent import case_context
-from agent.dialog import incompatible_fault
+from agent.dialog import MOVEMENT, incompatible_fault
 from .case_agent import CaseAgent
 from agent.dialog import history_entry
 from agent.tools.ticket import wants_draft
 from .config import CORPUS, DEFAULT_ML, DEFAULT_TOIR, MATERIALS, MOCKS, ROOT, WEB, endpoint
 from .contracts import (
-    Brief, ChatRequest, Diagnosis, DraftFields, DraftUpdate, Identifier, Pair, Reference, Reply, Section, TicketReceipt,
+    Brief, ChatRequest, Diagnosis, DraftFields, DraftUpdate, GeneratorReport, Identifier, Pair, Reference, Reply, Section, TicketReceipt,
     TicketReconciliation, TicketRequest, TicketSubmit, ToolCall,
 )
 from .retrieval import SEARCH_QUESTIONS, key, load_retrieval
@@ -166,7 +166,7 @@ async def team_gateway(request: Request, call_next):
                 raise ValueError("Ожидался JSON-объект")
             if path == "/api/catalog" and upstream.is_success:
                 body = {"manuals": sources.catalog(), "confidence_threshold": LOW_CONFIDENCE,
-                        **body, "mode": "team"}
+                        "languages": localization.catalog(), **body, "mode": "team"}
             response = JSONResponse(body, status_code=upstream.status_code)
         except httpx.TimeoutException:
             response = error_response(ApiError(504, "team_timeout", "Бэкенд команды не ответил вовремя."))
@@ -218,7 +218,7 @@ def catalog():
         "manual_search": "team" if retrieval else "fixture",
         "backend": "team" if team else "local",
         "confidence_threshold": LOW_CONFIDENCE,
-        "chat_languages": localization.catalog(),
+        "languages": localization.catalog(),
     }
 
 
@@ -232,7 +232,6 @@ def vehicle_for(pair: Pair) -> dict:
 
 
 FLEET_CATEGORIES = ("quarantine", "attention", "recheck", "ready")
-FLEET_SEVERITY = {"low": 1, "medium": 2, "high": 3}
 
 
 def fleet_row(vehicle: dict) -> dict:
@@ -274,8 +273,7 @@ def fleet_row(vehicle: dict) -> dict:
         "engine_model": vehicle["engine_model"],
         "category": category,
         "reason": reason,
-        "urgency": state.get("confirmed_urgency") or (draft["urgency"] if draft else None),
-        "risk": brief["risk"] if brief else "unassessed",
+        "urgency": draft["urgency"] if draft else None,
         "ticket": {key: ticket.get(key) for key in ("status", "ticket_id")},
         "latest": {
             "session_id": latest["session_id"],
@@ -300,22 +298,15 @@ def fleet_row(vehicle: dict) -> dict:
 @app.get("/api/fleet")
 def fleet():
     rows = [fleet_row(vehicle) for vehicle in VEHICLES]
-
-    def priority(row):
-        severity = max(FLEET_SEVERITY.get(row["urgency"], 0), FLEET_SEVERITY.get(row["risk"], 0))
-        score = row["latest"]["anomaly_score"]
-        return FLEET_CATEGORIES.index(row["category"]), -severity, -(score if score is not None else -1), row["vehicle_id"]
-
     return {
         "summary": {**{name: sum(row["category"] == name for row in rows) for name in FLEET_CATEGORIES},
                     "total": len(rows)},
-        "vehicles": sorted(rows, key=priority),
+        "vehicles": sorted(rows, key=lambda row: (FLEET_CATEGORIES.index(row["category"]), row["vehicle_id"])),
         "criteria": {
             "quarantine": "оценка аномалии >= 0,8, высокий риск или заявка в работе",
             "recheck": "последняя проверка закончилась сбоем записи",
             "attention": "последняя проверка показала отклонение",
             "ready": "последняя проверка — норма",
-            "order": "Внутри категории выше машины с более высоким риском или приоритетом заявки, затем по баллу отклонения.",
         },
     }
 
@@ -393,20 +384,9 @@ def session_response(pair: Pair, state: dict):
         state = {**state, "brief": generator_check.brief(check["value"]), "brief_error": None}
     decision = admission_for(pair, state)
     brief = state.get("brief") or {}
-    if not check and decision["can_prepare"] and not brief.get("risk_references"):
-        diagnosis = Diagnosis.model_validate(state["diagnosis"])
-        assessment = policy_mechanic.assess(diagnosis, vehicle["engine_model"])
-        if assessment.risk and assessment.risk != UNKNOWN_RISK and assessment.evidence:
-            operation = decision["approved_operations"][0]
-            brief = brief or {"origin": "rule"}
-            source = assessment.evidence[0].source
-            brief = {
-                **brief, "risk": assessment.risk_level, "rationale": assessment.risk,
-                "risk_references": [{"manual": source.manual, "pdf_page": source.pdf_page}],
-                "first_check": brief.get("first_check") if brief.get("references") else operation["operation"],
-                "references": brief.get("references") or operation["references"],
-            }
-            state = {**state, "brief": brief, "brief_error": None}
+    diagnosis = state["diagnosis"]
+    if diagnosis and (effect := consequences.for_diagnosis(vehicle, diagnosis)):
+        state = {**state, "brief": {**brief, "consequences": effect}}
     decision = {
         **decision,
         "has_documented_first_check": bool(
@@ -604,15 +584,10 @@ def overview(vehicle: dict, diagnosis: Diagnosis):
             for item in result["references"]
             if first_item and item.get("fragment_id") == first_item.get("fragment_id")
         ]
-        risk_fragments = {item["fragment_id"] for item in result["risk"]}
-        risk_references = [
-            Reference(manual=item["manual"], pdf_page=item["pdf_page"])
-            for item in result["references"] if item["fragment_id"] in risk_fragments
-        ]
         brief = Brief(risk=result.get("risk_level") or "unassessed",
                       rationale=" ".join(item["text"] for item in result["risk"]) or "Уровень риска по имеющимся данным не установлен.",
                       first_check=first or result["clarifying_question"] or reply.summary,
-                      references=first_references or references, risk_references=risk_references)
+                      references=first_references or references)
         return {"origin": "team", **brief.model_dump(), "analysis": result}, calls, "agent.overview"
     case = demo_agent.case_for(vehicle, diagnosis)
     if not TEAM_AGENT_URL or case == "mismatch":
@@ -716,11 +691,26 @@ def response_to_chat(vehicle, diagnosis, state, question):
                      if diagnosis.status == "anomaly" and diagnosis.signal_quality != "bad" else []), None, "fixture", [], None
 
     check = generator_check.session_check(vehicle, state)
-    if check and not draft_requested and (generator_check.TOPIC.search(question.casefold()) or RISK_QUESTION.match(question)):
-        return generator_check.reply(check["value"]), None, "rule", [], None
+    if check:
+        state = {**state, "brief": generator_check.brief(check["value"])}
 
     demo_case = demo_agent.case_for(vehicle, diagnosis)
     mismatch = demo_case == "mismatch"
+    if not draft_requested and not MOVEMENT.search(question):
+        effect = consequences.for_diagnosis(vehicle, diagnosis.model_dump())
+        if effect and consequences.QUESTION.search(question.casefold()):
+            return Reply(summary=effect), None, "fixture", [], None
+        index = policy_mechanic.search if policy_mechanic else (retrieval.index if retrieval else None)
+        if effect and demo_case != "oil" and (reply := followup.next_hypothesis(vehicle, diagnosis, state, question, index)):
+            entry = None
+            if case_agent and reply.sections:
+                entry = history_entry(question, {
+                    "verdict": reply.summary, "clarifying_question": None,
+                    "checks": [{"text": reply.sections[0].items[0], "fragment_id": None}],
+                })
+            return reply, None, "fixture", [], entry
+    if check and not draft_requested and generator_check.TOPIC.search(question.casefold()):
+        return generator_check.reply(check["value"]), None, "rule", [], None
     if case_agent:
         reply, proposal, entry, calls = local_agent_turn(vehicle, diagnosis, question, state["agent_history"])
         if proposal is not None and (not draft_requested or diagnosis.status != "anomaly" or mismatch):
@@ -753,16 +743,8 @@ def response_to_chat(vehicle, diagnosis, state, question):
         reason = (decision.get("block_reason") or {}).get("message", "")
         message = case_context.blocked_message(reason, data, vehicle["engine_model"])
         return Reply(summary=message), None, "fixture", [], None
-    if diagnosis.status == "anomaly" and demo_case != "coolant" and RISK_QUESTION.match(question):
-        assessment = policy_mechanic.assess(diagnosis, vehicle["engine_model"])
-        if assessment.risk and assessment.risk != UNKNOWN_RISK and assessment.evidence:
-            source = assessment.evidence[0].source
-            reply = Reply(summary=assessment.risk, sections=[
-                Section(kind="risk", items=[assessment.risk],
-                        references=[Reference(manual=source.manual, pdf_page=source.pdf_page)]),
-            ])
-            return reply, None, "rule", [], None
-    if demo_case == "oil" and (reply := demo_agent.oil_followup_reply(question, state["messages"])):
+    first_check = (state.get("brief") or {}).get("first_check", "")
+    if demo_case == "oil" and (reply := demo_agent.oil_followup_reply(question, state["messages"], first_check)):
         return reply, None, "fixture", [], None
     if retrieval:
         topic = case_context.subject(question, [m["text"] for m in state["messages"] if m["role"] == "user"])
@@ -912,30 +894,18 @@ def chat(request: ChatRequest):
         raise ApiError(409, "diagnosis_needed", "Сначала получите результат диагностики этой сессии.")
     diagnosis = Diagnosis.model_validate(snapshot["diagnosis"])
     reading = request.generator_reading
+    message = localization.strip_report_heading(request.message)
     engine = vehicle["engine_model"]
+    language = request.language
     input_language = request.input_language or (
-        localization.detect_language(request.message, request.language, engine=engine)
-        if request.match_input_language and not reading else request.language
+        localization.detect_language(message, language, engine=engine) if request.match_input_language else "ru"
     )
-    language = input_language if request.match_input_language and not reading else request.language
-    case = localization.demo_case(engine, diagnosis, request.message, input_language)
-    question = request.message
-    calls = []
-    if case:
-        question = localization.LOCALES["ru"][case][0]
-    elif not reading and input_language != "ru":
-        started = perf_counter()
-        try:
-            question, = localization.translate([question], input_language, "ru", engine=engine)
-            case = localization.demo_case(engine, diagnosis, question, "ru")
-            calls.append(audit("translation.input", started))
-        except localization.TranslationError as error:
-            add_call(request, "translation.input", started, "error")
-            raise ApiError(503, "translation_unavailable", str(error)) from error
-
+    if request.match_input_language:
+        language = input_language
+    message_metadata = {}
+    display = {}
     started = perf_counter()
     tool = "agent.chat" if TEAM_AGENT_URL or case_agent else "agent.fixture"
-    localized = {}
     try:
         if reading:
             tool = "agent.generator_check"
@@ -943,43 +913,60 @@ def chat(request: ChatRequest):
             if not check or check["diagnosis_revision"] != reading.diagnosis_revision:
                 raise ApiError(409, "diagnosis_changed", "Проверка изменилась. Сверьте актуальный результат.",
                                session_response(request, snapshot))
-            question = generator_check.REPORTS[reading.value]
-            reply, draft, origin, agent_entry = generator_check.reply(reading.value), None, "rule", None
-        elif case:
-            evidence = policy_mechanic.search
-            reply, quote = localization.demo_reply(case, "ru", evidence)
-            draft, origin, agent_entry = None, "fixture", None
-            calls.append(audit("manuals.lookup", started))
-            if language != "ru":
-                translated, _ = localization.demo_reply(case, language, evidence)
-                localized = {"language": language, "summary": translated.summary,
-                             "sections": [section.model_dump() for section in translated.sections]}
-            localized["source_quotes"] = [quote]
+            message = generator_check.REPORTS[reading.value]
+            reply, draft, origin, calls, agent_entry = generator_check.reply(reading.value), None, "rule", [], None
         else:
-            reply, draft, origin, agent_calls, agent_entry = response_to_chat(vehicle, diagnosis, snapshot, question)
-            calls.extend(agent_calls)
-        tool = {"team": "agent.chat", "fixture": "agent.fixture", "rule": "agent.generator_check"}[origin]
+            input_text = request.display_message or request.message
+            index = policy_mechanic.search if policy_mechanic else (retrieval.index if retrieval else None)
+            demo = localization.demo_case(engine, diagnosis, message, input_language) if index else None
+            if demo and localization.DEMO_CASES[demo][2] in index.fragments:
+                message = localization.LOCALES["ru"][demo][0]
+                reply, quote = localization.demo_reply(demo, "ru", index)
+                draft, origin, calls, agent_entry = None, "fixture", [], None
+                if language != "ru":
+                    translated, _ = localization.demo_reply(demo, language, index)
+                    display = {"language": language, "summary": translated.summary,
+                               "sections": [section.model_dump() for section in translated.sections]}
+                if language != "ru" or request.match_input_language or input_language != "ru":
+                    display.update(language=language, source_quote=quote)
+            else:
+                if input_language != "ru":
+                    message = localization.report_translation(message, input_language) or localization.translate(
+                        [message], input_language, "ru", engine=engine,
+                    )[0]
+                generator = generator_check.session_check(vehicle, snapshot)
+                typed_reading = generator_check.reported_reading(message) if generator else None
+                if typed_reading:
+                    reading = GeneratorReport(value=typed_reading, diagnosis_revision=generator["diagnosis_revision"])
+                    reply, draft, origin, calls, agent_entry = generator_check.reply(typed_reading), None, "rule", [], None
+                else:
+                    reply, draft, origin, calls, agent_entry = response_to_chat(vehicle, diagnosis, snapshot, message)
+                tool = {"team": "agent.chat", "fixture": "agent.fixture", "rule": "agent.generator_check"}[origin]
+            if input_text != message:
+                message_metadata["input_text"] = input_text
+            if request.match_input_language or request.display_message:
+                message_metadata["language"] = input_language
         for section in reply.sections:
             verify_references(section.references, vehicle, section.kind in ("causes", "checks", "work", "risk"))
         if draft is not None:
             verify_references(draft.references, vehicle, required=True)
-        if origin == "fixture" and not case:
+        if origin == "fixture":
             items = [*reply.sections, draft] if draft else reply.sections
-            calls.extend(bind_fixture_sources(items, vehicle, diagnosis, question))
+            calls.extend(bind_fixture_sources(items, vehicle, diagnosis, message))
+        if not display and (language != "ru" or request.match_input_language):
+            try:
+                display = (localization.translated_reply(reply, language, engine) if language != "ru"
+                           else {"language": "ru"})
+            except localization.TranslationError:
+                display = {"language": "ru", "translation_notice": localization.REPLY_FALLBACK}
+    except localization.TranslationError as error:
+        raise ApiError(503, "translation_unavailable", str(error)) from error
     except ApiError as error:
         add_call(request, tool, started, status_for(error))
         raise
     except ValidationError as error:
         add_call(request, tool, started, "error")
         raise ApiError(502, "agent_invalid_response", "Ответ агента не соответствует схеме.") from error
-
-    if language != "ru" and not case:
-        translated_at = perf_counter()
-        try:
-            localized = localization.translated_reply(reply, language, engine)
-        except localization.TranslationError:
-            localized = {"language": "ru", "translation_failed": True}
-        calls.append(audit("translation.output", translated_at, "error" if localized.get("translation_failed") else "ok"))
 
     def save(state):
         current = team.stored_diagnosis(request) if team else state["diagnosis"]
@@ -997,15 +984,10 @@ def chat(request: ChatRequest):
             for call in calls:
                 record_call(state, call)
             return
-        user = {"role": "user", "text": question}
-        if not reading and (request.display_message or request.message != question):
-            user["input_text"] = request.display_message or request.message
-        if not reading and request.match_input_language:
-            user["language"] = input_language
-        assistant = {"role": "assistant", "origin": origin, **reply.model_dump()}
-        if localized:
-            assistant["localized"] = localized
-        state["messages"].extend([user, assistant])
+        state["messages"].extend([
+            {"role": "user", "text": message, **message_metadata},
+            {"role": "assistant", "origin": origin, **reply.model_dump(), **({"localized": display} if display else {})},
+        ])
         if agent_entry is not None:
             state["agent_history"] = [*state["agent_history"][-5:], agent_entry]
         state["messages"] = chat_history(state)

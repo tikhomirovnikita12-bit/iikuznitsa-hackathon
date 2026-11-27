@@ -69,7 +69,11 @@ export function restoreSourceOrigin() {
 }
 
 const backLink = document.getElementById("source-return");
-if (backLink) setUiLanguage(savedLanguage()).catch(() => {});
+if (backLink) {
+  const syncLanguage = () => setUiLanguage(savedLanguage()).catch(() => {});
+  syncLanguage();
+  window.addEventListener("pageshow", (event) => { if (event.persisted) syncLanguage(); });
+}
 if (backLink && document.referrer) {
   const previous = new URL(document.referrer);
   if (previous.origin === location.origin && previous.pathname === "/") {

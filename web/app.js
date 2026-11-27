@@ -10,8 +10,7 @@ const ui = Object.fromEntries([
   "edit-context", "collapse-context", "journal-panel", "ask-question",
   "selection", "selection-hint", "selection-error", "retry-catalog", "diagnostic", "result",
   "chat", "chat-context", "messages", "chat-error", "composer", "question", "dictation", "dictation-status",
-  "send", "suggestions",
-  "chat-language", "chat-language-example",
+  "send", "suggestions", "chat-language", "chat-language-example",
   "pressure-helper", "pressure-form", "pressure-fields",
   "ticket-panel", "journal", "announcement", "fleet-toggle", "fleet-panel", "vehicle-history", "history-content",
   "recording-help", "quick-replies", "reply-options",
@@ -23,7 +22,6 @@ const view = {
   catalog: null, pair: null, state: null, generation: 0, busy: null,
   diagnosisError: null, chatError: null, ticketError: null, needsTicketCheck: false,
   pendingQuestion: "", pendingEdits: new Map(), consents: null, pollTimer: null, editingContext: false,
-  composed: null,
   fleet: null, fleetError: null, fleetOpen: false, fleetLoading: false, fleetFilter: null,
   history: null, historyVehicle: null, historyError: null, historyRequest: 0,
 };
@@ -33,14 +31,14 @@ const plateLetters = { а: "a", в: "b", е: "e", к: "k", м: "m", н: "h", о:
   р: "p", с: "c", т: "t", у: "y", х: "x" };
 const sectionNames = {
   checks: "Проверки по руководству", clarify: "Ограничения и уточнения",
-  risk: "Риски · гипотезы", causes: "Возможные причины · гипотезы",
+  risk: "Возможные последствия", causes: "Возможные причины · гипотезы",
   signs: "Наблюдения ML", work: "Возможные работы",
 };
 const urgencyNames = { low: "Низкий", medium: "Средний", high: "Высокий" };
 const urgencyDescriptions = { high: "Дефектовка до выпуска в рейс", medium: "Ближайшее ТО с работой под наблюдением", low: "Проверка узла на следующей проверке" };
 const riskLabels = {
   low: ["Низкий риск", "good"], medium: ["Средний риск", "warn"],
-  high: ["Высокий риск", "danger"], unassessed: ["Риск требует уточнения", "neutral"],
+  high: ["Высокий риск", "danger"], unassessed: ["Возможные последствия", "neutral"],
 };
 const qualityNames = { good: "Хорошее", warning: "С помехами", bad: "Непригодна" };
 const callStatuses = {
@@ -51,15 +49,13 @@ const outcomes = {
   anomaly: "Обнаружено отклонение",
   check_failed: "Запись не удалось проверить",
 };
-let date, sessionDate, score;
-function setNumberFormats(locale) {
-  date = new Intl.DateTimeFormat(locale, { dateStyle: "short", timeStyle: "short", timeZone: "Europe/Moscow" });
-  sessionDate = new Intl.DateTimeFormat(locale, {
-    day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Moscow",
-  });
-  score = new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 3 });
-}
-setNumberFormats("ru-RU");
+const date = new Intl.DateTimeFormat("ru-RU", {
+  dateStyle: "short", timeStyle: "short", timeZone: "Europe/Moscow",
+});
+const sessionDate = new Intl.DateTimeFormat("ru-RU", {
+  day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Moscow",
+});
+const score = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 3 });
 
 class ApiFault extends Error {
   constructor(code, message, status = 0, state = null, admission = null) {
@@ -216,17 +212,22 @@ function riskSummary(brief, generatorCheck) {
     box.tabIndex = -1;
     box.setAttribute("aria-label", "Оценка риска");
   }
-  box.append(element("span", "flag " + theme, generatorCheck?.value === "discharge" ? "Высокий риск для эксплуатации" : label),
-             element("p", "", brief?.rationale || "Уточните симптомы и результаты контрольной проверки."));
+  box.append(element("span", "flag " + theme, generatorCheck?.value === "discharge" ? "Высокий риск для эксплуатации" : label));
+  const rationale = brief?.rationale;
+  const effect = brief?.consequences;
+  if (rationale && (generatorCheck || theme !== "neutral" || !effect)) {
+    box.append(element("p", "", rationale));
+  }
+  if (effect && generatorCheck?.value !== "discharge") {
+    box.append(element("p", "", effect));
+  }
+  if (!rationale && !effect) {
+    box.append(element("p", "", "Последствия зависят от причины отклонения. Нужны результаты контрольной проверки."));
+  }
   const note = generatorCheck
     ? (generatorCheck.value === "discharge" ? "Предварительная оценка. Решение о выпуске принимают после дефектовки." : "")
-    : (brief?.risk === "unassessed"
-      ? "По одной записи степень риска не установлена. Нужна очная проверка."
-      : "Предварительная оценка по записи и руководству. Степень риска уточнят после очной проверки.");
+    : (theme !== "neutral" ? "Предварительная оценка по записи и руководству." : "");
   if (note) box.append(element("p", "risk-note", note));
-  const riskSources = (brief?.risk_references || []).filter((source) =>
-    !brief.references?.some((ref) => ref.manual === source.manual && ref.pdf_page === source.pdf_page));
-  if (riskSources.length) box.append(references(riskSources));
   return box;
 }
 
@@ -398,7 +399,7 @@ function renderDiagnosis() {
     check.addEventListener("click", () => {
       const cards = ui.messages.querySelectorAll(".check-card");
       if (cards.length) cards[cards.length - 1].closest(".bubble").scrollIntoView({ block: "start" });
-      else sendSuggestedQuestion("Что проверить сначала?");
+      else sendQuestion("Что проверить первым?");
     });
     controls.append(check);
   } else {
@@ -482,7 +483,7 @@ function uniqueAnswerParts(sections) {
   return parts;
 }
 
-function answerBlock(kind, sections, title = sectionNames[kind] || "Рекомендации", reportInDiagnosis = false, preserveText = false) {
+function answerBlock(kind, sections, title = sectionNames[kind] || "Рекомендации", reportInDiagnosis = false, originalText = false) {
   const expandable = kind === "work";
   const block = element(expandable ? "details" : "section", "answer-block");
   block.dataset.kind = kind;
@@ -490,23 +491,21 @@ function answerBlock(kind, sections, title = sectionNames[kind] || "Рекоме
   block.append(element(expandable ? "summary" : "h3", "", title));
   const parts = uniqueAnswerParts(sections);
   const numbered = kind === "checks" && parts.reduce((count, part) => count + part.items.length, 0) > 1;
-  const itemNode = (tag, text) => {
-    const node = element(tag, "", text);
-    if (preserveText) node.translate = false;
-    return node;
-  };
   let number = 1;
   for (const section of parts) {
     const part = element("div", "answer-part");
+    const content = element("div", "");
+    if (originalText) content.setAttribute("translate", "no");
     if (!numbered && section.items.length === 1) {
-      part.append(itemNode("p", section.items[0]));
+      content.append(element("p", "", section.items[0]));
     } else {
       const list = element(numbered ? "ol" : "ul");
       if (numbered) list.start = number;
-      for (const item of section.items) list.append(itemNode("li", item));
+      for (const item of section.items) list.append(element("li", "", item));
       number += section.items.length;
-      part.append(list);
+      content.append(list);
     }
+    part.append(content);
     if (section.references?.length) part.append(references(section.references));
     block.append(part);
   }
@@ -519,9 +518,10 @@ function answerBlock(kind, sections, title = sectionNames[kind] || "Рекоме
         byId("generator-reading")?.querySelector("button:not(:disabled)")?.focus();
         return;
       }
-      composeAnswer(pages.size
+      const prefix = interfaceText("Результат проверки:");
+      composeAnswer(uiLanguage() === "ru" && pages.size
         ? "Результат проверки по руководству (PDF, стр. " + [...pages].join(", ") + "):\n"
-        : "Результат проверки:\n");
+        : prefix + "\n");
     });
     block.append(report);
   }
@@ -530,25 +530,13 @@ function answerBlock(kind, sections, title = sectionNames[kind] || "Рекоме
 
 function composeAnswer(text, alternatives = []) {
   let current = ui.question.value;
-  const previous = view.composed?.display === current.trim() ? view.composed.canonical : null;
-  const lines = text.split("\n");
-  const translations = lines.map(interfaceText);
-  const complete = lines.every((line, index) => !/[А-Яа-яЁё]/u.test(line) || translations[index] !== line);
-  const display = complete ? translations.join("\n") : text;
-  let canonical = previous || "";
-  for (const alternative of alternatives) {
-    current = current.replace(alternative, "").replace(interfaceText(alternative), "");
-    canonical = canonical.replace(alternative, "");
-  }
-  const combined = current.trimEnd() + (current.trim() ? "\n" : "") + display;
+  for (const alternative of alternatives) current = current.replace(alternative, "");
+  const combined = current.trimEnd() + (current.trim() ? "\n" : "") + text;
   if (combined.length > ui.question.maxLength) {
     announce("Текст слишком длинный. Сократите сообщение перед добавлением результата.");
     ui.question.focus();
     return;
   }
-  view.composed = previous !== null || !current.trim()
-    ? { display: combined.trim(), canonical: [canonical.trim(), text.trim()].filter(Boolean).join("\n") }
-    : null;
   ui.question.value = combined;
   ui.question.dispatchEvent(new Event("input"));
   ui.question.focus();
@@ -558,42 +546,23 @@ function composeAnswer(text, alternatives = []) {
 function userMessage(text, language) {
   const bubble = element("article", "bubble user");
   const body = element("p", "", text);
-  body.translate = false;
+  body.setAttribute("translate", "no");
   if (language) body.lang = language;
   bubble.append(element("p", "message-meta", "Вы"), body);
   return bubble;
 }
 
-function chatLanguage() {
-  return uiLanguage();
-}
-
-function languageExample() {
-  const language = view.catalog?.chat_languages?.find((item) => item.code === chatLanguage());
-  return language?.examples.find((example) => example.engine_model === vehiclePicker.selected?.engine_model
-    && example.fault_code === view.state?.diagnosis?.anomaly_type);
-}
-
-function renderChatLanguages() {
-  const demo = ui["chat-language-example"];
-  demo.hidden = !languageExample();
-  demo.disabled = Boolean(view.busy);
-  ui.question.lang = chatLanguage();
-  ui.question.placeholder = languageExample()?.question || "Например, что проверить сначала?";
-}
-
-function originalEvidence(title, passages) {
-  const details = element("details", "answer-block");
-  details.append(element("summary", "", title));
-  const original = element("div", "answer-part");
-  for (const passage of passages) {
-    for (const item of passage.items || [passage.text]) {
-      const quote = element("p", "", item);
-      quote.lang = "ru";
-      quote.translate = false;
-      original.append(quote);
-    }
-    original.append(references(passage.references));
+function originalAnswer(message) {
+  const quote = message.source_quote;
+  if (!quote && !message.original_sections?.length) return null;
+  const details = element("details", "original-answer");
+  details.append(element("summary", "", "Исходный текст ответа · русский"));
+  const original = element("div", "");
+  original.lang = "ru";
+  original.setAttribute("translate", "no");
+  for (const section of quote ? [{ items: [quote.text], references: quote.references }] : message.original_sections) {
+    for (const item of section.items) original.append(element("p", "", item));
+    if (section.references?.length) original.append(references(section.references));
   }
   details.append(original);
   return details;
@@ -617,36 +586,31 @@ function renderChat() {
   const fragment = document.createDocumentFragment();
   for (const message of messages) {
     if (message.role === "user") {
-      const suggested = message.suggested_question;
-      fragment.append(userMessage(suggested ? interfaceText(suggested) : message.text,
-        suggested ? chatLanguage() : message.language));
+      fragment.append(userMessage(message.suggested_question ? interfaceText(message.suggested_question) : message.text,
+                                  message.language));
       continue;
     }
     const bubble = element("article", "bubble");
     bubble.tabIndex = -1;
-    const name = !message.status_notice && view.catalog?.chat_languages?.find((item) => item.code === message.language)?.name;
-    const role = message.origin === "fixture" ? "Механик · тестовый ответ" : "Механик";
-    bubble.append(element("p", "message-meta", name && message.language !== "ru" ? role + " · " + name : role));
-    if (!message.status_notice && message.translation_failed) bubble.append(alert("Перевод недоступен. Показан исходный ответ на русском."));
-    const answer = element("div", "translated-answer");
-    answer.lang = message.status_notice ? chatLanguage() : (message.language || "ru");
+    bubble.append(element("p", "message-meta", message.origin === "fixture" ? "Механик · тестовый ответ" : "Механик"));
+    const body = element("div", message.language ? "translated-answer" : "");
+    if (message.language) body.lang = message.language;
     const parts = (message.sections || []).flatMap((part) => {
       if (part.kind !== "signs" || part.references?.length) return [part];
       const items = part.items.filter((item) => !reportTexts.has(answerTextKey(item)));
       return items.length ? [{ ...part, items }] : [];
     });
-    const displaySummary = message.status_notice ? interfaceText(message.status_notice) : message.summary;
-    const summary = answerTextKey(message.status_notice || message.summary);
+    const summary = answerTextKey(message.summary);
     if (reportTexts.has(summary)) {
       if (!parts.length) {
         const link = element("a", "", "К результату проверки");
         link.href = "#result-title";
-        answer.append(link);
+        body.append(link);
       }
     } else if (!parts.some((part) => part.kind !== "work" && part.items.some((item) => answerTextKey(item) === summary))) {
-      const title = element("p", "answer-title", displaySummary);
-      title.translate = false;
-      answer.append(title);
+      const heading = element("p", "answer-title", message.summary);
+      if (message.language) heading.setAttribute("translate", "no");
+      body.append(heading);
     }
     const sections = new Map();
     for (const part of parts) {
@@ -659,12 +623,13 @@ function renderChat() {
     const reportInDiagnosis = Boolean(view.state.generator_check && message.origin === "rule"
       && [null, "unknown"].includes(message.analysis?.generator_reading));
     for (const kind of new Set([...Object.keys(sectionNames), ...sections.keys()])) {
-      if (sections.has(kind)) answer.append(answerBlock(kind, sections.get(kind),
-        kind === "checks" ? measurementTitle : undefined, reportInDiagnosis, !message.status_notice));
+      if (sections.has(kind)) body.append(answerBlock(kind, sections.get(kind),
+        kind === "checks" ? measurementTitle : undefined, reportInDiagnosis, Boolean(message.language)));
     }
-    bubble.append(answer);
-    if (message.source_quotes?.length) bubble.append(originalEvidence("Цитата из руководства · русский", message.source_quotes));
-    if (message.original_sections?.length) bubble.append(originalEvidence("Исходный текст ответа · русский", message.original_sections));
+    if (message.translation_notice) bubble.append(alert(message.translation_notice, "info"));
+    bubble.append(body);
+    const original = originalAnswer(message);
+    if (original) bubble.append(original);
     fragment.append(bubble);
   }
   if (view.pendingQuestion) fragment.append(userMessage(view.pendingQuestion));
@@ -672,8 +637,8 @@ function renderChat() {
   ui.messages.replaceChildren(fragment);
   [...ui.messages.querySelectorAll("details")].forEach((node, index) => { node.open = Boolean(openDetails[index]); });
   setAlert(ui["chat-error"], view.chatError);
-  renderChatLanguages();
   renderChatActions(diagnosis, engine);
+  updateLanguageExample();
 }
 
 function renderChatActions(diagnosis, engine) {
@@ -712,7 +677,10 @@ function renderChatActions(diagnosis, engine) {
   }
   if (!diagnosis) return;
 
-  const prompts = status === "check_failed" ? [["Как повторить запись?"]] : [["Что проверить сначала?"]];
+  const hasFinding = view.state.messages?.some((message) =>
+    message.role === "assistant" && (message.analysis?.guided_followup || message.analysis?.clutch_followup));
+  const prompts = status === "check_failed" ? [["Как повторить запись?"]]
+    : [[hasFinding ? "Что проверить дальше?" : "Что проверить первым?"]];
   if (status === "anomaly") {
     if (oil) prompts.push(["Условия замера давления", "На каких оборотах замеряют давление масла?"]);
     else prompts.push(["Причины отклонения", "Какие причины отклонения указаны в руководстве?"]);
@@ -726,7 +694,7 @@ function renderChatActions(diagnosis, engine) {
     const chip = element("button", "", label);
     chip.type = "button";
     chip.disabled = Boolean(view.busy);
-    chip.addEventListener("click", () => sendSuggestedQuestion(question));
+    chip.addEventListener("click", () => sendQuestion(question, false, interfaceText(question)));
     suggestions.append(chip);
   }
   const replies = ui["reply-options"];
@@ -884,10 +852,8 @@ function operationEvidence(draft, admission) {
     full.append(element("summary", "", "Выдержки и условия"));
     for (const condition of row.conditions || []) full.append(element("p", "muted", condition.text));
     for (const item of evidence) {
-      const quote = element("blockquote", "evidence-quote", item.text);
-      quote.translate = false;
-      quote.lang = "ru";
-      full.append(element("p", "ref-title", item.source.manual + " · PDF " + item.source.pdf_page), quote);
+      full.append(element("p", "ref-title", item.source.manual + " · PDF " + item.source.pdf_page),
+                  element("blockquote", "evidence-quote", item.text));
     }
     card.append(full);
     group.append(card);
@@ -921,17 +887,7 @@ function editableDraft(draft, pending, partsExpanded) {
   priority.addEventListener("change", showPriority);
   showPriority();
   const work = element("section", "draft-work");
-  const operationField = field("operations", "Работы", operations);
-  work.append(operationField, operationEvidence(draft, admission));
-  if (chatLanguage() !== "ru") {
-    const translatedOperations = draft.operations.map(interfaceText);
-    if (translatedOperations.some((line, index) => line !== draft.operations[index])) {
-      const reading = element("ul", "draft-reading");
-      for (const line of translatedOperations) reading.append(element("li", "", line));
-      operations.hidden = true;
-      operationField.append(reading);
-    }
-  }
+  work.append(field("operations", "Работы", operations), operationEvidence(draft, admission));
   const extras = element("details", "draft-parts");
   extras.open = partsExpanded || edits.spare_parts.some((item) => item.trim());
   extras.append(element("summary", "", "Запчасти"), field("parts", "По одной на строку", parts));
@@ -1788,7 +1744,7 @@ async function action(kind, path, method, payload = {}) {
   if (kind === "diagnose") view.diagnosisError = null;
   if (kind === "chat") {
     view.chatError = null;
-    view.pendingQuestion = payload.display_message || payload.message;
+    view.pendingQuestion = payload.message;
   }
   if (["prepare", "save", "submit", "reconcile"].includes(kind)) view.ticketError = null;
   render();
@@ -1796,7 +1752,9 @@ async function action(kind, path, method, payload = {}) {
     ui.diagnostic.scrollIntoView({ block: "start" });
   }
   try {
-    const state = await api(path, method, { ...view.pair, ...payload });
+    const language = uiLanguage();
+    const locale = kind === "chat" && language !== "ru" ? { language } : {};
+    const state = await api(path, method, { ...view.pair, ...locale, ...payload });
     if (updatesDraft && view.pendingEdits.get(key) === pending) view.pendingEdits.delete(key);
     if (generation !== view.generation) return null;
     view.state = state;
@@ -1847,33 +1805,20 @@ async function action(kind, path, method, payload = {}) {
   }
 }
 
-function sendSuggestedQuestion(question) {
-  return sendQuestion(question, false, "ru", interfaceText(question));
-}
-
-async function sendQuestion(value, fromComposer = false, inputLanguage = "ru", display = null) {
+async function sendQuestion(value, fromComposer = false, displayed = null) {
   const message = value.trim();
   if (!message || !view.state?.diagnosis || view.busy || (fromComposer && dictation.active)) return;
   if (fromComposer) dictation.reset();
   const generation = view.generation;
   const hadDraft = Boolean(view.state?.draft);
-  const language = chatLanguage();
-  const generated = fromComposer && view.composed?.display === message ? view.composed.canonical : null;
-  const manual = fromComposer && !generated;
-  const displayMessage = generated ? message : display;
   const result = await action("chat", "chat", "POST", {
-    message: generated || message,
-    ...(language !== "ru" && { language }),
-    ...(manual ? { match_input_language: true } : { input_language: inputLanguage }),
-    ...(displayMessage && displayMessage !== (generated || message) && { display_message: displayMessage }),
+    message,
+    ...(fromComposer ? { match_input_language: true } : uiLanguage() !== "ru" ? { input_language: "ru" } : {}),
+    ...(displayed && displayed !== message ? { display_message: displayed } : {}),
   });
   if (generation !== view.generation) return;
   if (!result) {
-    if (!ui.question.value.trim()) {
-      const retry = displayMessage || message;
-      if (displayMessage && !manual) view.composed = { display: retry, canonical: generated || message };
-      ui.question.value = retry;
-    }
+    if (!ui.question.value.trim()) ui.question.value = message;
     ui.question.dispatchEvent(new Event("input"));
     if (fromComposer) ui.question.focus({ preventScroll: true });
     return;
@@ -1965,35 +1910,11 @@ ui["ask-question"].addEventListener("click", () => {
   ui.question.scrollIntoView({ block: "center" });
 });
 ui.selection.addEventListener("submit", (event) => event.preventDefault());
-async function applyLanguage(code) {
-  try {
-    if (!await setUiLanguage(code)) return;
-    ui["chat-language"].value = code;
-    setNumberFormats(code);
-    render();
-  } catch (error) {
-    ui["chat-language"].value = chatLanguage();
-    announce(error.message);
-  }
-}
-
-ui["chat-language"].replaceChildren(...Object.entries(languages).map(([code, name]) => {
-  const choice = option(code, name);
-  choice.lang = code;
-  choice.translate = false;
-  return choice;
-}));
-ui["chat-language"].addEventListener("change", () => applyLanguage(ui["chat-language"].value));
-applyLanguage(savedLanguage());
-ui["chat-language-example"].addEventListener("click", () => {
-  if (languageExample()) sendQuestion(languageExample().question, false, chatLanguage());
-});
 ui.composer.addEventListener("submit", (event) => {
   event.preventDefault();
   sendQuestion(ui.question.value, true);
 });
 ui.question.addEventListener("input", () => {
-  if (view.composed?.display !== ui.question.value.trim()) view.composed = null;
   ui.question.style.height = "auto";
   ui.question.style.height = ui.question.scrollHeight + "px";
   setChatSubmit();
@@ -2021,8 +1942,53 @@ document.addEventListener("click", (event) => {
   rememberSourceOrigin(event, { key, edits, consents: view.consents });
 });
 window.addEventListener("pageshow", (event) => {
-  if (event.persisted) requestAnimationFrame(restoreSourceOrigin);
+  if (event.persisted) {
+    changeLanguage(savedLanguage());
+    requestAnimationFrame(restoreSourceOrigin);
+  }
 });
 window.addEventListener("pagehide", () => dictation.reset());
+function languageExample(code) {
+  const diagnosis = view.state?.diagnosis;
+  if (diagnosis?.status !== "anomaly" || diagnosis.signal_quality === "bad") return null;
+  return view.catalog?.languages?.find((language) => language.code === code)?.examples.find(
+    (example) => example.engine_model === vehiclePicker.selected?.engine_model && example.fault_code === diagnosis.anomaly_type,
+  )?.question;
+}
+
+function updateLanguageExample() {
+  const example = ui["chat-language-example"];
+  example.hidden = !languageExample(uiLanguage());
+  example.disabled = Boolean(view.busy);
+}
+
+let languageRequest = 0;
+async function changeLanguage(code) {
+  const request = ++languageRequest;
+  try {
+    if (!await setUiLanguage(code) || request !== languageRequest) return;
+    ui["chat-language"].value = code;
+    ui.question.lang = code;
+    updateLanguageExample();
+  } catch (error) {
+    if (request !== languageRequest) return;
+    ui["chat-language"].value = uiLanguage();
+    announce(error.message);
+  }
+}
+
+for (const [code, name] of Object.entries(languages)) {
+  if (code === "ru") continue;
+  const choice = option(code, name);
+  choice.setAttribute("translate", "no");
+  ui["chat-language"].append(choice);
+}
+ui["chat-language"].addEventListener("change", () => changeLanguage(ui["chat-language"].value));
+ui["chat-language-example"].addEventListener("click", () => {
+  const russian = languageExample("ru");
+  if (russian) sendQuestion(russian, false, languageExample(uiLanguage()));
+});
+changeLanguage(savedLanguage());
+
 updateLayout();
 loadCatalog();
