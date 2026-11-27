@@ -244,7 +244,29 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
 .check-card .check-instructions li { white-space: pre-wrap; }
 .check-card > .button { margin-top: .65rem; }
 .composer { display: grid; gap: .25rem; padding: .5rem var(--section-padding) .85rem; }
-.composer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: .55rem; }
+.composer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: start; gap: .55rem; }
+.composer-row .dictation-button { width: 45px; padding: 0; }
+.dictation-button[data-active="true"]:not(:disabled) {
+  color: var(--danger); border-color: currentColor; background: #fcf2f3;
+}
+.dictation-icon {
+  position: relative; width: 19px; height: 19px;
+  background: linear-gradient(currentColor, currentColor) bottom center / 2px 5px no-repeat;
+}
+.dictation-icon::before, .dictation-icon::after { content: ""; position: absolute; }
+.dictation-icon::before {
+  inset: 0 6px 7px; border: 2px solid currentColor; border-radius: 5px;
+}
+.dictation-icon::after {
+  inset: 7px 3px 3px; border: 2px solid currentColor; border-top: 0; border-radius: 0 0 8px 8px;
+}
+.dictation-button[data-active="true"] .dictation-icon {
+  width: 12px; height: 12px; border-radius: 2px; background: currentColor;
+}
+.dictation-button[data-active="true"] .dictation-icon::before,
+.dictation-button[data-active="true"] .dictation-icon::after { display: none; }
+.dictation-status { color: var(--muted); font-size: .875rem; }
+.dictation-status:not(:empty) { margin-top: .35rem; }
 #question { max-height: 12rem; resize: none; }
 #chat-error { margin: .65rem var(--section-padding) 0; }
 .suggestions { display: flex; flex-wrap: wrap; gap: .18rem .4rem; }

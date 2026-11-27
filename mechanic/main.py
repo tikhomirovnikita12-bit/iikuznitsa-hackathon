@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +18,7 @@ from pydantic import ValidationError
 from backend.admission import evaluate_admission, diagnosis_revision
 from backend.mechanic import Mechanic as EvidenceMechanic, conflict_case
 
-from . import demo_agent, generator_check, sources
+from . import demo_agent, generator_check, sources, speech
 from agent import case_context
 from agent.dialog import incompatible_fault
 from .case_agent import CaseAgent
@@ -186,6 +187,24 @@ def index():
 @app.get("/health", include_in_schema=False)
 def health():
     return {"status": "ok", "service": "mechanic"}
+
+
+@app.post("/api/dictation")
+async def dictate(request: Request):
+    if request.headers.get("content-type") != "application/octet-stream":
+        raise ApiError(415, "unsupported_audio_format", "Ожидается монофоническая запись PCM 16 кГц.")
+    audio = bytearray()
+    async for chunk in request.stream():
+        if len(audio) + len(chunk) > speech.MAX_AUDIO_BYTES:
+            raise ApiError(413, "recording_too_long", "Продиктуйте вопрос за 30 секунд или быстрее.")
+        audio.extend(chunk)
+    if not audio or len(audio) % 2:
+        raise ApiError(422, "invalid_audio", "Не удалось прочитать запись микрофона. Попробуйте ещё раз.")
+    try:
+        transcript = await run_in_threadpool(speech.transcribe, bytes(audio))
+    except speech.SpeechUnavailable as error:
+        raise ApiError(503, "dictation_unavailable", str(error)) from error
+    return {"transcript": transcript}
 
 
 @app.get("/api/catalog")
