@@ -21,6 +21,7 @@ from .upstream import Problem, post
 class Catalog:
     def __init__(self, path: Path):
         data = json.loads(path.read_text(encoding="utf-8"))
+        self.fuels = {item["vehicle_id"]: item.get("fuel", "") for item in data["vehicles"]}
         self.vehicles = {}
         self.sessions = {}
         for item in data["vehicles"]:

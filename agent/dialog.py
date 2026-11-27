@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
+from . import case_context
 from .backend import post
 from .tools.diagnosis import describe, diagnose
 from .tools import fluid_check, oil_pressure
@@ -70,9 +71,14 @@ class Ollama:
     def ask(self, prompt, format_, trace):
         model = os.getenv("AGENT_MODEL") or os.getenv("OLLAMA_MODEL") or "gemma2:2b"
         start = time.monotonic()
-        result = post((os.getenv("OLLAMA_HOST_URL") or os.getenv("OLLAMA_URL") or "http://127.0.0.1:11434").rstrip("/") + "/api/chat",
-                      dict(model=model, stream=False, format=format_, options={"temperature": 0},
-                           messages=[dict(role="user", content=prompt)]), timeout=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180")))
+        try:
+            result = post((os.getenv("OLLAMA_HOST_URL") or os.getenv("OLLAMA_URL") or "http://127.0.0.1:11434").rstrip("/") + "/api/chat",
+                          dict(model=model, stream=False, format=format_, options={"temperature": 0},
+                               messages=[dict(role="user", content=prompt)]), timeout=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180")))
+        except (OSError, ValueError):
+            trace["calls"].append(dict(model=model, seconds=time.monotonic()-start, status="error",
+                                       input_tokens=None, output_tokens=None))
+            raise
         trace["calls"].append(dict(model=result["model"], seconds=time.monotonic()-start,
                                    input_tokens=result.get("prompt_eval_count"),
                                    output_tokens=result.get("eval_count")))
@@ -101,9 +107,10 @@ class Agent:
                 raise ValueError("Ответ диагностики относится к другой машине или сессии")
             admission = self.admission(ml)
             reply["admission"] = admission
-            if ml["status"] == "check_failed" or incompatible_fault(ml):
+            if ml["status"] == "check_failed" or ml["signal_quality"] == "bad" or incompatible_fault(ml):
                 reason = admission["block_reason"]
-                reply.update(explanation=reason["message"], clarifying_question=reason["next_action"])
+                message = case_context.blocked_message(reason["message"], ml, ml["engine_model"])
+                reply.update(explanation=message, clarifying_question=reason["next_action"])
                 return reply
             wording = question.casefold().strip(" .!?")
             if wording in {"привет", "здравствуйте", "добрый день", "спасибо", "понятно"}:
@@ -143,10 +150,11 @@ class Agent:
                                   or (previous_pressure is not None and
                                       (values != previous_pressure or oil_pressure.BARE_NUMBER.fullmatch(question.strip())))):
                 return self.pressure_reply(reply, values, trace)
-            if self.conflict_reply(reply, question, trace):
+            topic = case_context.subject(question, [turn[0] for turn in history])
+            if self.conflict_reply(reply, topic, trace):
                 return reply
-            if OIL_NORM_QUESTION.match(wording):
-                hits = self.search(question, ml, trace)
+            if OIL_NORM_QUESTION.match(topic.casefold()):
+                hits = self.search(topic, ml, trace)
                 source = next((hit for hit in hits if hit.get("verified")
                                and hit["fragment_id"].endswith("-oil-pressure")), None)
                 if source:
@@ -162,6 +170,8 @@ class Agent:
                                     for item in sources],
                     )
                     return reply
+            if self.reviewed_case(reply, topic, trace):
+                return reply
             context = json.dumps([ml, [row[:4] for row in history], question], ensure_ascii=False)
             next_step = bool(re.fullmatch(
                 r"(?:(?:(?:сам )?(?:мне )?(?:скажи|подскажи|расскажи) )?"
@@ -405,6 +415,23 @@ class Agent:
             "Рекомендация — очная дефектовка по результатам измерений. Прямой запрет из руководства здесь не установлен; "
             "высокий приоритет сам по себе его не создаёт.")
         return reply
+
+    def reviewed_case(self, reply, topic, trace):
+        ml = reply["ml_observations"]
+        started = time.monotonic()
+        index = getattr(self.manuals, "searcher", None)
+        matched = case_context.reviewed(index, ml["engine_model"], topic) if index else None
+        if matched is None:
+            return False
+        reply.update(intent="search", explanation=f"Руководство для {ml['engine_model']}. Разделы относятся к разным условиям.")
+        for fragment, excerpt in matched:
+            reply["checks"].append(dict(text=excerpt, fragment_id=fragment))
+            reply["references"].append(self.manuals.reference(fragment, ml["engine_model"]))
+        if not matched:
+            reply["clarifying_question"] = "Уточните исполнение узла и операцию. Для сравнения нужны все указанные страницы."
+        trace["tools"].append(dict(name="search", seconds=time.monotonic() - started, query=topic,
+                                   pages=[(item["manual"], item["pdf_page"]) for item in reply["references"]]))
+        return True
 
     def select(self, reply, action, question, hits, trace, coolant=False, next_step=False, previous=None):
         # The provider selects original passages. Only server-owned text reaches the UI.

@@ -21,8 +21,8 @@ const vehiclePicker = { selected: null, matches: [], activeIndex: -1 };
 const plateLetters = { а: "a", в: "b", е: "e", к: "k", м: "m", н: "h", о: "o",
   р: "p", с: "c", т: "t", у: "y", х: "x" };
 const sectionNames = {
-  signs: "Наблюдения ML", causes: "Возможные причины · гипотезы", checks: "Проверки",
-  work: "Возможные работы", clarify: "Что уточнить", risk: "Риски · гипотезы",
+  signs: "Наблюдения ML", causes: "Возможные причины · гипотезы", checks: "Проверки по руководству",
+  work: "Возможные работы", clarify: "Ограничения и уточнения", risk: "Риски · гипотезы",
 };
 const urgencyNames = { low: "Низкий", medium: "Средний", high: "Высокий" };
 const urgencyDescriptions = { high: "Дефектовка до выпуска в рейс", medium: "Ближайшее ТО с работой под наблюдением", low: "Проверка узла на следующей проверке" };

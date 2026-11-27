@@ -18,6 +18,8 @@ from backend.admission import evaluate_admission, diagnosis_revision
 from backend.mechanic import Mechanic as EvidenceMechanic
 
 from . import demo_agent, sources
+from agent import case_context
+from agent.dialog import incompatible_fault
 from .case_agent import CaseAgent
 from agent.dialog import history_entry
 from .config import CORPUS, DEFAULT_ML, DEFAULT_TOIR, MATERIALS, MOCKS, ROOT, WEB, endpoint
@@ -542,6 +544,21 @@ def response_to_chat(vehicle, diagnosis, state, question):
             "Уточните узел и результаты проверки перед дефектовкой."
         )
         return Reply(summary=message), None, "fixture", [], None
+    data = dict(diagnosis.model_dump(), fuel=vehicle["fuel"], engine_model=vehicle["engine_model"])
+    if incompatible_fault(data) or data["signal_quality"] == "bad" or diagnosis.status == "check_failed":
+        reason = (decision.get("block_reason") or {}).get("message", "")
+        message = case_context.blocked_message(reason, data, vehicle["engine_model"])
+        return Reply(summary=message), None, "fixture", [], None
+    if retrieval:
+        topic = case_context.subject(question, [m["text"] for m in state["messages"] if m["role"] == "user"])
+        index = team.workflow.mechanic.search if team else retrieval.index
+        matched = case_context.reviewed(index, vehicle["engine_model"], topic)
+        if matched is not None:
+            if not matched:
+                return Reply(summary="Уточните исполнение узла и операцию. Для сравнения нужны обе страницы."), None, "team", [], None
+            sections = [Section(kind="checks", items=[excerpt], references=[Reference.model_validate(index.resolve_source(fid, vehicle["engine_model"]))])
+                        for fid, excerpt in matched]
+            return Reply(summary=diagnosis.description, sections=sections), None, "team", [], None
     if decision["can_prepare"] and demo_agent.FIRST.search(question.casefold()):
         operations = decision["approved_operations"]
         refs = [Reference(**ref) for operation in operations for ref in operation["references"]]
@@ -614,7 +631,8 @@ def prepare_draft(pair: Pair):
         if available:
             reply, draft, origin, calls, entry = response_to_chat(vehicle, diagnosis, snapshot, "Подготовь заявку")
         else:
-            reason = snapshot.get("draft_unavailable_reason") or MISSING_DRAFT_EVIDENCE
+            reason = case_context.blocked_message(snapshot.get("draft_unavailable_reason") or MISSING_DRAFT_EVIDENCE,
+                                                  diagnosis.model_dump(), vehicle["engine_model"])
             reply = Reply(summary="Черновик пока не подготовлен.",
                           sections=[Section(kind="clarify", items=[reason])])
             draft, origin, calls, entry = None, "team", [], None
@@ -701,7 +719,6 @@ def chat(request: ChatRequest):
         ])
         if agent_entry is not None:
             state["agent_history"] = [*state["agent_history"][-5:], agent_entry]
-        state["draft_unavailable_reason"] = None
         state["messages"] = chat_history(state)
         record_call(state, audit(tool, started))
         for call in calls:

@@ -174,14 +174,17 @@ def test_case_agent_preserves_measurements_without_inventing_draft_procedure(sta
 
     first = ask("Можно ли перегнать машину?")
     assert first["messages"][-1]["origin"] == "team"
+    assert first["messages"][-1]["analysis"]["references"][0]["pdf_page"] == 19
     assert 19 in {ref["pdf_page"] for section in first["messages"][-1]["sections"] for ref in section["references"]}
     measurement = ask("350")
     assert any("350" in text for section in measurement["messages"][-1]["sections"] for text in section["items"])
+    assert "350" in measurement["messages"][-1]["analysis"]["clarifying_question"]
     assert state(client)["messages"] == measurement["messages"]
     assert "agent_history" not in state(client)
     ask("да, кПа")
     result = ask("Двигатель прогрет, 2100 об/мин, без допуска после длительной эксплуатации")
     assert any("350 кПа — ниже" in text for section in result["messages"][-1]["sections"] for text in section["items"])
+    assert "350 кПа — ниже" in result["messages"][-1]["analysis"]["checks"][0]["text"]
 
     result = ask("Подготовь заявку на дефектовку")
     assert result["draft"] is None
