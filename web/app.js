@@ -4,12 +4,12 @@ const byId = (id) => document.getElementById(id);
 const ui = Object.fromEntries([
   "mode", "catalog-size", "vehicle", "vehicle-facts", "session",
   "vehicle-popup", "vehicle-options", "vehicle-empty",
-  "context", "workarea", "context-summary", "context-title", "context-vehicle", "context-session",
+  "workspace", "context", "workarea", "context-summary", "context-title", "context-vehicle", "context-session",
   "edit-context", "collapse-context", "journal-panel", "ask-question",
-  "selection", "selection-error", "retry-catalog", "diagnostic", "result",
-  "chat-context", "messages", "chat-error", "composer", "question", "send", "suggestions",
+  "selection", "selection-hint", "selection-error", "retry-catalog", "diagnostic", "result",
+  "chat", "chat-context", "messages", "chat-error", "composer", "question", "send", "suggestions",
   "pressure-helper", "pressure-form", "pressure-fields",
-  "ticket-panel", "journal", "announcement", "fleet-toggle", "fleet-panel", "vehicle-history",
+  "ticket-panel", "journal", "announcement", "fleet-toggle", "fleet-panel", "vehicle-history", "history-content",
   "recording-help", "quick-replies", "reply-options",
 ].map((id) => [id, byId(id)]));
 
@@ -46,6 +46,9 @@ const outcomes = {
 };
 const date = new Intl.DateTimeFormat("ru-RU", {
   dateStyle: "short", timeStyle: "short", timeZone: "Europe/Moscow",
+});
+const sessionDate = new Intl.DateTimeFormat("ru-RU", {
+  day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Moscow",
 });
 const score = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 3 });
 
@@ -127,7 +130,6 @@ function setControls() {
   const editingVehicle = ui.vehicle.value !== selectedVehicleId();
   ui.session.disabled = !vehiclePicker.selected || editingVehicle;
   ui.question.disabled = !view.state?.diagnosis || Boolean(view.busy);
-  ui["ask-question"].hidden = !view.state?.diagnosis;
   ui["ask-question"].disabled = ui.question.disabled;
   ui["pressure-fields"].disabled = ui.question.disabled;
   setChatSubmit();
@@ -138,9 +140,9 @@ function setChatSubmit() {
   ui.send.disabled = ui.question.disabled || !ui.question.value.trim();
 }
 
-function formatDate(value) {
+function formatDate(value, formatter = date) {
   const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : date.format(parsed);
+  return Number.isNaN(parsed.getTime()) ? value : formatter.format(parsed);
 }
 
 const manualPageTopics = {
@@ -218,17 +220,27 @@ function renderDiagnosis() {
     if (!diagnosis) return;
     result.append(element("p", "section-label", "Последний сохранённый результат"));
   } else if (!diagnosis) {
-    showHeading(result, view.pair ? "Подготавливаем отчёт" : "Выберите машину и запись");
-    if (view.pair) result.append(element("p", "context-key", view.pair.vehicle_id + " / " + view.pair.session_id));
+    if (view.pair) {
+      showHeading(result, "Подготавливаем отчёт");
+      result.append(element("p", "context-key", view.pair.vehicle_id + " / " + view.pair.session_id));
+    } else {
+      showHeading(result, vehiclePicker.selected ? "Выберите запись диагностики" : "Выберите машину и запись");
+      result.append(element("p", "empty-note", vehiclePicker.selected
+        ? "Отчёт по записи откроется автоматически."
+        : "Найдите машину по госномеру или двигателю. Здесь появится отчёт по выбранной записи."));
+    }
     return;
   }
 
   const vehicle = vehiclePicker.selected;
   const session = vehicle?.sessions.find((item) => item.session_id === diagnosis.session_id);
   const context = element("div", "result-context");
-  context.append(element("strong", "", diagnosis.vehicle_id),
-    element("span", "", vehicle?.engine_model || ""));
-  if (session) context.append(element("span", "context-key", formatDate(session.checked_at) + " · МСК"));
+  context.append(element("span", "result-vehicle", diagnosis.vehicle_id));
+  if (session) {
+    const checkedAt = element("time", "", formatDate(session.checked_at) + " МСК");
+    checkedAt.dateTime = session.checked_at;
+    context.append(checkedAt);
+  }
   if (!view.diagnosisError) result.replaceChildren(context);
   else result.append(context);
   const heading = element(view.diagnosisError ? "h3" : "h2", "", outcomes[diagnosis.status]);
@@ -239,37 +251,21 @@ function renderDiagnosis() {
       diagnosis.anomaly_title || view.catalog?.fault_types?.[diagnosis.anomaly_type] || "Возможное отклонение"));
   }
   result.append(element("p", "diagnosis-description", diagnosis.description));
-  if (view.state.admission?.block_reason && view.state.admission.block_reason.code !== "draft_required" && diagnosis.status !== "normal"
-      && !["created", "sending", "unknown"].includes(view.state.ticket?.status)) result.append(admissionNotice(view.state.admission));
-
-  // Show the risk and uncertainty before the next action, including on a phone.
+  const admission = view.state.admission;
+  const blocked = admission?.block_reason;
+  if (blocked && !admission.can_prepare && diagnosis.status !== "normal" && !view.state.draft) {
+    result.append(admissionNotice(admission));
+  }
   const brief = view.state.brief;
-  if (diagnosis.status === "anomaly") {
-    const risk = element("div", "risk-line");
-    const [label, theme] = riskLabels[brief?.risk] || riskLabels.unassessed;
-    risk.dataset.risk = brief?.risk || "unassessed";
-    risk.append(element("span", "hypothesis-label", "Гипотеза о риске"), element("span", "flag " + theme, label),
-      element("p", "", brief?.rationale || "Нужны симптомы и контрольная проверка для оценки риска."));
-    result.append(risk);
+  const recordingNotes = [];
+  if (diagnosis.signal_quality === "warning") recordingNotes.push("Запись с помехами.");
+  if (diagnosis.status !== "check_failed" && blocked?.code !== "confidence_too_low"
+      && diagnosis.confidence != null && diagnosis.confidence < view.catalog.confidence_threshold) {
+    recordingNotes.push("Низкая уверенность ML (" + score.format(diagnosis.confidence) + ").");
   }
-  const metrics = element("dl", "metrics");
-  for (const [label, value] of [
-    ["Уверенность ML · 0–1", diagnosis.confidence],
-    ["Качество записи", qualityNames[diagnosis.signal_quality]],
-  ]) {
-    const cell = element("div", "metric");
-    cell.append(element("dt", "", label), element("dd", "",
-      value == null ? "Нет значения" : typeof value === "number" ? score.format(value) : value));
-    metrics.append(cell);
-  }
-  result.append(metrics);
-  const threshold = view.catalog.confidence_threshold;
-  if (diagnosis.status !== "check_failed" && diagnosis.confidence != null && diagnosis.confidence < threshold) {
-    result.append(alert("Низкая уверенность (" + score.format(diagnosis.confidence)
-      + "). Подтвердите результат контрольной проверкой."));
-  }
-  if (diagnosis.status !== "check_failed" && diagnosis.signal_quality === "warning") {
-    result.append(alert("Запись с помехами. Повторите запись для проверки результата."));
+  if (recordingNotes.length) result.append(alert(recordingNotes.join(" ") + " Сверьте результат повторной проверкой.", "recording-note"));
+  if (diagnosis.status === "anomaly" && brief?.risk === "high") {
+    result.append(alert("Возможен высокий риск. " + brief.rationale));
   }
   if (view.state.brief_error) result.append(alert(view.state.brief_error, "error"));
 
@@ -286,13 +282,11 @@ function renderDiagnosis() {
   next.append(element("p", "action", diagnosis.status === "anomaly"
     ? brief?.first_check || defaultCheck.anomaly : defaultCheck[diagnosis.status]));
   if (diagnosis.status === "anomaly" && brief?.references?.length) next.append(references(brief.references));
-  if (diagnosis.status === "normal") next.append(element("p", "muted",
-    "Результат относится к выбранной записи и не заменяет штатный осмотр машины."));
   result.append(next);
 
   const controls = element("div", "diagnosis-actions");
   if (diagnosis.status === "anomaly") {
-    const check = button("Посмотреть проверки", "primary");
+    const check = button("Проверки в чате", "quiet");
     check.id = "diagnosis-checks";
     check.disabled = Boolean(view.busy);
     check.addEventListener("click", () => {
@@ -300,9 +294,7 @@ function renderDiagnosis() {
       if (cards.length) cards[cards.length - 1].closest(".bubble").scrollIntoView({ block: "start" });
       else sendQuestion("Что проверить сначала?");
     });
-    next.insertBefore(check, next.querySelector(".refs"));
-
-    if (brief?.origin === "fixture") result.append(element("p", "context-key", "Тестовая рекомендация"));
+    controls.append(check);
   } else {
     const select = button(diagnosis.status === "check_failed" ? "Выбрать новую запись" : "Выбрать следующую запись", "primary");
     select.disabled = Boolean(view.busy);
@@ -317,12 +309,12 @@ function renderDiagnosis() {
   }
   if (diagnosis.status === "anomaly" && (view.state.draft || (!view.diagnosisError && view.state.draft_available))) {
     const draftButton = button(view.state.draft ? "Открыть заявку"
-      : view.busy === "prepare" ? "Готовим черновик…" : "Подготовить заявку");
+      : view.busy === "prepare" ? "Готовим черновик…" : "Подготовить заявку", "primary");
     draftButton.id = "diagnosis-draft";
     draftButton.setAttribute("aria-controls", "ticket-panel");
     draftButton.disabled = Boolean(view.busy);
     draftButton.addEventListener("click", view.state.draft ? revealTicket : prepareDraft);
-    controls.append(draftButton);
+    controls.prepend(draftButton);
     if (!view.state.draft && view.ticketError) {
       const error = alert(view.ticketError, "error");
       error.setAttribute("role", "alert");
@@ -337,22 +329,15 @@ function renderDiagnosis() {
     result.append(notice);
   }
 
-  if (brief?.analysis?.possible_causes?.length) {
-    const causes = element("details", "answer-block");
-    causes.append(element("summary", "", "Возможные причины"));
-    for (const item of brief.analysis.possible_causes) {
-      causes.append(element("p", "", item.text));
-      causes.append(references(brief.analysis.references.filter(ref => ref.fragment_id === item.fragment_id)));
-    }
-    result.append(causes);
-  }
   const details = element("details", "diagnosis-details");
   details.open = wasExpanded;
-  details.append(element("summary", "", "Подробности диагностики"));
+  details.append(element("summary", "", "Технические данные"));
   const facts = element("dl", "technical-facts");
   for (const [label, value] of [
     ["Сессия", diagnosis.session_id], ["Код отклонения ML", diagnosis.anomaly_type || "Нет"],
     ["Балл отклонения · 0–1", diagnosis.anomaly_score == null ? "Нет значения" : score.format(diagnosis.anomaly_score)],
+    ["Уверенность ML · 0–1", diagnosis.confidence == null ? "Нет значения" : score.format(diagnosis.confidence)],
+    ["Качество записи", qualityNames[diagnosis.signal_quality]],
     ["Версия модели", diagnosis.model_version],
   ]) {
     const row = element("div");
@@ -360,6 +345,20 @@ function renderDiagnosis() {
     facts.append(row);
   }
   details.append(facts, element("p", "muted", "Балл отклонения и уверенность ML не являются вероятностью поломки."));
+  if (diagnosis.status === "anomaly") {
+    const [label, theme] = riskLabels[brief?.risk] || riskLabels.unassessed;
+    const risk = element("p", "risk-detail");
+    risk.append(element("strong", "flag " + theme, label),
+      document.createTextNode(". " + (brief?.rationale || "Уточните симптомы и результаты контрольной проверки.")));
+    details.append(risk);
+  }
+  if (brief?.analysis?.possible_causes?.length) {
+    const causes = brief.analysis.possible_causes.map((item) => ({
+      items: [item.text], references: brief.analysis.references.filter((ref) => ref.fragment_id === item.fragment_id),
+    }));
+    details.append(answerBlock("causes", causes));
+  }
+  if (brief?.origin === "fixture") details.append(element("p", "context-key", "Пояснение из тестового сценария"));
   result.append(details);
 }
 
@@ -419,26 +418,31 @@ function userMessage(text) {
 }
 
 function diagnosisMessage(message) {
-  const entry = element("article", "bubble diagnosis-message");
+  const entry = element("details", "bubble diagnosis-message");
   entry.dataset.status = message.status;
-  entry.append(element("p", "message-meta", "Результат диагностики"),
-    element("p", "answer-title", message.summary),
-    element("p", "", message.description),
+  entry.dataset.sourceContext = "";
+  const summary = element("summary");
+  summary.append(element("span", "", "Отчёт диагностики"),
+    element("span", "diagnosis-archive-status", message.summary));
+  const body = element("div", "diagnosis-archive");
+  body.append(element("p", "", message.description),
     element("p", "diagnosis-next-step", message.next_step));
-  if (message.origin === "fixture") entry.append(element("p", "context-key", "Тестовая рекомендация"));
-  if (message.references?.length) entry.append(references(message.references));
+  if (message.origin === "fixture") body.append(element("p", "context-key", "Тестовая рекомендация"));
+  if (message.references?.length) body.append(references(message.references));
+  entry.append(summary, body);
   return entry;
 }
 
 function renderChat() {
   const diagnosis = view.state?.diagnosis;
   const engine = vehiclePicker.selected?.engine_model;
-  ui["chat-context"].textContent = diagnosis
-    ? [engine, view.pair.vehicle_id + " / " + view.pair.session_id].filter(Boolean).join(" · ")
-    : "Доступен после получения результата";
+  const messages = view.state?.messages || [];
+  ui.chat.hidden = !diagnosis;
+  ui["chat-context"].textContent = diagnosis ? "Сессия " + view.pair.session_id : "";
+  ui["ask-question"].hidden = messages.length <= 2;
   const openDetails = [...ui.messages.querySelectorAll("details")].map((node) => node.open);
   const fragment = document.createDocumentFragment();
-  for (const message of view.state?.messages || []) {
+  for (const message of messages) {
     if (message.role === "diagnosis") {
       fragment.append(diagnosisMessage(message));
       continue;
@@ -480,7 +484,9 @@ function renderChatActions(diagnosis, engine) {
   const status = diagnosis?.status;
   const oil = status === "anomaly" && diagnosis.anomaly_type === "F02" && engine === "ЯМЗ-236М2";
   suggestions.hidden = !diagnosis;
-  ui["quick-replies"].hidden = status !== "anomaly";
+  const quickReplies = ui["quick-replies"];
+  quickReplies.hidden = status !== "anomaly";
+  if (quickReplies.hidden) quickReplies.open = false;
   const pressureHelper = ui["pressure-helper"];
   const showPressure = oil && view.catalog?.pressure_comparison;
   if (!showPressure && !pressureHelper.hidden) {
@@ -489,7 +495,7 @@ function renderChatActions(diagnosis, engine) {
   }
   pressureHelper.hidden = !showPressure;
   ui.question.placeholder = {
-    anomaly: "Укажите узел, симптом или показания",
+    anomaly: "Узел, симптом или замер",
     normal: "Например, стук на холодном пуске",
     check_failed: "Например, почему не прошла проверка?",
   }[status] || "Например, что проверить сначала?";
@@ -520,7 +526,6 @@ function renderChatActions(diagnosis, engine) {
     chip.addEventListener("click", () => sendQuestion(question));
     suggestions.append(chip);
   }
-  ui["quick-replies"].hidden = diagnosis.status !== "anomaly";
   const replies = ui["reply-options"];
   replies.replaceChildren();
   if (diagnosis.status !== "anomaly") return;
@@ -650,19 +655,18 @@ function admissionNotice(admission) {
 }
 
 function operationEvidence(draft, admission) {
-  const group = element("section", "operation-evidence");
-  group.append(element("h3", "", "Основания для работ"));
-  for (const row of admission?.approved_operations || []) {
-    if (!draft.operations.includes(row.operation)) continue;
-    const card = element("article", "check-card");
+  const group = element("div", "operation-evidence");
+  const operations = (admission?.approved_operations || []).filter((row) => draft.operations.includes(row.operation));
+  if (!operations.length) group.append(references(draft.references));
+  for (const row of operations) {
+    const card = element("div", "operation-source");
     card.dataset.sourceContext = "";
-    card.append(element("h3", "", row.operation));
-    const evidence = row.evidence || [{text:row.quote, source:{manual:row.manual, pdf_page:row.pdf_page}}];
-    card.append(element("blockquote", "evidence-quote", evidence[0].text.split("\n")[0]));
-    for (const condition of row.conditions || []) card.append(element("p", "muted", "Условие: " + condition.text));
+    if (operations.length > 1) card.append(element("p", "operation-name", row.operation));
+    const evidence = row.evidence || [{ text: row.quote, source: { manual: row.manual, pdf_page: row.pdf_page } }];
     card.append(references(evidence.map((item) => item.source)));
     const full = element("details", "evidence-full");
-    full.append(element("summary", "", "Проверенные выдержки полностью"));
+    full.append(element("summary", "", "Выдержки и условия"));
+    for (const condition of row.conditions || []) full.append(element("p", "muted", condition.text));
     for (const item of evidence) {
       full.append(element("p", "ref-title", item.source.manual + " · PDF " + item.source.pdf_page),
                   element("blockquote", "evidence-quote", item.text));
@@ -673,26 +677,40 @@ function operationEvidence(draft, admission) {
   return group;
 }
 
-function editableDraft(draft, pending) {
+function editableDraft(draft, pending, partsExpanded) {
   const key = draftKey();
   const version = pending?.version ?? draftVersion();
   const edits = pending?.edits ?? draft;
   const form = element("form", "ticket-form");
   const admission = view.state.admission;
-  const conclusion = textarea(edits.conclusion, 3, true);
-  const operations = textarea(edits.operations.join("\n"), 4, true);
+  const conclusion = textarea(edits.conclusion, 2, true);
+  const operations = textarea(edits.operations.join("\n"), 2, true);
   operations.readOnly = true;
   const parts = textarea(edits.spare_parts.join("\n"), 2);
   const priority = element("select");
   priority.required = true;
   priority.add(option("", "Выберите приоритет"));
-  for (const [value, label] of Object.entries(urgencyNames)) priority.add(option(value, label + " — " + urgencyDescriptions[value]));
+  for (const [value, label] of Object.entries(urgencyNames)) priority.add(option(value, label));
   priority.value = edits.urgency || "";
-  form.append(field("conclusion", "Заключение", conclusion), field("urgency", "Приоритет", priority),
-    field("operations", "Работы по проверенным основаниям", operations), field("parts", "Запчасти, по одной на строку", parts));
+  const priorityExplanation = element("p", "priority-explanation");
+  priorityExplanation.id = "priority-explanation";
+  priority.setAttribute("aria-describedby", priorityExplanation.id);
+  const showPriority = () => {
+    const suggested = urgencyNames[admission?.suggested_urgency];
+    priorityExplanation.textContent = [suggested && "Предложен: " + suggested, urgencyDescriptions[priority.value]]
+      .filter(Boolean).join(". ");
+  };
+  priority.addEventListener("change", showPriority);
+  showPriority();
+  const work = element("section", "draft-work");
+  work.append(field("operations", "Работы", operations), operationEvidence(draft, admission));
+  const extras = element("details", "draft-parts");
+  extras.open = partsExpanded || edits.spare_parts.some((item) => item.trim());
+  extras.append(element("summary", "", "Запчасти"), field("parts", "По одной на строку", parts));
   parts.placeholder = "Не определены";
-  form.append(element("p", "priority-explanation", "Предложен: " + (urgencyNames[admission?.suggested_urgency] || "Не определён")
-    + ". Приоритет задаёт срок дефектовки и сам по себе не является запретом на перегон."), operationEvidence(draft, admission));
+  form.append(field("conclusion", "Заключение", conclusion), work, field("urgency", "Приоритет", priority),
+    priorityExplanation, extras);
+  const confirmations = element("div", "draft-confirmations");
   const required = new Map();
   for (const operation of admission?.approved_operations || []) {
     if (!draft.operations.includes(operation.operation)) continue;
@@ -708,7 +726,7 @@ function editableDraft(draft, pending) {
     input.checked = (view.state.applicability_confirmations || []).includes(id);
     label.append(input, document.createTextNode("Подтверждаю условие: " + condition.text));
     conditionChecks.push({id, input});
-    form.append(label);
+    confirmations.append(label);
   }
   const warning = element("input");
   warning.type = "checkbox";
@@ -716,7 +734,7 @@ function editableDraft(draft, pending) {
   if (admission?.warning_ack_required) {
     const label = element("label", "priority-confirm warning-confirm");
     label.append(warning, document.createTextNode("Запись с помехами. Предупреждение прочитал, сознательно продолжаю."));
-    form.append(label);
+    confirmations.append(label);
   }
   const confirm = element("label", "priority-confirm");
   const checkbox = element("input");
@@ -736,7 +754,8 @@ function editableDraft(draft, pending) {
   submit.disabled = true;
   for (const control of [conclusion, operations, parts, priority, checkbox, warning, ...conditionChecks.map((row) => row.input)]) control.disabled = Boolean(view.busy);
   actions.append(status, submit, save);
-  form.append(confirm, actions);
+  confirmations.append(confirm);
+  form.append(confirmations, actions);
 
   function values(trim) {
     const lines = trim ? listItems : (text) => text.split("\n");
@@ -907,8 +926,10 @@ function renderTicket() {
   const draft = view.state?.draft;
   const ticket = view.state?.ticket;
   const previous = view.state?.previous_drafts ?? [];
+  const partsExpanded = panel.dataset.draftId === view.state?.draft_id && Boolean(panel.querySelector(".draft-parts")?.open);
   panel.hidden = !draft && !previous.length;
   if (!draft || !ticket) {
+    delete panel.dataset.draftId;
     panel.replaceChildren();
     if (view.ticketError && previous.length) panel.append(alert(view.ticketError, "error"));
     renderPreviousDrafts(panel, previous);
@@ -921,15 +942,19 @@ function renderTicket() {
   header.append(title);
   if (ticket.ticket_id) header.append(ticketReceipt(ticket.ticket_id));
   panel.replaceChildren(header);
-  if (view.state.admission?.block_reason && !["created", "sending", "unknown"].includes(ticket.status)) panel.append(admissionNotice(view.state.admission));
-  if (view.state.confirmed_urgency) panel.append(element("p", "", "Подтверждён механиком: " + urgencyNames[view.state.confirmed_urgency]));
-  if (view.state.draft_origin === "fixture") panel.append(element("p", "origin", "Тестовый черновик"));
+  panel.dataset.draftId = view.state.draft_id;
 
   const ids = element("div", "ticket-ids");
   for (const text of ["ТС " + draft.vehicle_id, "Сессия " + draft.session_id, "Код ML " + draft.anomaly_type]) {
     ids.append(element("span", "", text));
   }
   panel.append(ids);
+  const admission = view.state.admission;
+  const awaitingConfirmation = ["warning_ack_required", "applicability_required"].includes(admission?.block_reason?.code);
+  if (admission?.block_reason && !awaitingConfirmation && !["created", "sending", "unknown"].includes(ticket.status)) {
+    panel.append(admissionNotice(admission));
+  }
+  if (view.state.confirmed_urgency) panel.append(element("p", "context-key", "Подтверждённый приоритет — " + urgencyNames[view.state.confirmed_urgency]));
 
   if (view.ticketError) panel.append(alert(view.ticketError, "error"));
   if (ticket.status === "created") panel.append(alert("Заявка зарегистрирована в ТОиР.", "success"));
@@ -951,7 +976,7 @@ function renderTicket() {
   const conflict = Boolean(pending && (!sameDraftVersion(pending.version, draftVersion()) ||
     ["sending", "created", "unknown"].includes(ticket.status)));
   if (conflict) renderDraftConflict(panel, draft, pending);
-  else panel.append(canEdit ? editableDraft(draft, pending) : fieldSummary(draft));
+  else panel.append(canEdit ? editableDraft(draft, pending, partsExpanded) : fieldSummary(draft));
   if (!conflict && !view.needsTicketCheck && ticket.status === "unknown" && view.state.reconcile_available) {
     panel.append(reconcileForm());
   }
@@ -979,9 +1004,10 @@ function renderPreviousDrafts(panel, drafts) {
 
 function renderJournal() {
   const calls = view.state?.calls;
+  ui["journal-panel"].hidden = !calls?.length;
   if (!calls?.length) {
-    ui.journal.replaceChildren(element("p", "muted", view.pair ? "Вызовов пока нет."
-      : "Выберите сессию, чтобы увидеть её вызовы."));
+    ui["journal-panel"].open = false;
+    ui.journal.replaceChildren();
     return;
   }
   const list = element("ol", "calls");
@@ -1004,11 +1030,12 @@ function renderContext() {
   const collapsed = Boolean(collapsible && !view.editingContext);
   if (collapsed) {
     ui["context-vehicle"].textContent = view.pair.vehicle_id;
-    ui["context-session"].textContent = vehiclePicker.selected.engine_model;
+    ui["context-session"].textContent = [view.pair.session_id, vehiclePicker.selected?.engine_model].filter(Boolean).join(" · ");
   }
   ui["context-summary"].hidden = !collapsed;
   ui.selection.hidden = collapsed;
   ui["collapse-context"].hidden = !collapsible || collapsed;
+  ui["selection-hint"].hidden = !vehiclePicker.selected || Boolean(view.pair);
 }
 
 function updateLayout() {
@@ -1042,14 +1069,16 @@ async function loadHistory(vehicleId, force = false) {
 
 function renderHistory() {
   const panel = ui["vehicle-history"];
+  const content = ui["history-content"];
   const vehicleId = view.pair?.vehicle_id;
   const loaded = view.history?.vehicle_id === vehicleId;
   panel.hidden = !(view.state?.diagnosis && (loaded || view.historyError));
   if (panel.hidden) {
-    panel.replaceChildren();
+    panel.open = false;
+    content.replaceChildren();
     return;
   }
-  const nodes = [element("h3", "", "История проверок этой машины")];
+  const nodes = [];
   if (view.historyError) {
     nodes.push(alert("Историю не удалось загрузить. " + view.historyError.message, "error"));
   } else {
@@ -1062,14 +1091,17 @@ function renderHistory() {
     for (const step of sessions) {
       const row = element("li", step.session_id === view.pair.session_id ? "current" : "");
       const verdict = outcomes[step.status] + (step.anomaly_title ? ": " + step.anomaly_title : "");
-      row.append(element("strong", "", date.format(new Date(step.checked_at))),
-        element("span", "", verdict),
-        element("span", "muted", step.ticket.ticket_id || ticketStatusNames[step.ticket.status] || ""));
+      const checkedAt = element("time", "", formatDate(step.checked_at));
+      checkedAt.dateTime = step.checked_at;
+      row.append(checkedAt, element("span", "", verdict));
+      if (step.ticket.status !== "idle") {
+        row.append(element("span", "muted", step.ticket.ticket_id || ticketStatusNames[step.ticket.status] || ""));
+      }
       list.append(row);
     }
     nodes.push(list);
   }
-  panel.replaceChildren(...nodes);
+  content.replaceChildren(...nodes);
 }
 
 const fleetLabels = {
@@ -1118,8 +1150,11 @@ function fleetSparkline(history) {
 function renderFleet() {
   const panel = ui["fleet-panel"];
   panel.hidden = !view.fleetOpen;
+  ui.context.hidden = view.fleetOpen;
+  ui.workarea.hidden = view.fleetOpen;
+  ui.workspace.dataset.page = view.fleetOpen ? "fleet" : "diagnosis";
   ui["fleet-toggle"].setAttribute("aria-expanded", String(view.fleetOpen));
-  ui["fleet-toggle"].textContent = view.fleetOpen ? "Скрыть состояние парка" : "Состояние парка";
+  ui["fleet-toggle"].textContent = view.fleetOpen ? "К диагностике" : "Состояние парка";
   if (!view.fleetOpen) return;
 
   const heading = element("h2", "", "Состояние парка");
@@ -1152,13 +1187,25 @@ function renderFleet() {
       addChip(key, fleetLabels[key], view.fleet.summary[key] || 0, fleetTones[key]);
     }
     nodes.push(summary);
-    nodes.push(element("p", "muted",
-      "Категории — локальное правило стенда: " + Object.values(view.fleet.criteria).join("; ") + "."));
+    const criteria = element("details", "fleet-criteria");
+    criteria.open = Boolean(panel.querySelector(".fleet-criteria")?.open);
+    const rules = element("ul");
+    for (const description of Object.values(view.fleet.criteria)) rules.append(element("li", "", description));
+    criteria.append(element("summary", "", "Как определяются категории"), rules);
+    nodes.push(criteria);
 
     const list = element("div", "fleet-list");
     const rows = view.fleetFilter
       ? view.fleet.vehicles.filter((row) => row.category === view.fleetFilter)
       : view.fleet.vehicles;
+    if (!rows.length) list.append(element("p", "muted", "В этой категории пока нет машин."));
+    else {
+      const headings = element("div", "fleet-columns");
+      for (const title of ["Машина", "Состояние", "Последняя проверка", "Балл по записям", "Заявка"]) {
+        headings.append(element("span", "", title));
+      }
+      list.append(headings);
+    }
     for (const row of rows) {
       const item = element("article", "fleet-row");
       const name = element("div", "fleet-name");
@@ -1173,7 +1220,7 @@ function renderFleet() {
       const trend = row.history.map((step) => step.anomaly_score == null ? "—" : score.format(step.anomaly_score)).join(" → ");
       history.append(fleetSparkline(row.history), element("span", "muted", trend));
       const ticket = element("div", "fleet-ticket",
-        row.ticket.ticket_id || ticketStatusNames[row.ticket.status] || row.ticket.status);
+        row.ticket.status === "idle" ? "" : row.ticket.ticket_id || ticketStatusNames[row.ticket.status] || row.ticket.status);
       const open = button("К проверке");
       open.addEventListener("click", () => openFleetVehicle(row));
       item.append(name, category, latest, history, ticket, open);
@@ -1203,6 +1250,7 @@ async function loadFleet(force = false) {
 function toggleFleet() {
   view.fleetOpen = !view.fleetOpen;
   renderFleet();
+  window.scrollTo(0, 0);
   // Сводка обновляется при каждом открытии: статусы заявок могли измениться.
   if (view.fleetOpen) loadFleet(true);
 }
@@ -1339,7 +1387,7 @@ function showSessions(vehicle, selected = "") {
   ui["vehicle-facts"].replaceChildren(element("strong", "", vehicle.engine_model),
     document.createTextNode([vehicle.model || vehicle.make, vehicle.fuel].filter(Boolean).join(" · ")));
   for (const session of [...vehicle.sessions].reverse()) {
-    ui.session.add(option(session.session_id, formatDate(session.checked_at) + " МСК · " + session.session_id));
+    ui.session.add(option(session.session_id, session.session_id + " · " + formatDate(session.checked_at, sessionDate)));
   }
   ui.session.value = selected;
 }
@@ -1417,11 +1465,7 @@ async function loadCatalog() {
     const sessionId = params.get("session_id") || "";
     const vehicle = view.catalog.vehicles.find((item) => item.vehicle_id === vehicleId);
     ui["catalog-size"].textContent = view.catalog.vehicles.length + " ТС в каталоге";
-    ui.mode.textContent = ({
-      demo: "Синтетические данные · тестовый чат",
-      hybrid: "Синтетические данные · агент команды",
-      team: "Синтетические данные · стенд команды",
-    })[view.catalog.mode] || "Синтетические данные";
+    ui.mode.title = view.catalog.mode === "demo" ? "Тестовый чат" : "Агент команды";
     vehiclePicker.selected = vehicle || null;
     restoreVehicleInput();
     showSessions(vehicle, vehicle?.sessions.some((item) => item.session_id === sessionId) ? sessionId : "");
