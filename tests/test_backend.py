@@ -19,6 +19,7 @@ NORMAL = {"vehicle_id": "E549YT198", "session_id": "S-0010"}
 ANOMALY = {"vehicle_id": "E549YT198", "session_id": "S-0011"}
 CHAIN = {"vehicle_id": "Y815BM178", "session_id": "S-0152"}
 BAD_RECORDING = {"vehicle_id": "P456AT178", "session_id": "S-0003"}
+COOLANT = {"vehicle_id": "A427MA78", "session_id": "S-0032"}
 
 
 def relay(client, request):
@@ -361,6 +362,24 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(evidence["source"]["pdf_page"], 13)
         self.assertEqual(answer["evidence"][1]["source"]["pdf_page"], 49)
         self.assertIn("не менее 100 кПа", answer["answer"])
+
+    def test_f03_chat_explains_risk_norm_and_movement(self):
+        self.assertEqual(self.client.post("/api/diagnose", json=COOLANT).status_code, 200)
+        risk = self.client.post("/api/chat", json={**COOLANT, "question": "Почему опасно?"}).json()
+        self.assertIn("Высокий", risk["answer"])
+        self.assertEqual(risk["evidence"][0]["source"]["pdf_page"], 54)
+
+        norm = self.client.post("/api/chat", json={
+            **COOLANT, "question": "Какая норма температуры охлаждающей жидкости?",
+        }).json()
+        self.assertIn("75–100", norm["answer"])
+        self.assertEqual(norm["evidence"][0]["source"]["pdf_page"], 4)
+
+        movement = self.client.post("/api/chat", json={
+            **COOLANT, "question": "Можно ли ехать своим ходом?",
+        }).json()
+        self.assertIn("недостаточно", movement["answer"].lower())
+        self.assertTrue(movement["needs_clarification"])
 
     def test_chat_follows_topic_and_ignores_history_for_a_new_question(self):
         initial_question = "При каких условиях проверять давление масла?"

@@ -159,7 +159,18 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
 .flag.danger { color: var(--danger); }
 .flag.neutral { color: var(--muted); }
 .diagnosis-description { margin-top: .35rem; max-width: 74ch; color: var(--muted); }
+.verdict-meta { margin-top: .35rem; color: var(--muted); font-size: .87rem; font-variant-numeric: tabular-nums; }
 .risk-detail { margin-top: .62rem; }
+.risk-summary {
+  margin-top: .65rem; padding: .7rem .8rem; border: 1px solid var(--line);
+  border-inline-start: 3px solid var(--muted); border-radius: var(--radius); background: var(--surface);
+}
+.risk-summary[data-tone="good"] { border-inline-start-color: var(--good); }
+.risk-summary[data-tone="warn"] { border-inline-start-color: var(--warn); }
+.risk-summary[data-tone="danger"] { border-inline-start-color: var(--danger); }
+.risk-summary .flag { display: block; }
+.risk-summary p { max-width: 74ch; margin-top: .25rem; }
+.risk-note { color: var(--muted); font-size: .85rem; }
 .first-check {
   display: grid; gap: .22rem; margin-top: .85rem; padding-top: .7rem; border-top: 1px solid var(--line);
 }
@@ -216,6 +227,7 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
 .refs { display: grid; gap: .35rem; min-width: 0; }
 .ref-manual { display: grid; gap: .1rem; }
 .ref-title { color: var(--muted); font-size: .875rem; overflow-wrap: anywhere; }
+.ref-designation { color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; }
 .ref-pages { display: flex; flex-wrap: wrap; gap: .15rem .8rem; align-items: baseline; }
 .ref-unavailable { color: var(--muted); font-size: .875rem; }
 .ref {
@@ -316,6 +328,7 @@ textarea { display: block; resize: vertical; white-space: pre-wrap; }
 .vehicle-history { margin-inline: var(--section-padding); padding-bottom: .2rem; border-top: 1px solid var(--line); }
 #history-content { padding-bottom: .7rem; }
 .history-trend { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; }
+.trend-note { max-width: 74ch; margin: -.15rem 0 .55rem; color: var(--muted); font-size: .88rem; }
 .history-list { list-style: none; padding: 0; margin: 0; display: grid; gap: .3rem; }
 .history-list li { display: flex; flex-wrap: wrap; gap: .2rem .6rem; font-size: .88rem; }
 .history-list time { color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -392,6 +405,7 @@ button.fleet-chip:hover, button.fleet-chip[aria-pressed="true"] { background: va
 .source-header { background: var(--paper); border: 1px solid var(--line); border-radius: var(--panel-radius); padding: 1.1rem; }
 .source-position { color: var(--muted); font-size: .9rem; font-weight: 700; margin-bottom: .38rem; }
 .source-header h1 { font-size: clamp(1.3rem, 4vw, 1.9rem); overflow-wrap: anywhere; }
+.source-designation { margin: .25rem 0; color: var(--accent); font-weight: 650; overflow-wrap: anywhere; }
 .source-filename { margin: .3rem 0; color: var(--muted); overflow-wrap: anywhere; }
 .source-links { display: flex; gap: .55rem; flex-wrap: wrap; margin-top: .7rem; }
 .source-context { display: grid; gap: .4rem; margin-top: .85rem; padding: .8rem; background: var(--surface); border-inline-start: 3px solid var(--accent); overflow-wrap: anywhere; }
@@ -431,7 +445,7 @@ button.fleet-chip:hover, button.fleet-chip[aria-pressed="true"] { background: va
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 
 .admission-notice { display: grid; gap: .3rem; margin-top: .65rem; }
-.admission-notice > .button { justify-self: start; }
+.admission-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .25rem; }
 .operation-evidence { display: grid; gap: .55rem; margin-top: .35rem; }
 .operation-evidence .ref-manual { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: .65rem; }
 .operation-name { font-weight: 650; }

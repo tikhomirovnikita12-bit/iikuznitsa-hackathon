@@ -122,11 +122,19 @@ class CaseAgent:
             manual = BY_NAME[item["manual"]]
             item["url"] = f"/sources/{manual.slug}/{item['pdf_page']}"
         sections = [Section(kind="signs", items=[diagnosis.description])]
-        for field, kind in (("possible_causes", "causes"), ("risk", "risk"), ("checks", "checks")):
+        for field, kind in (("possible_causes", "causes"), ("risk", "risk"),
+                            ("checks", "checks"), ("repair_actions", "work")):
+            items = result.get(field, [])
+            if not items:
+                continue
             prefix = "Гипотеза: " if kind in {"causes", "risk"} else ""
-            for item in result[field]:
-                sections.append(Section(kind=kind, items=[prefix + item["text"]],
-                                        references=[references[item["fragment_id"]]]))
+            refs = []
+            for item in items:
+                ref = references.get(item["fragment_id"])
+                if ref is not None and ref not in refs:
+                    refs.append(ref)
+            sections.append(Section(kind=kind, items=[prefix + item["text"] for item in items],
+                                    references=refs))
         if result.get("movement_limitations"):
             sections.append(Section(kind="clarify", items=[result["movement_limitations"]]))
         if question_to_clarify := result["clarifying_question"]:

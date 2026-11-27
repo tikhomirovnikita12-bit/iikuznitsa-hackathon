@@ -17,6 +17,7 @@ OIL = {"vehicle_id": "E549YT198", "session_id": "S-0011"}
 CHAIN = {"vehicle_id": "Y815BM178", "session_id": "S-0152"}
 NORMAL = {"vehicle_id": "E549YT198", "session_id": "S-0010"}
 FAILED = {"vehicle_id": "P456AT178", "session_id": "S-0003"}
+COOLANT = {"vehicle_id": "A427MA78", "session_id": "S-0032"}
 
 
 @pytest.fixture
@@ -368,3 +369,39 @@ def test_injected_instruction_in_diagnosis_does_not_create_draft(stand):
     assert reply["admission"]["block_reason"]["code"] == "procedure_unavailable"
     assert "проверенная применимая процедура" in reply["messages"][-1]["summary"]
     assert not calls
+
+
+def test_f03_fixture_explains_risk_and_checks_without_unlocking_draft(stand, monkeypatch):
+    client, calls = stand
+    monkeypatch.setattr(main, "case_agent", None)
+    result = diagnose(client, COOLANT)
+    assert result["diagnosis"]["anomaly_type"] == "F03"
+    brief = result["brief"]
+    assert brief["risk"] == "high"
+    assert "попадание охлаждающей жидкости" in brief["rationale"]
+    assert "уровень масла" in brief["first_check"]
+    assert [ref["pdf_page"] for ref in brief["references"]] == [23]
+    analysis = brief["analysis"]
+    assert {ref["pdf_page"] for ref in analysis["references"]} == {4, 23, 54}
+    assert any("прокладок" in item["text"] for item in analysis["possible_causes"])
+    assert len(analysis["repair_actions"]) >= 4
+    assert result["draft_available"] is False
+    assert result["admission"]["block_reason"]["code"] == "procedure_unavailable"
+    assert calls == []
+
+    def ask(message):
+        return client.post("/api/chat", json={**COOLANT, "message": message}).json()
+
+    risk = ask("Почему опасно?")["messages"][-1]["sections"]
+    assert any(section["kind"] == "risk" and "Высокий" in section["items"][0] for section in risk)
+    assert any(section["kind"] == "causes" for section in risk)
+    work = ask("Какие работы предусмотрены руководством?")["messages"][-1]["sections"]
+    assert any(section["kind"] == "work" and "Заменить прокладку" in " ".join(section["items"])
+               for section in work)
+    norm = ask("Какая норма температуры охлаждающей жидкости?")["messages"][-1]["sections"]
+    assert any(section["kind"] == "checks" and "75–100" in " ".join(section["items"])
+               and any(ref["pdf_page"] == 4 for ref in section["references"]) for section in norm)
+    drive = ask("Можно ли своим ходом перегнать машину?")
+    assert "недостаточно" in drive["messages"][-1]["summary"].lower()
+    assert any(section["kind"] == "risk" for section in drive["messages"][-1]["sections"])
+    assert calls == []

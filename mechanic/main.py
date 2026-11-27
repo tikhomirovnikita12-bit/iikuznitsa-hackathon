@@ -540,11 +540,17 @@ def overview(vehicle: dict, diagnosis: Diagnosis):
         result = reply.analysis
         references = [Reference(manual=item["manual"], pdf_page=item["pdf_page"]) for item in result["references"]]
         verify_references(references, vehicle)
-        first = next((item["text"] for item in result["checks"]), None)
-        brief = Brief(risk="unassessed",
+        first_item = next(iter(result["checks"]), None)
+        first = first_item["text"] if first_item else None
+        first_references = [
+            Reference(manual=item["manual"], pdf_page=item["pdf_page"])
+            for item in result["references"]
+            if first_item and item.get("fragment_id") == first_item.get("fragment_id")
+        ]
+        brief = Brief(risk=result.get("risk_level") or "unassessed",
                       rationale=" ".join(item["text"] for item in result["risk"]) or "Уровень риска по имеющимся данным не установлен.",
                       first_check=first or result["clarifying_question"] or reply.summary,
-                      references=references)
+                      references=first_references or references)
         return {"origin": "team", **brief.model_dump(), "analysis": result}, calls, "agent.overview"
     case = demo_agent.case_for(vehicle, diagnosis)
     if not TEAM_AGENT_URL or case == "mismatch":
@@ -562,7 +568,10 @@ def overview(vehicle: dict, diagnosis: Diagnosis):
                 first_check=approved[0]["operation"] if decision["can_prepare"] else decision["block_reason"]["next_action"],
                 references=list(refs.values()))
         calls = bind_fixture_sources([brief], vehicle, diagnosis)
-        return {"origin": "fixture", **brief.model_dump()}, calls, "agent.fixture"
+        payload = {"origin": "fixture", **brief.model_dump()}
+        if analysis := demo_agent.analysis(vehicle, diagnosis):
+            payload["analysis"] = analysis
+        return payload, calls, "agent.fixture"
     body, calls = agent_call("overview", vehicle, diagnosis, empty_state())
     brief = Brief.model_validate(body.get("brief"))
     verify_references(brief.references, vehicle, required=brief.risk != "unassessed")
@@ -611,8 +620,10 @@ def diagnose(pair: Pair):
                          draft_diagnosis_revision=diagnosis_revision(diagnosis.model_dump()),
                          applicability_confirmations=[], confirmed_urgency=None)
         if brief and brief.get("analysis") and not state["agent_history"]:
-            if entry := history_entry("Покажи диагностику", brief["analysis"]):
-                state["agent_history"] = [entry]
+            analysis = brief["analysis"]
+            if {"verdict", "clarifying_question", "checks"} <= analysis.keys():
+                if entry := history_entry("Покажи диагностику", analysis):
+                    state["agent_history"] = [entry]
         state.update(diagnosis=diagnosis.model_dump(), brief=brief, brief_error=brief_error,
                      diagnosis_requested=requested, draft_unavailable_reason=None)
         state["messages"] = chat_history(state)

@@ -146,7 +146,13 @@ function formatDate(value, formatter = date) {
 }
 
 const manualPageTopics = {
-  "yamz236-re": { 19: "нормы давления", 53: "причины падения" },
+  "yamz236-re": {
+    4: "температура охлаждающей жидкости",
+    19: "нормы давления",
+    23: "ежедневное ТО",
+    53: "причины падения",
+    54: "перегрев и вода в масле",
+  },
 };
 
 function references(items) {
@@ -164,7 +170,11 @@ function references(items) {
   for (const { manual, title, pages } of byManual.values()) {
     const group = element("div", "ref-manual");
     const links = element("div", "ref-pages");
-    group.append(element("span", "ref-title", title), links);
+    group.append(element("span", "ref-title", title));
+    if (manual?.manual && manual.manual !== title) {
+      group.append(element("span", "ref-designation", "Обозначение: " + manual.manual));
+    }
+    group.append(links);
     for (const page of [...pages].sort((a, b) => a - b)) {
       const topic = manualPageTopics[manual?.slug]?.[page];
       const label = "PDF, стр. " + page + (topic ? " — " + topic : "");
@@ -178,6 +188,33 @@ function references(items) {
     list.append(group);
   }
   return list;
+}
+
+function analysisSections(items, refs) {
+  return (items || []).map((item) => ({
+    items: [item.text],
+    references: (refs || []).filter((ref) => ref.fragment_id === item.fragment_id),
+  }));
+}
+
+function riskSummary(brief) {
+  const [label, theme] = riskLabels[brief?.risk] || riskLabels.unassessed;
+  const box = element("section", "risk-summary");
+  box.dataset.tone = theme;
+  box.append(element("span", "flag " + theme, label),
+             element("p", "", brief?.rationale || "Уточните симптомы и результаты контрольной проверки."),
+             element("p", "risk-note", brief?.risk === "unassessed"
+               ? "По одной записи степень риска не установлена. Нужна очная проверка."
+               : "Предварительная оценка по записи и руководству; точная степень — после очной проверки."));
+  return box;
+}
+
+function verdictMeta(diagnosis) {
+  const parts = [];
+  if (diagnosis.anomaly_score != null) parts.push("Балл отклонения " + score.format(diagnosis.anomaly_score));
+  if (diagnosis.confidence != null) parts.push("Уверенность ML " + score.format(diagnosis.confidence));
+  if (diagnosis.signal_quality) parts.push("Качество записи: " + qualityNames[diagnosis.signal_quality].toLowerCase());
+  return element("p", "verdict-meta", parts.join(" · "));
 }
 
 function renderDiagnosis() {
@@ -245,7 +282,7 @@ function renderDiagnosis() {
   else result.append(context);
   const finding = element("div", "ml-finding");
   const abnormal = diagnosis.status === "anomaly";
-  const label = diagnosis.status === "check_failed" ? "Качество записи" : abnormal ? "Наблюдение ML" : "Результат ML";
+  const label = diagnosis.status === "check_failed" ? "Качество записи" : abnormal ? "Отклонение ML" : "Результат ML";
   const caption = element("p", "ml-caption", label);
   if (abnormal && diagnosis.anomaly_type) {
     caption.append(element("span", "ml-code", diagnosis.anomaly_type));
@@ -256,13 +293,16 @@ function renderDiagnosis() {
   heading.tabIndex = -1;
   if (!view.diagnosisError) heading.id = "result-title";
   finding.append(caption, heading, element("p", "diagnosis-description", diagnosis.description));
+  const meta = verdictMeta(diagnosis);
+  if (meta.textContent) finding.append(meta);
   result.append(finding);
+  const brief = view.state.brief;
+  if (diagnosis.status === "anomaly") result.append(riskSummary(brief));
   const admission = view.state.admission;
   const blocked = admission?.block_reason;
   if (blocked && !admission.can_prepare && diagnosis.status !== "normal" && !view.state.draft) {
     result.append(admissionNotice(admission));
   }
-  const brief = view.state.brief;
   const recordingNotes = [];
   if (diagnosis.signal_quality === "warning") recordingNotes.push("Запись с помехами.");
   if (diagnosis.status !== "check_failed" && blocked?.code !== "confidence_too_low"
@@ -270,9 +310,6 @@ function renderDiagnosis() {
     recordingNotes.push("Низкая уверенность ML (" + score.format(diagnosis.confidence) + ").");
   }
   if (recordingNotes.length) result.append(alert(recordingNotes.join(" ") + " Сверьте результат повторной проверкой.", "recording-note"));
-  if (diagnosis.status === "anomaly" && brief?.risk === "high") {
-    result.append(alert("Возможен высокий риск. " + brief.rationale));
-  }
   if (view.state.brief_error) result.append(alert(view.state.brief_error, "error"));
 
   const next = element("section", "first-check");
@@ -289,6 +326,22 @@ function renderDiagnosis() {
     ? brief?.first_check || defaultCheck.anomaly : defaultCheck[diagnosis.status]));
   if (diagnosis.status === "anomaly" && brief?.references?.length) next.append(references(brief.references));
   result.append(next);
+
+  const analysis = brief?.analysis;
+  if (diagnosis.status === "anomaly" && analysis?.possible_causes?.length) {
+    result.append(answerBlock("causes", analysisSections(analysis.possible_causes, analysis.references)));
+  }
+  if (diagnosis.status === "anomaly" && analysis?.checks?.length) {
+    const firstKey = answerTextKey(brief?.first_check || "");
+    const further = analysis.checks.filter((item) => answerTextKey(item.text) !== firstKey);
+    if (further.length) {
+      result.append(answerBlock("checks", analysisSections(further, analysis.references),
+        "Дальнейшие проверки по руководству"));
+    }
+  }
+  if (diagnosis.status === "anomaly" && analysis?.repair_actions?.length) {
+    result.append(answerBlock("work", analysisSections(analysis.repair_actions, analysis.references)));
+  }
 
   const controls = element("div", "diagnosis-actions");
   if (diagnosis.status === "anomaly") {
@@ -351,19 +404,6 @@ function renderDiagnosis() {
     facts.append(row);
   }
   details.append(facts, element("p", "muted", "Балл отклонения и уверенность ML не являются вероятностью поломки."));
-  if (diagnosis.status === "anomaly") {
-    const [label, theme] = riskLabels[brief?.risk] || riskLabels.unassessed;
-    const risk = element("p", "risk-detail");
-    risk.append(element("strong", "flag " + theme, label),
-      document.createTextNode(". " + (brief?.rationale || "Уточните симптомы и результаты контрольной проверки.")));
-    details.append(risk);
-  }
-  if (brief?.analysis?.possible_causes?.length) {
-    const causes = brief.analysis.possible_causes.map((item) => ({
-      items: [item.text], references: brief.analysis.references.filter((ref) => ref.fragment_id === item.fragment_id),
-    }));
-    details.append(answerBlock("causes", causes));
-  }
   if (brief?.origin === "fixture") details.append(element("p", "context-key", "Пояснение из тестового сценария"));
   result.append(details);
 }
@@ -418,7 +458,7 @@ function answerBlock(kind, sections, title = sectionNames[kind] || "Рекоме
     if (section.references?.length) part.append(references(section.references));
     block.append(part);
   }
-  if (kind === "checks" && title === sectionNames.checks) {
+  if (kind === "checks") {
     const pages = new Set(parts.flatMap((part) => part.references.map((item) => item.pdf_page)));
     const report = button("Сообщить результат");
     report.disabled = Boolean(view.busy);
@@ -515,6 +555,7 @@ function renderChatActions(diagnosis, engine) {
   suggestions.replaceChildren();
   const status = diagnosis?.status;
   const oil = status === "anomaly" && diagnosis.anomaly_type === "F02" && engine === "ЯМЗ-236М2";
+  const coolant = status === "anomaly" && diagnosis.anomaly_type === "F03" && engine === "ЯМЗ-236М2";
   suggestions.hidden = !diagnosis;
   const quickReplies = ui["quick-replies"];
   quickReplies.hidden = status !== "anomaly";
@@ -550,6 +591,10 @@ function renderChatActions(diagnosis, engine) {
     if (oil) prompts.push(["Условия замера давления", "На каких оборотах замеряют давление масла?"]);
     else prompts.push(["Причины отклонения", "Какие причины отклонения указаны в руководстве?"]);
     prompts.push(["Риск перегона", "Можно ли своим ходом перегнать машину?"]);
+    if (coolant) {
+      prompts.push(["Возможные работы", "Какие работы предусмотрены руководством?"]);
+      prompts.push(["Норматив температуры", "Какая норма температуры охлаждающей жидкости?"]);
+    }
   }
   for (const [label, question = label] of prompts) {
     const chip = element("button", "", label);
@@ -676,13 +721,22 @@ function admissionNotice(admission) {
   const notice = element("div", "alert admission-notice");
   notice.setAttribute("role", "status");
   notice.append(element("strong", "", reason.message), element("p", "", reason.next_action));
-  const copy = button("Скопировать рекомендацию");
-  copy.addEventListener("click", async () => {
-    const text = (view.pair ? view.pair.vehicle_id + " / " + view.pair.session_id + "\n" : "") + reason.message + "\n" + reason.next_action;
-    try { await navigator.clipboard.writeText(text); announce("Рекомендация скопирована"); }
-    catch { announce(copyThroughSelection(text) ? "Рекомендация скопирована" : "Выделите текст рекомендации и скопируйте вручную."); }
+  const text = (view.pair ? view.pair.vehicle_id + " / " + view.pair.session_id + "\n" : "")
+    + reason.message + "\n" + reason.next_action;
+  const actions = element("div", "admission-actions");
+  const handoff = button("Вставить в чат", "primary");
+  handoff.title = "Текст появится в поле сообщения; отправьте его после проверки.";
+  handoff.addEventListener("click", () => {
+    composeAnswer("Передаю на очную дефектовку:\n" + text);
+    announce("Текст добавлен в поле сообщения. Проверьте и отправьте.");
   });
-  notice.append(copy);
+  const copy = button("Скопировать текст");
+  copy.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(text); announce("Текст скопирован"); }
+    catch { announce(copyThroughSelection(text) ? "Текст скопирован" : "Выделите текст рекомендации и скопируйте вручную."); }
+  });
+  actions.append(handoff, copy);
+  notice.append(actions);
   return notice;
 }
 
@@ -1119,6 +1173,7 @@ function renderHistory() {
     const values = sessions.map((step) => step.anomaly_score == null ? "—" : score.format(step.anomaly_score));
     trend.append(fleetSparkline(sessions), element("span", "muted", values.join(" → ")));
     nodes.push(trend);
+    nodes.push(element("p", "trend-note", historyTrend(sessions, view.pair?.session_id)));
     const list = element("ul", "history-list");
     for (const step of sessions) {
       const row = element("li", step.session_id === view.pair.session_id ? "current" : "");
@@ -1134,6 +1189,22 @@ function renderHistory() {
     nodes.push(list);
   }
   content.replaceChildren(...nodes);
+}
+
+function historyTrend(sessions, currentId) {
+  const index = sessions.findIndex((step) => step.session_id === currentId);
+  const end = index >= 0 ? index : sessions.length - 1;
+  if (end < 1) return "Недостаточно данных для оценки динамики.";
+  const current = sessions[end].anomaly_score;
+  const previous = sessions[end - 1].anomaly_score;
+  if (current == null || previous == null) {
+    return "В одной из проверок балл не определён; динамику оценить нельзя.";
+  }
+  const delta = current - previous;
+  if (delta >= 0.2) return "Резкий рост аномальности к текущей проверке — приоритет высокий.";
+  if (delta <= -0.2) return "Аномальность заметно снизилась к текущей проверке.";
+  if (Math.abs(delta) < 0.05) return "Аномальность без выраженной динамики.";
+  return delta > 0 ? "Аномальность умеренно растёт." : "Аномальность умеренно снижается.";
 }
 
 const fleetLabels = {

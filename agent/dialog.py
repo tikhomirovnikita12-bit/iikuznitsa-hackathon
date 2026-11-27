@@ -31,6 +31,15 @@ EXPLAIN_RESULT = re.compile(
     r"что (?:случилось|произошло|не так)(?: с машиной)?"
 )
 METHOD = re.compile(r"^(?:как (?:проверить|измерить|замерить|сверить|отрегулировать) |на каких оборотах )")
+COOLANT_NORM = re.compile(
+    r"(?:какая|какой|каков\w*) (?:норма|норматив|температура).*охлаждающ|"
+    r"охлаждающ\w*.*(?:температура|норматив)"
+)
+REPAIR = re.compile(
+    r"(?:какие|что) (?:нужно )?(?:работы|заменить|ремонтировать|устранить)|"
+    r"как (?:устранить|отремонтировать|заменить)"
+)
+COOLANT_TEMPERATURE = "yamz-236-3902150-b-re-p004-coolant-temperature"
 DRAFT_HELP = re.compile(
     r"^(?:(?:объясни|расскажи|подскажи)(?: мне)?,? )?(?:как |можно ли |не (?:нужно |надо )?)"
     r"(?:созда\w*|оформ\w*|подготов\w*|отправ\w*|сдела\w*)\b.*\b(?:заявк\w*|черновик\w*|наряд\w*)\b"
@@ -84,6 +93,27 @@ class Agent:
         self.provider = provider or Ollama()
         self.log = Path(log)
 
+    def merge_assessment(self, reply, assessment):
+        """Attach reviewed risk, causes and checks without replacing agent evidence."""
+        if not assessment or not assessment.evidence:
+            return
+        source = assessment.evidence[0].source
+        reference = source.model_dump()
+        for field, values in (
+            ("risk", [assessment.risk] if assessment.risk else []),
+            ("possible_causes", assessment.possible_causes),
+            ("checks", assessment.checks),
+            ("repair_actions", assessment.repair_actions),
+        ):
+            reply.setdefault(field, [])
+            for text in values:
+                if not text or any(item.get("text") == text for item in reply[field]):
+                    continue
+                reply[field].append(dict(text=text, fragment_id=source.fragment_id))
+        if reference not in reply["references"]:
+            reply["references"].append(reference)
+        reply["risk_level"] = assessment.risk_level
+
     def turn(self, vehicle_id, session_id, question, history=(), *, diagnosis=None, trace_out=None):
         start = time.monotonic()
         trace = dict(id=uuid4().hex, vehicle_id=vehicle_id, session_id=session_id,
@@ -102,7 +132,10 @@ class Agent:
                 message = case_context.blocked_message(reason["message"], ml, ml["engine_model"])
                 reply.update(explanation=message, clarifying_question=reason["next_action"])
                 return reply
-            return self.respond(reply, question, history, trace)
+            reply = self.respond(reply, question, history, trace)
+            if self.mechanic and ml["status"] == "anomaly" and ml["anomaly_type"] == "F03":
+                self.merge_assessment(reply, self.assess(ml))
+            return reply
         except Exception as exc:
             trace["error"] = type(exc).__name__
             raise
@@ -121,6 +154,14 @@ class Agent:
         short = re.sub(r"\bч[её]\b", "что", short)
         previous = next((row[3][0] for row in reversed(history) if len(row) > 3 and row[3]), None)
 
+        if COOLANT_NORM.search(short):
+            hits = self.manual_agent.search("температура охлаждающей жидкости норма", ml, trace)
+            source = next((hit for hit in hits if hit["fragment_id"] == COOLANT_TEMPERATURE), None)
+            if source:
+                reply["intent"] = "search"
+                self.manual_agent.cite(reply, "checks", source["text"], source["fragment_id"])
+                return reply
+
         if wording in {"привет", "здравствуйте", "добрый день", "спасибо", "понятно"}:
             reply.update(intent="conversation", explanation=(
                 "Пожалуйста." if wording in {"спасибо", "понятно"} else
@@ -132,6 +173,10 @@ class Agent:
             short.startswith("не ") and bool(DRAFT_HELP.match(short))
             and bool(re.search(r"[,;] (?:скажи,? |подскажи,? )?что проверить(?: сначала)?$", short))
         )
+        if REPAIR.search(short) and ml["anomaly_type"] == "F03" and self.mechanic:
+            self.merge_assessment(reply, self.assess(ml))
+            reply.update(intent="search", explanation="Возможные работы по руководству.")
+            return reply
         movement = bool(MOVEMENT.search(wording))
         if wants_draft(question):
             return self.reviewed_ticket(reply, trace)

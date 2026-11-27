@@ -7,6 +7,7 @@ Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 Identifier = Annotated[str, StringConstraints(min_length=1, max_length=80)]
 Fault = Annotated[str, StringConstraints(pattern=r"^F(0[1-9]|1[0-4])$")]
 Urgency = Literal["low", "medium", "high"]
+RiskLevel = Literal["low", "medium", "high", "unassessed"]
 Score = Annotated[float, Field(strict=True, ge=0, le=1)]
 Page = Annotated[int, Field(strict=True, ge=1)]
 Revision = Annotated[int, Field(strict=True, ge=1)]
@@ -85,6 +86,7 @@ class Assessment(BaseModel):
     conclusion: str | None
     next_step: str
     risk: str | None = None
+    risk_level: RiskLevel = "unassessed"
     possible_causes: list[str] = empty_list()
     checks: list[str] = empty_list()
     repair_actions: list[str] = empty_list()

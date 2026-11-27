@@ -14,6 +14,8 @@ OIL_PRESSURE = "yamz-236-3902150-b-re-p019-oil-pressure"
 LOW_PRESSURE_CAUSES = "yamz-236-3902150-b-re-p053-low-oil-pressure"
 VALVE_CLEARANCE = "yamz-236-3902150-b-re-p031-valve-clearance"
 CHAIN_NOISE = "zmz-40904-40905-rk-p107-engine-knock"
+COOLANT_IN_OIL = "yamz-236-3902150-b-re-p054-f03-coolant-in-oil"
+COOLANT_TEMPERATURE = "yamz-236-3902150-b-re-p004-coolant-temperature"
 
 
 def conflict_case(question: str, engine_model: str):
@@ -111,6 +113,42 @@ class Mechanic:
                 repair_actions=["Выбрать способ устранения из таблицы на стр. 53 после подтверждения причины."],
                 evidence=[self.evidence(fragment, engine_model) for fragment in (OIL_PRESSURE, LOW_PRESSURE_CAUSES)],
             )
+        if engine_model == "ЯМЗ-236М2" and diagnosis.anomaly_type == "F03":
+            return Assessment(
+                conclusion=("ML отметил перегрев и возможное попадание охлаждающей жидкости в масло. "
+                            "Это предварительная гипотеза, которую нужно подтвердить проверкой."),
+                next_step=("Проверить уровень и состояние масла, уровень и цвет охлаждающей жидкости, "
+                           "осмотреть двигатель на подтёки."),
+                risk=("Высокий предварительный риск: попадание охлаждающей жидкости в масло указано "
+                      "в руководстве как неисправность, требующая устранения, и снижает смазывающие "
+                      "свойства масла. До проверки не рекомендуется выпускать машину в рейс. "
+                      "Точная степень риска — по результатам очной дефектовки."),
+                risk_level="high",
+                possible_causes=[
+                    "Разрушение прокладок головок цилиндров.",
+                    "Недостаточная затяжка стакана форсунки.",
+                    "Подтекание по резиновым кольцам гильз цилиндров.",
+                    "Трещины в головке или блоке цилиндров.",
+                    "Перегрев: неисправный термометр, слабое натяжение или обрыв ремня водяного насоса, "
+                    "загрязнение радиатора, заедание термостата, газы в водяной рубашке, накипь.",
+                ],
+                checks=[
+                    "Проверить, нет ли воды в масле: осмотреть прокладки головок цилиндров, затяжку "
+                    "стакана форсунки и уплотнительные кольца гильз; при необходимости проверить "
+                    "головку и блок на трещины (PDF 54).",
+                    "Проверить систему охлаждения: ремень водяного насоса, загрязнение радиатора, "
+                    "термостат, наличие газов в водяной рубашке и состояние накипи (PDF 54).",
+                ],
+                repair_actions=[
+                    "Заменить прокладку головки цилиндров при её разрушении.",
+                    "Подтянуть гайку крепления стакана форсунки.",
+                    "Заменить неисправные уплотнительные кольца гильз цилиндров.",
+                    "При трещинах головки или блока направить двигатель в ремонт.",
+                    "Устранить перегрев: натянуть или заменить ремень, очистить радиатор, заменить "
+                    "термостат, промыть систему охлаждения.",
+                ],
+                evidence=[self.evidence(COOLANT_IN_OIL, engine_model)],
+            )
         if engine_model == "ЯМЗ-236М2" and diagnosis.anomaly_type == "F01":
             return Assessment(
                 conclusion=conclusion,
@@ -131,6 +169,30 @@ class Mechanic:
                 repair_actions=["Руководство предусматривает замену цепей со звёздочками комплектом при необходимости (стр. 107)."],
                 evidence=[self.evidence(CHAIN_NOISE, engine_model)],
             )
+
+        if diagnosis.anomaly_type == "F03":
+            check = self.defect_checks.get(engine_model, {}).get("F03")
+            if check:
+                fragment, operation, _ = check
+                return Assessment(
+                    conclusion=("ML отметил перегрев или возможное попадание охлаждающей жидкости "
+                                "в масло. Это предварительная гипотеза, которую нужно подтвердить проверкой."),
+                    next_step=operation,
+                    risk=("Предварительно высокий риск: перегрев и попадание охлаждающей жидкости "
+                          "в масло требуют проверки до выпуска машины в рейс. Точная степень риска — "
+                          "по результатам очной дефектовки."),
+                    risk_level="high",
+                    possible_causes=[
+                        "Перегрев и попадание охлаждающей жидкости в масло; конкретные причины "
+                        "нужно сверить по руководству выбранного двигателя.",
+                    ],
+                    checks=[operation],
+                    repair_actions=[
+                        "После подтверждения причины выбрать способ устранения по руководству "
+                        "выбранного двигателя.",
+                    ],
+                    evidence=[self.evidence(fragment, engine_model)],
+                )
 
         check = self.defect_checks.get(engine_model, {}).get(diagnosis.anomaly_type)
         if check:
@@ -184,6 +246,14 @@ class Mechanic:
                     needs_clarification=True,
                     evidence=[self.evidence(OIL_PRESSURE, engine_model)],
                 )
+            if diagnosis.anomaly_type == "F03":
+                assessment = self.assess(diagnosis, engine_model)
+                return ChatReply(
+                    answer=(assessment.risk or "") + " Данных для допуска к перегону недостаточно; "
+                           "нужна очная проверка механиком.",
+                    needs_clarification=True,
+                    evidence=assessment.evidence,
+                )
             return ChatReply(answer="Для оценки возможности эксплуатации нужна очная проверка механиком.",
                              needs_clarification=True)
 
@@ -191,6 +261,12 @@ class Mechanic:
                 and re.search(r"давлени\w* масла", search_query.casefold())
                 and re.fullmatch(r"(?:а\s+)?(?:на холостых|при (?:холостых|минимальных) оборотах)[?.! ]*", normalized)):
             source = self.evidence(OIL_PRESSURE, engine_model)
+            return ChatReply(answer=source.text, evidence=[source])
+
+        if (engine_model == "ЯМЗ-236М2"
+                and re.search(r"(?:температур\w*|норматив\w*).*охлаждающ|охлаждающ\w*.*(?:температур\w*|норматив\w*)",
+                              normalized)):
+            source = self.evidence(COOLANT_TEMPERATURE, engine_model)
             return ChatReply(answer=source.text, evidence=[source])
 
         if case := conflict_case(search_query or question, engine_model):
@@ -215,6 +291,14 @@ class Mechanic:
             if assessment.possible_causes:
                 return ChatReply(answer=" ".join(assessment.possible_causes), evidence=assessment.evidence)
             search_query = search_query or diagnosis.anomaly_title
+        if re.search(
+            r"(?:какие|что) (?:нужно )?(?:работы|заменить|ремонтировать|устранить)\b|"
+            r"как (?:устранить|отремонтировать|заменить)\b",
+            normalized,
+        ):
+            if assessment.repair_actions:
+                return ChatReply(answer=" ".join(assessment.repair_actions), evidence=assessment.evidence)
+            search_query = search_query or "способ устранения"
         hits = self.search.search(search_query or question, engine_model, diagnosis.anomaly_type, limit=1)
         if not hits:
             return ChatReply(

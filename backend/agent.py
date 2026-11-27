@@ -182,6 +182,8 @@ class Agent:
         topic = case_context.subject(question, [turn.question for turn in request.history])
         if case_context.MOVE.search(question):
             readings = {}
+            if engine == "ЯМЗ-236М2" and diagnosis.anomaly_type == "F03":
+                return mechanic.answer(question, diagnosis, engine, search_query=topic)
             if engine == "ЯМЗ-236М2" and diagnosis.anomaly_type == "F02":
                 for utterance in [turn.question for turn in request.history] + [question]:
                     readings = oil_pressure.readings(utterance, readings)
