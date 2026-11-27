@@ -108,6 +108,7 @@ def source_page(slug: str, page: int):
   <header class="source-header">
     <p class="source-position">Страница PDF {page} из {manual.pages}</p>
     <h1>{label}</h1>
+    <p class="source-designation">Обозначение: {escape(manual.name)}</p>
     <p class="muted">Порядковый номер страницы в PDF. Печатная нумерация в документе может отличаться.</p>
     <p class="source-filename">{file}</p>
     <p class="muted">Руководство для: {escape(", ".join(manual.engines))}</p>

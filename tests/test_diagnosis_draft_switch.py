@@ -39,8 +39,7 @@ def changing_case(tmp_path, monkeypatch):
     adapter.workflow.ml, adapter.workflow.toir = adapter.ml, adapter.toir
     monkeypatch.setattr(main, "team", adapter)
     monkeypatch.setattr(main, "policy_mechanic", adapter.workflow.mechanic)
-    # Scoped synthetic approvals exercise versioning transitions independently of
-    # real F02 procedure availability (the production registry still blocks F02).
+    # Scoped synthetic approvals let both fault codes use the same engine in this versioning test.
     registry = []
     for code, fragment_id in (
         ("F02", "yamz-236-3902150-b-re-p053-low-oil-pressure"),

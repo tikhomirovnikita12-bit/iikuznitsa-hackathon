@@ -27,6 +27,7 @@ CHAIN = {"vehicle_id": "Y815BM178", "session_id": "S-0152"}
 NORMAL = {"vehicle_id": "E549YT198", "session_id": "S-0010"}
 FAILED = {"vehicle_id": "P456AT178", "session_id": "S-0003"}
 MISMATCH = {"vehicle_id": "Y652CK98", "session_id": "S-0132"}
+COOLANT = {"vehicle_id": "A427MA78", "session_id": "S-0032"}
 
 
 class SourceSelection:
@@ -41,6 +42,21 @@ class SourceSelection:
             sources = properties["items"]["items"]["properties"]["source"]["enum"]
             return {"items": [{"field": "checks", "source": sources[0]}] if self.accept else []}
         if "query" in properties and "action" not in properties:
+            return {"query": "Дизельная топливоподача"}
+        raise AssertionError(f"Unexpected model call: {list(properties)}")
+
+
+class PlanProvider:
+    """Deterministic planner for F03 answers that stay on the reviewed case."""
+
+    def ask(self, _prompt, response_schema, _trace):
+        properties = response_schema["properties"]
+        if "items" in properties:
+            sources = properties["items"]["items"]["properties"]["source"]["enum"]
+            return {"items": [{"field": "checks", "source": sources[0]}]}
+        if "action" in properties and "query" in properties:
+            return {"action": "diagnosis", "query": ""}
+        if "query" in properties:
             return {"query": "Дизельная топливоподача"}
         raise AssertionError(f"Unexpected model call: {list(properties)}")
 
@@ -81,13 +97,13 @@ def integrated(tmp_path, monkeypatch):
             yield client, adapter, sent
 
 
-def enable_agent(monkeypatch, tmp_path, *, fragments=None, accept=True):
+def enable_agent(monkeypatch, tmp_path, *, fragments=None, accept=True, provider=None):
     corpus = CORPUS
     if fragments is not None:
         corpus = tmp_path / "case-corpus.json"
         corpus.write_text(json.dumps({"fragments": fragments}, ensure_ascii=False), encoding="utf-8")
     agent = CaseAgent(corpus, tmp_path / "agent-turns.jsonl")
-    provider = SourceSelection(accept=accept)
+    provider = provider or SourceSelection(accept=accept)
     agent.agent.provider = provider
     monkeypatch.setattr(main, "case_agent", agent)
     return provider
@@ -265,4 +281,33 @@ def test_actual_agent_failure_is_not_missing_evidence(integrated, monkeypatch, t
     assert state["draft_available"] is True
     assert state["draft_unavailable_reason"] is None
     assert adapter.workflow.drafts(adapter.Pair(**CHAIN)) == []
+    assert sent == []
+
+
+def test_f03_case_agent_reports_risk_without_reviewed_operation(integrated, monkeypatch, tmp_path):
+    client, adapter, sent = integrated
+    enable_agent(monkeypatch, tmp_path, provider=PlanProvider())
+    result = diagnose(client, COOLANT)
+    brief = result["brief"]
+    assert brief["risk"] == "high"
+    assert "Высокий" in brief["rationale"]
+    assert [ref["pdf_page"] for ref in brief["references"]] == [23]
+    analysis = brief["analysis"]
+    assert any("прокладок" in item["text"] for item in analysis["possible_causes"])
+    assert all(item["fragment_id"].endswith("coolant-in-oil") for item in analysis["possible_causes"])
+    assert analysis["repair_actions"]
+    assert result["draft_available"] is False
+    assert result["admission"]["block_reason"]["code"] == "procedure_unavailable"
+    assert sent == []
+
+    def sections(message):
+        return client.post("/api/chat", json={**COOLANT, "message": message}).json()["messages"][-1]["sections"]
+
+    work = sections("Какие работы предусмотрены руководством?")
+    assert any(section["kind"] == "work" and section["references"][0]["pdf_page"] == 54 for section in work)
+    norm = sections("Какая норма температуры охлаждающей жидкости?")
+    assert any(section["kind"] == "checks"
+               and any(ref["pdf_page"] == 4 for ref in section["references"]) for section in norm)
+    assert any(section["kind"] == "risk" for section in sections("Почему опасно?"))
+    assert adapter.workflow.drafts(adapter.Pair(**COOLANT)) == []
     assert sent == []

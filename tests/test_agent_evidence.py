@@ -52,7 +52,7 @@ def test_known_conflicts_return_every_reviewed_source(question, pages, tmp_path)
 
 def test_f02_draft_contains_only_the_reviewed_fluid_check(tmp_path):
     card, ml = context()
-    agent = CaseAgent(ROOT / 'artifacts/manual-corpus.json', tmp_path / 'blocked.jsonl')
+    agent = CaseAgent(ROOT / 'artifacts/manual-corpus.json', tmp_path / 'draft.jsonl')
     agent.agent.provider = NoModel()
     diagnosis = Diagnosis.model_validate(ml)
     assert agent.can_prepare(card, diagnosis)
@@ -62,7 +62,7 @@ def test_f02_draft_contains_only_the_reviewed_fluid_check(tmp_path):
         'Проверить достаточность уровня масла в картере и уровня охлаждающей жидкости.'
     ]
     assert [source.pdf_page for source in proposal.references] == [53]
-    assert not calls
+    assert [call['tool'] for call in calls] == ['agent.search', 'agent.prepare_ticket']
 
 
 def test_agent_uses_same_engine_compatibility_rule_as_server():

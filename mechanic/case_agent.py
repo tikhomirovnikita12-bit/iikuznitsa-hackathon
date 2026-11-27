@@ -1,3 +1,7 @@
+from time import perf_counter
+from urllib.error import URLError
+
+from agent.tools.diagnosis import describe
 from agent.dialog import Agent, history_entry
 from agent.tools.manual import Manuals
 from backend.mechanic import Mechanic
@@ -7,7 +11,7 @@ from backend.admission import AdmissionPolicy, evaluate_admission
 from .sources import BY_NAME
 from .contracts import DraftFields, Reference, Reply, Section
 from .config import MATERIALS
-from .demo_agent import wants_draft
+from agent.tools.ticket import wants_draft
 
 
 class CaseAgent:
@@ -74,23 +78,42 @@ class CaseAgent:
     def chat(self, vehicle, diagnosis, question, history):
         context = {**diagnosis.model_dump(), "engine_model": vehicle["engine_model"], "fuel": vehicle["fuel"]}
         if wants_draft(question):
+            started = perf_counter()
             reply, fields, entry = self.draft_reply(question, vehicle, diagnosis)
-            return reply, fields, entry, []
+            elapsed = round((perf_counter() - started) * 1000)
+            calls = []
+            if fields:
+                pages = [(ref.manual, ref.pdf_page) for ref in fields.references]
+                calls = [
+                    dict(tool="agent.search", duration_ms=elapsed, status="ok", pages=pages),
+                    dict(tool="agent.prepare_ticket", duration_ms=0, status="ok"),
+                ]
+            return reply, fields, entry, calls
         trace = {}
-        result = self.agent.turn(
-            diagnosis.vehicle_id, diagnosis.session_id, question, history, trace_out=trace,
-            diagnosis=context,
-        )
+        try:
+            result = self.agent.turn(diagnosis.vehicle_id, diagnosis.session_id, question, history,
+                                     trace_out=trace, diagnosis=context)
+        except (URLError, TimeoutError):
+            if question != "Покажи диагностику":
+                raise
+            result = describe(context)
+            result.update(intent="clarify", clarifying_question="Языковая модель недоступна. Уточните узел и режим измерения.")
+            started = perf_counter()
+            assessment = self.mechanic.assess(BackendDiagnosis.model_validate(diagnosis.model_dump()), vehicle["engine_model"])
+            for evidence in assessment.evidence:
+                source = evidence.source
+                result["references"].append(source.model_dump())
+                result["checks"].append(dict(text=evidence.text, fragment_id=source.fragment_id))
+            trace.setdefault("tools", []).append(dict(name="search", seconds=perf_counter() - started,
+                                                     pages=[(e.source.manual, e.source.pdf_page) for e in assessment.evidence]))
         calls = []
         for tool in trace["tools"]:
-            calls.append(dict(tool="agent." + tool["name"], duration_ms=round(tool["seconds"] * 1000),
+            calls.append(dict(tool="agent." + tool["name"], duration_ms=round(tool.get("seconds", 0) * 1000),
                               status="ok", pages=tool.get("pages", [])))
-        for call in trace["calls"]:
-            calls.append(dict(tool="ollama.chat", duration_ms=round(call["seconds"] * 1000), status="ok",
+        for call in trace.get("calls", ()):
+            calls.append(dict(tool="ollama.chat", duration_ms=round(call["seconds"] * 1000), status=call.get("status", "ok"),
                               model=call["model"], input_tokens=call["input_tokens"], output_tokens=call["output_tokens"]))
-        if result.get("intent") == "ticket":
-            reply, fields, entry = self.draft_reply(question, vehicle, diagnosis)
-            return reply, fields, entry, calls
+        result["ticket_draft"] = None
         references = {
             item["fragment_id"]: Reference(manual=item["manual"], pdf_page=item["pdf_page"])
             for item in result["references"]
@@ -99,16 +122,31 @@ class CaseAgent:
             manual = BY_NAME[item["manual"]]
             item["url"] = f"/sources/{manual.slug}/{item['pdf_page']}"
         sections = [Section(kind="signs", items=[diagnosis.description])]
-        for field, kind in (("possible_causes", "causes"), ("risk", "risk"), ("checks", "checks")):
+        for field, kind in (("possible_causes", "causes"), ("risk", "risk"),
+                            ("checks", "checks"), ("repair_actions", "work")):
+            items = result.get(field, [])
+            if not items:
+                continue
             prefix = "Гипотеза: " if kind in {"causes", "risk"} else ""
-            for item in result[field]:
-                sections.append(Section(kind=kind, items=[prefix + item["text"]],
-                                        references=[references[item["fragment_id"]]]))
+            refs = []
+            for item in items:
+                ref = references.get(item["fragment_id"])
+                if ref is not None and ref not in refs:
+                    refs.append(ref)
+            sections.append(Section(kind=kind, items=[prefix + item["text"] for item in items],
+                                    references=refs))
         if result.get("movement_limitations"):
             sections.append(Section(kind="clarify", items=[result["movement_limitations"]]))
         if question_to_clarify := result["clarifying_question"]:
             sections.append(Section(kind="clarify", items=[question_to_clarify],
                                     references=list(references.values()) if not any(section.references for section in sections) else []))
+        if result["checks"] and not result["clarifying_question"]:
+            sections.append(Section(kind="clarify", items=["Применимость к машине требует сверки исполнения узла и условий проверки."]))
 
-        summary = result.get("explanation") or result["verdict"]
+        summary = result.get("explanation")
+        if not summary and result.get("intent") not in {"diagnosis", "movement"}:
+            lead = next((item["text"] for field in ("checks", "possible_causes", "risk") for item in result[field]), None)
+            if diagnosis.status != "check_failed":
+                summary = lead or result["clarifying_question"]
+        summary = summary or result["verdict"]
         return Reply(summary=summary, sections=sections, analysis=result), None, history_entry(question, result), calls

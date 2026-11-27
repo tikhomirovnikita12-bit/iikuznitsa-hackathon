@@ -4,25 +4,30 @@ const byId = (id) => document.getElementById(id);
 const ui = Object.fromEntries([
   "mode", "catalog-size", "vehicle", "vehicle-facts", "session",
   "vehicle-popup", "vehicle-options", "vehicle-empty",
-  "context", "workarea", "context-summary", "context-title", "context-vehicle", "context-session",
+  "workspace", "context", "workarea", "context-summary", "context-title", "context-vehicle", "context-session",
   "edit-context", "collapse-context", "journal-panel", "ask-question",
-  "selection", "selection-error", "retry-catalog", "diagnostic", "result",
-  "chat-context", "messages", "chat-error", "composer", "question", "send", "suggestions",
-  "ticket-panel", "journal", "announcement", "recording-help", "quick-replies", "reply-options",
+  "selection", "selection-hint", "selection-error", "retry-catalog", "diagnostic", "result",
+  "chat", "chat-context", "messages", "chat-error", "composer", "question", "send", "suggestions",
+  "pressure-helper", "pressure-form", "pressure-fields",
+  "ticket-panel", "journal", "announcement", "fleet-toggle", "fleet-panel", "vehicle-history", "history-content",
+  "recording-help", "quick-replies", "reply-options",
 ].map((id) => [id, byId(id)]));
 
 const view = {
   catalog: null, pair: null, state: null, generation: 0, busy: null,
   diagnosisError: null, chatError: null, ticketError: null, needsTicketCheck: false,
   pendingQuestion: "", pendingEdits: new Map(), consents: null, pollTimer: null, editingContext: false,
+  fleet: null, fleetError: null, fleetOpen: false, fleetLoading: false, fleetFilter: null,
+  history: null, historyVehicle: null, historyError: null, historyRequest: 0,
 };
 const compactLayout = matchMedia("(max-width: 820px)");
 const vehiclePicker = { selected: null, matches: [], activeIndex: -1 };
 const plateLetters = { а: "a", в: "b", е: "e", к: "k", м: "m", н: "h", о: "o",
   р: "p", с: "c", т: "t", у: "y", х: "x" };
 const sectionNames = {
-  signs: "Наблюдения ML", causes: "Возможные причины · гипотезы", checks: "Проверки",
-  work: "Возможные работы", clarify: "Что уточнить", risk: "Риски · гипотезы",
+  checks: "Проверки по руководству", clarify: "Ограничения и уточнения",
+  risk: "Риски · гипотезы", causes: "Возможные причины · гипотезы",
+  signs: "Наблюдения ML", work: "Возможные работы",
 };
 const urgencyNames = { low: "Низкий", medium: "Средний", high: "Высокий" };
 const urgencyDescriptions = { high: "Дефектовка до выпуска в рейс", medium: "Ближайшее ТО с работой под наблюдением", low: "Проверка узла на следующей проверке" };
@@ -41,6 +46,9 @@ const outcomes = {
 };
 const date = new Intl.DateTimeFormat("ru-RU", {
   dateStyle: "short", timeStyle: "short", timeZone: "Europe/Moscow",
+});
+const sessionDate = new Intl.DateTimeFormat("ru-RU", {
+  day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Moscow",
 });
 const score = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 3 });
 
@@ -122,19 +130,29 @@ function setControls() {
   const editingVehicle = ui.vehicle.value !== selectedVehicleId();
   ui.session.disabled = !vehiclePicker.selected || editingVehicle;
   ui.question.disabled = !view.state?.diagnosis || Boolean(view.busy);
-  ui["ask-question"].hidden = !view.state?.diagnosis;
   ui["ask-question"].disabled = ui.question.disabled;
-  ui.send.disabled = ui.question.disabled;
+  ui["pressure-fields"].disabled = ui.question.disabled;
+  setChatSubmit();
   ui.send.textContent = view.busy === "chat" ? "Ждём ответ…" : "Отправить";
 }
 
-function formatDate(value) {
+function setChatSubmit() {
+  ui.send.disabled = ui.question.disabled || !ui.question.value.trim();
+}
+
+function formatDate(value, formatter = date) {
   const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : date.format(parsed);
+  return Number.isNaN(parsed.getTime()) ? value : formatter.format(parsed);
 }
 
 const manualPageTopics = {
-  "yamz236-re": { 19: "нормы давления", 53: "причины падения" },
+  "yamz236-re": {
+    4: "температура охлаждающей жидкости",
+    19: "нормы давления",
+    23: "ежедневное ТО",
+    53: "причины падения",
+    54: "перегрев и вода в масле",
+  },
 };
 
 function references(items) {
@@ -152,7 +170,11 @@ function references(items) {
   for (const { manual, title, pages } of byManual.values()) {
     const group = element("div", "ref-manual");
     const links = element("div", "ref-pages");
-    group.append(element("span", "ref-title", title), links);
+    group.append(element("span", "ref-title", title));
+    if (manual?.manual && manual.manual !== title) {
+      group.append(element("span", "ref-designation", "Обозначение: " + manual.manual));
+    }
+    group.append(links);
     for (const page of [...pages].sort((a, b) => a - b)) {
       const topic = manualPageTopics[manual?.slug]?.[page];
       const label = "PDF, стр. " + page + (topic ? " — " + topic : "");
@@ -168,6 +190,33 @@ function references(items) {
   return list;
 }
 
+function analysisSections(items, refs) {
+  return (items || []).map((item) => ({
+    items: [item.text],
+    references: (refs || []).filter((ref) => ref.fragment_id === item.fragment_id),
+  }));
+}
+
+function riskSummary(brief) {
+  const [label, theme] = riskLabels[brief?.risk] || riskLabels.unassessed;
+  const box = element("section", "risk-summary");
+  box.dataset.tone = theme;
+  box.append(element("span", "flag " + theme, label),
+             element("p", "", brief?.rationale || "Уточните симптомы и результаты контрольной проверки."),
+             element("p", "risk-note", brief?.risk === "unassessed"
+               ? "По одной записи степень риска не установлена. Нужна очная проверка."
+               : "Предварительная оценка по записи и руководству; точная степень — после очной проверки."));
+  return box;
+}
+
+function verdictMeta(diagnosis) {
+  const parts = [];
+  if (diagnosis.anomaly_score != null) parts.push("Балл отклонения " + score.format(diagnosis.anomaly_score));
+  if (diagnosis.confidence != null) parts.push("Уверенность ML " + score.format(diagnosis.confidence));
+  if (diagnosis.signal_quality) parts.push("Качество записи: " + qualityNames[diagnosis.signal_quality].toLowerCase());
+  return element("p", "verdict-meta", parts.join(" · "));
+}
+
 function renderDiagnosis() {
   const wasExpanded = Boolean(ui.result.querySelector(".diagnosis-details")?.open);
   const result = ui.result;
@@ -181,9 +230,19 @@ function renderDiagnosis() {
   if (view.diagnosisError) {
     const titles = {
       invalid_pair: "Проверьте пару ТС и сессии", unknown_vehicle: "Транспорт не найден",
+      diagnosis_needed: "Сначала получите результат диагностики",
+      diagnosis_changed: "Результат проверки изменился",
+      draft_unavailable: "Черновик пока недоступен", draft_locked: "Черновик заблокирован",
+      stale_draft: "Черновик изменился", engine_mismatch: "Проверьте модификацию двигателя",
+      source_not_applicable: "Ссылка не подтверждена для двигателя",
+      manual_search_no_match: "Поиск не нашёл нужную страницу",
       ml_timeout: "Тайм-аут диагностики", client_timeout: "Тайм-аут запроса", team_timeout: "Тайм-аут бэкенда",
       ml_unavailable: "Сервис диагностики недоступен", ml_invalid_response: "Некорректный ответ диагностики",
       team_unavailable: "Бэкенд команды недоступен", offline: "Связь потеряна",
+      agent_timeout: "Агент не ответил вовремя", agent_unavailable: "Агент недоступен",
+      agent_invalid_response: "Некорректный ответ агента", agent_invalid_draft: "Некорректный черновик агента",
+      priority_unconfirmed: "Подтвердите приоритет", reconcile_unavailable: "Сверка номера недоступна",
+      invalid_request: "Проверьте поля запроса", server_error: "Ошибка сервера",
     };
     ui.diagnostic.dataset.status = "error";
     showHeading(result, titles[view.diagnosisError.code] || "Запрос завершился с ошибкой");
@@ -198,59 +257,59 @@ function renderDiagnosis() {
     if (!diagnosis) return;
     result.append(element("p", "section-label", "Последний сохранённый результат"));
   } else if (!diagnosis) {
-    showHeading(result, view.pair ? "Подготавливаем отчёт" : "Выберите машину и запись");
-    if (view.pair) result.append(element("p", "context-key", view.pair.vehicle_id + " / " + view.pair.session_id));
+    if (view.pair) {
+      showHeading(result, "Подготавливаем отчёт");
+      result.append(element("p", "context-key", view.pair.vehicle_id + " / " + view.pair.session_id));
+    } else {
+      showHeading(result, vehiclePicker.selected ? "Выберите запись диагностики" : "Выберите машину и запись");
+      result.append(element("p", "empty-note", vehiclePicker.selected
+        ? "Отчёт по записи откроется автоматически."
+        : "Найдите машину по госномеру или двигателю. Здесь появится отчёт по выбранной записи."));
+    }
     return;
   }
 
   const vehicle = vehiclePicker.selected;
   const session = vehicle?.sessions.find((item) => item.session_id === diagnosis.session_id);
   const context = element("div", "result-context");
-  context.append(element("strong", "", diagnosis.vehicle_id),
-    element("span", "", vehicle?.engine_model || ""));
-  if (session) context.append(element("span", "context-key", formatDate(session.checked_at) + " · МСК"));
+  context.append(element("span", "result-vehicle", diagnosis.vehicle_id));
+  if (session) {
+    const checkedAt = element("time", "", formatDate(session.checked_at) + " МСК");
+    checkedAt.dateTime = session.checked_at;
+    context.append(checkedAt);
+  }
   if (!view.diagnosisError) result.replaceChildren(context);
   else result.append(context);
-  const heading = element(view.diagnosisError ? "h3" : "h2", "", outcomes[diagnosis.status]);
+  const finding = element("div", "ml-finding");
+  const abnormal = diagnosis.status === "anomaly";
+  const label = diagnosis.status === "check_failed" ? "Качество записи" : abnormal ? "Отклонение ML" : "Результат ML";
+  const caption = element("p", "ml-caption", label);
+  if (abnormal && diagnosis.anomaly_type) {
+    caption.append(element("span", "ml-code", diagnosis.anomaly_type));
+  }
+  const title = (abnormal && (diagnosis.anomaly_title || view.catalog?.fault_types?.[diagnosis.anomaly_type]))
+    || outcomes[diagnosis.status];
+  const heading = element(view.diagnosisError ? "h3" : "h2", "", title);
+  heading.tabIndex = -1;
   if (!view.diagnosisError) heading.id = "result-title";
-  result.append(heading);
-  if (diagnosis.status === "anomaly" && diagnosis.anomaly_type) {
-    result.append(element("p", "diagnosis-type",
-      diagnosis.anomaly_title || view.catalog?.fault_types?.[diagnosis.anomaly_type] || "Возможное отклонение"));
-  }
-  result.append(element("p", "diagnosis-description", diagnosis.description));
-  if (view.state.admission?.block_reason && view.state.admission.block_reason.code !== "draft_required" && diagnosis.status !== "normal"
-      && !["created", "sending", "unknown"].includes(view.state.ticket?.status)) result.append(admissionNotice(view.state.admission));
-
-  // Show the risk and uncertainty before the next action, including on a phone.
+  finding.append(caption, heading, element("p", "diagnosis-description", diagnosis.description));
+  const meta = verdictMeta(diagnosis);
+  if (meta.textContent) finding.append(meta);
+  result.append(finding);
   const brief = view.state.brief;
-  if (diagnosis.status === "anomaly") {
-    const risk = element("div", "risk-line");
-    const [label, theme] = riskLabels[brief?.risk] || riskLabels.unassessed;
-    risk.dataset.risk = brief?.risk || "unassessed";
-    risk.append(element("span", "hypothesis-label", "Гипотеза о риске"), element("span", "flag " + theme, label),
-      element("p", "", brief?.rationale || "Нужны симптомы и контрольная проверка для оценки риска."));
-    result.append(risk);
+  if (diagnosis.status === "anomaly") result.append(riskSummary(brief));
+  const admission = view.state.admission;
+  const blocked = admission?.block_reason;
+  if (blocked && !admission.can_prepare && diagnosis.status !== "normal" && !view.state.draft) {
+    result.append(admissionNotice(admission));
   }
-  const metrics = element("dl", "metrics");
-  for (const [label, value] of [
-    ["Уверенность ML · 0–1", diagnosis.confidence],
-    ["Качество записи", qualityNames[diagnosis.signal_quality]],
-  ]) {
-    const cell = element("div", "metric");
-    cell.append(element("dt", "", label), element("dd", "",
-      value == null ? "Нет значения" : typeof value === "number" ? score.format(value) : value));
-    metrics.append(cell);
+  const recordingNotes = [];
+  if (diagnosis.signal_quality === "warning") recordingNotes.push("Запись с помехами.");
+  if (diagnosis.status !== "check_failed" && blocked?.code !== "confidence_too_low"
+      && diagnosis.confidence != null && diagnosis.confidence < view.catalog.confidence_threshold) {
+    recordingNotes.push("Низкая уверенность ML (" + score.format(diagnosis.confidence) + ").");
   }
-  result.append(metrics);
-  const threshold = view.catalog.confidence_threshold;
-  if (diagnosis.status !== "check_failed" && diagnosis.confidence != null && diagnosis.confidence < threshold) {
-    result.append(alert("Низкая уверенность (" + score.format(diagnosis.confidence)
-      + "). Подтвердите результат контрольной проверкой."));
-  }
-  if (diagnosis.status !== "check_failed" && diagnosis.signal_quality === "warning") {
-    result.append(alert("Запись с помехами. Повторите запись для проверки результата."));
-  }
+  if (recordingNotes.length) result.append(alert(recordingNotes.join(" ") + " Сверьте результат повторной проверкой.", "recording-note"));
   if (view.state.brief_error) result.append(alert(view.state.brief_error, "error"));
 
   const next = element("section", "first-check");
@@ -266,13 +325,27 @@ function renderDiagnosis() {
   next.append(element("p", "action", diagnosis.status === "anomaly"
     ? brief?.first_check || defaultCheck.anomaly : defaultCheck[diagnosis.status]));
   if (diagnosis.status === "anomaly" && brief?.references?.length) next.append(references(brief.references));
-  if (diagnosis.status === "normal") next.append(element("p", "muted",
-    "Результат относится к выбранной записи и не заменяет штатный осмотр машины."));
   result.append(next);
+
+  const analysis = brief?.analysis;
+  if (diagnosis.status === "anomaly" && analysis?.possible_causes?.length) {
+    result.append(answerBlock("causes", analysisSections(analysis.possible_causes, analysis.references)));
+  }
+  if (diagnosis.status === "anomaly" && analysis?.checks?.length) {
+    const firstKey = answerTextKey(brief?.first_check || "");
+    const further = analysis.checks.filter((item) => answerTextKey(item.text) !== firstKey);
+    if (further.length) {
+      result.append(answerBlock("checks", analysisSections(further, analysis.references),
+        "Дальнейшие проверки по руководству"));
+    }
+  }
+  if (diagnosis.status === "anomaly" && analysis?.repair_actions?.length) {
+    result.append(answerBlock("work", analysisSections(analysis.repair_actions, analysis.references)));
+  }
 
   const controls = element("div", "diagnosis-actions");
   if (diagnosis.status === "anomaly") {
-    const check = button("Посмотреть проверки", "primary");
+    const check = button("Проверки в чате", "quiet");
     check.id = "diagnosis-checks";
     check.disabled = Boolean(view.busy);
     check.addEventListener("click", () => {
@@ -280,9 +353,7 @@ function renderDiagnosis() {
       if (cards.length) cards[cards.length - 1].closest(".bubble").scrollIntoView({ block: "start" });
       else sendQuestion("Что проверить сначала?");
     });
-    next.insertBefore(check, next.querySelector(".refs"));
-
-    if (brief?.origin === "fixture") result.append(element("p", "context-key", "Тестовая рекомендация"));
+    controls.append(check);
   } else {
     const select = button(diagnosis.status === "check_failed" ? "Выбрать новую запись" : "Выбрать следующую запись", "primary");
     select.disabled = Boolean(view.busy);
@@ -297,12 +368,12 @@ function renderDiagnosis() {
   }
   if (diagnosis.status === "anomaly" && (view.state.draft || (!view.diagnosisError && view.state.draft_available))) {
     const draftButton = button(view.state.draft ? "Открыть заявку"
-      : view.busy === "prepare" ? "Готовим черновик…" : "Подготовить заявку");
+      : view.busy === "prepare" ? "Готовим черновик…" : "Подготовить заявку", "primary");
     draftButton.id = "diagnosis-draft";
     draftButton.setAttribute("aria-controls", "ticket-panel");
     draftButton.disabled = Boolean(view.busy);
     draftButton.addEventListener("click", view.state.draft ? revealTicket : prepareDraft);
-    controls.append(draftButton);
+    controls.prepend(draftButton);
     if (!view.state.draft && view.ticketError) {
       const error = alert(view.ticketError, "error");
       error.setAttribute("role", "alert");
@@ -317,22 +388,15 @@ function renderDiagnosis() {
     result.append(notice);
   }
 
-  if (brief?.analysis?.possible_causes?.length) {
-    const causes = element("details", "answer-block");
-    causes.append(element("summary", "", "Возможные причины"));
-    for (const item of brief.analysis.possible_causes) {
-      causes.append(element("p", "", item.text));
-      causes.append(references(brief.analysis.references.filter(ref => ref.fragment_id === item.fragment_id)));
-    }
-    result.append(causes);
-  }
   const details = element("details", "diagnosis-details");
   details.open = wasExpanded;
-  details.append(element("summary", "", "Подробности диагностики"));
+  details.append(element("summary", "", "Технические данные"));
   const facts = element("dl", "technical-facts");
   for (const [label, value] of [
-    ["Сессия", diagnosis.session_id], ["Код отклонения ML", diagnosis.anomaly_type || "Нет"],
+    ["Сессия", diagnosis.session_id],
     ["Балл отклонения · 0–1", diagnosis.anomaly_score == null ? "Нет значения" : score.format(diagnosis.anomaly_score)],
+    ["Уверенность ML · 0–1", diagnosis.confidence == null ? "Нет значения" : score.format(diagnosis.confidence)],
+    ["Качество записи", qualityNames[diagnosis.signal_quality]],
     ["Версия модели", diagnosis.model_version],
   ]) {
     const row = element("div");
@@ -340,37 +404,69 @@ function renderDiagnosis() {
     facts.append(row);
   }
   details.append(facts, element("p", "muted", "Балл отклонения и уверенность ML не являются вероятностью поломки."));
+  if (brief?.origin === "fixture") details.append(element("p", "context-key", "Пояснение из тестового сценария"));
   result.append(details);
 }
 
-function answerBlock(section) {
-  if (section.kind === "checks") {
-    const card = element("section", "answer-block check-card");
-    card.dataset.sourceContext = "";
-    card.append(element("h3", "", section.references?.length ? "Проверка по руководству" : "Что нужно проверить"));
-    card.append(element("p", "check-caption", "Порядок и условия проверки"));
-    // Keep the source text together: splitting a norm can lose its operating conditions.
-    const list = element("ul", "check-instructions");
-    for (const item of section.items) list.append(element("li", "", item));
-    card.append(list);
-    if (section.references?.length) card.append(references(section.references));
-    else card.append(element("p", "muted", "Подтверждённый источник для этой рекомендации не указан. Уточните процедуру перед выполнением."));
+function answerTextKey(text) {
+  return text.trim().replace(/\s+/g, " ");
+}
+
+function uniqueAnswerParts(sections) {
+  const byText = new Map();
+  for (const section of sections) {
+    for (const text of section.items) {
+      const key = answerTextKey(text);
+      if (!byText.has(key)) byText.set(key, { text, sources: new Map() });
+      const { sources } = byText.get(key);
+      for (const source of section.references || []) {
+        sources.set(JSON.stringify([source.manual, source.pdf_page]), source);
+      }
+    }
+  }
+  const parts = [];
+  let previousSources;
+  for (const { text, sources } of byText.values()) {
+    const sourceKey = JSON.stringify([...sources.keys()].sort());
+    if (sourceKey === previousSources) parts.at(-1).items.push(text);
+    else parts.push({ items: [text], references: [...sources.values()] });
+    previousSources = sourceKey;
+  }
+  return parts;
+}
+
+function answerBlock(kind, sections, title = sectionNames[kind] || "Рекомендации") {
+  const expandable = kind === "work";
+  const block = element(expandable ? "details" : "section", "answer-block");
+  block.dataset.kind = kind;
+  block.dataset.sourceContext = "";
+  block.append(element(expandable ? "summary" : "h3", "", title));
+  const parts = uniqueAnswerParts(sections);
+  const numbered = kind === "checks" && parts.reduce((count, part) => count + part.items.length, 0) > 1;
+  let number = 1;
+  for (const section of parts) {
+    const part = element("div", "answer-part");
+    if (!numbered && section.items.length === 1) {
+      part.append(element("p", "", section.items[0]));
+    } else {
+      const list = element(numbered ? "ol" : "ul");
+      if (numbered) list.start = number;
+      for (const item of section.items) list.append(element("li", "", item));
+      number += section.items.length;
+      part.append(list);
+    }
+    if (section.references?.length) part.append(references(section.references));
+    block.append(part);
+  }
+  if (kind === "checks") {
+    const pages = new Set(parts.flatMap((part) => part.references.map((item) => item.pdf_page)));
     const report = button("Сообщить результат");
     report.disabled = Boolean(view.busy);
-    report.addEventListener("click", () => composeAnswer(section.references?.length
-      ? "Результат проверки по руководству (PDF, стр. " + section.references.map((item) => item.pdf_page).join(", ") + "):\n"
+    report.addEventListener("click", () => composeAnswer(pages.size
+      ? "Результат проверки по руководству (PDF, стр. " + [...pages].join(", ") + "):\n"
       : "Результат проверки:\n"));
-    card.append(report);
-    return card;
+    block.append(report);
   }
-  const expandable = section.kind === "work";
-  const block = element(expandable ? "details" : "section", "answer-block");
-  block.dataset.sourceContext = "";
-  block.append(element(expandable ? "summary" : "h3", "", sectionNames[section.kind]));
-  const list = element("ul");
-  for (const item of section.items) list.append(element("li", "", item));
-  block.append(list);
-  if (section.references?.length) block.append(references(section.references));
   return block;
 }
 
@@ -395,38 +491,56 @@ function userMessage(text) {
   return bubble;
 }
 
-function diagnosisMessage(message) {
-  const entry = element("article", "bubble diagnosis-message");
-  entry.dataset.status = message.status;
-  entry.append(element("p", "message-meta", "Результат диагностики"),
-    element("p", "answer-title", message.summary),
-    element("p", "", message.description),
-    element("p", "diagnosis-next-step", message.next_step));
-  if (message.origin === "fixture") entry.append(element("p", "context-key", "Тестовая рекомендация"));
-  if (message.references?.length) entry.append(references(message.references));
-  return entry;
-}
-
 function renderChat() {
-  ui["chat-context"].textContent = view.state?.diagnosis ? view.pair.vehicle_id + " / " + view.pair.session_id
-    : "Доступен после получения результата";
+  const diagnosis = view.state?.diagnosis;
+  const engine = vehiclePicker.selected?.engine_model;
+  const history = view.state?.messages || [];
+  const report = history.find((message) => message.role === "diagnosis");
+  const reportTexts = new Set([report?.summary, diagnosis?.description, diagnosis?.anomaly_title]
+    .filter(Boolean).map(answerTextKey));
+  if (diagnosis?.status === "anomaly" && diagnosis.anomaly_title) {
+    reportTexts.add(`${outcomes.anomaly}: ${diagnosis.anomaly_title}.`);
+  }
+  const messages = history.filter((message) => message.role !== "diagnosis");
+  ui.chat.hidden = !diagnosis;
+  ui["chat-context"].textContent = diagnosis ? "Сессия " + view.pair.session_id : "";
+  ui["ask-question"].hidden = messages.length <= 2;
   const openDetails = [...ui.messages.querySelectorAll("details")].map((node) => node.open);
   const fragment = document.createDocumentFragment();
-  for (const message of view.state?.messages || []) {
-    if (message.role === "diagnosis") {
-      fragment.append(diagnosisMessage(message));
-      continue;
-    }
+  for (const message of messages) {
     if (message.role === "user") {
       fragment.append(userMessage(message.text));
       continue;
     }
     const bubble = element("article", "bubble");
-    bubble.append(element("p", "message-meta", message.origin === "fixture" ? "Механик · тестовый ответ" : "Механик"),
-      element("p", "answer-title", message.summary));
-    const order = { signs: 0, causes: 1, risk: 2, checks: 3, work: 4, clarify: 5 };
-    const sections = [...(message.sections || [])].sort((left, right) => order[left.kind] - order[right.kind]);
-    for (const section of sections) bubble.append(answerBlock(section));
+    bubble.tabIndex = -1;
+    bubble.append(element("p", "message-meta", message.origin === "fixture" ? "Механик · тестовый ответ" : "Механик"));
+    const parts = (message.sections || []).flatMap((part) => {
+      if (part.kind !== "signs" || part.references?.length) return [part];
+      const items = part.items.filter((item) => !reportTexts.has(answerTextKey(item)));
+      return items.length ? [{ ...part, items }] : [];
+    });
+    const summary = answerTextKey(message.summary);
+    if (reportTexts.has(summary)) {
+      if (!parts.length) {
+        const link = element("a", "", "К результату проверки");
+        link.href = "#result-title";
+        bubble.append(link);
+      }
+    } else if (!parts.some((part) => part.kind !== "work" && part.items.some((item) => answerTextKey(item) === summary))) {
+      bubble.append(element("p", "answer-title", message.summary));
+    }
+    const sections = new Map();
+    for (const part of parts) {
+      if (!sections.has(part.kind)) sections.set(part.kind, []);
+      sections.get(part.kind).push(part);
+    }
+    const measured = Object.keys(message.analysis?.pressure_measurement || {}).length > 0;
+    const measurementTitle = measured ? "Сверка с нормативом"
+      : message.analysis?.intent === "measurement" ? "Условия замера" : undefined;
+    for (const kind of new Set([...Object.keys(sectionNames), ...sections.keys()])) {
+      if (sections.has(kind)) bubble.append(answerBlock(kind, sections.get(kind), kind === "checks" ? measurementTitle : undefined));
+    }
     fragment.append(bubble);
   }
   if (view.pendingQuestion) fragment.append(userMessage(view.pendingQuestion));
@@ -434,28 +548,62 @@ function renderChat() {
   ui.messages.replaceChildren(fragment);
   [...ui.messages.querySelectorAll("details")].forEach((node, index) => { node.open = Boolean(openDetails[index]); });
   setAlert(ui["chat-error"], view.chatError);
+  renderChatActions(diagnosis, engine);
+}
 
+function renderChatActions(diagnosis, engine) {
   const suggestions = ui.suggestions;
   suggestions.replaceChildren();
-  const diagnosis = view.state?.diagnosis;
+  const status = diagnosis?.status;
+  const oil = status === "anomaly" && diagnosis.anomaly_type === "F02" && engine === "ЯМЗ-236М2";
+  const coolant = status === "anomaly" && diagnosis.anomaly_type === "F03" && engine === "ЯМЗ-236М2";
   suggestions.hidden = !diagnosis;
-  ui["quick-replies"].hidden = !diagnosis || diagnosis.status !== "anomaly";
-  if (!diagnosis) return;
-  const prompts = diagnosis.status === "check_failed"
-    ? ["Как повторить запись?"]
-    : diagnosis.status === "normal"
-      ? ["Что проверить сначала?"]
-      : ["Что проверить сначала?", "Можно ли своим ходом перегнать машину?"];
-  if (diagnosis.status === "anomaly" && diagnosis.anomaly_type === "F02") {
-    prompts.unshift("Когда замерять давление и почему оно падает?");
+  const quickReplies = ui["quick-replies"];
+  quickReplies.hidden = status !== "anomaly";
+  if (quickReplies.hidden) quickReplies.open = false;
+  const pressureHelper = ui["pressure-helper"];
+  const showPressure = oil && view.catalog?.pressure_comparison;
+  if (!showPressure && !pressureHelper.hidden) {
+    pressureHelper.open = false;
+    ui["pressure-form"].reset();
   }
-  for (const prompt of prompts) {
-    const chip = button(prompt);
+  pressureHelper.hidden = !showPressure;
+  ui.question.placeholder = {
+    anomaly: "Узел, симптом или замер",
+    normal: "Например, стук на холодном пуске",
+    check_failed: "Например, почему не прошла проверка?",
+  }[status] || "Например, что проверить сначала?";
+
+  if (status === "check_failed") {
+    const select = button("Выбрать другую сессию");
+    select.disabled = Boolean(view.busy);
+    select.addEventListener("click", () => {
+      view.editingContext = true;
+      renderContext();
+      ui.session.focus({ preventScroll: true });
+      ui.session.scrollIntoView({ block: "nearest" });
+    });
+    suggestions.append(select);
+  }
+  if (!diagnosis) return;
+
+  const prompts = status === "check_failed" ? [["Как повторить запись?"]] : [["Что проверить сначала?"]];
+  if (status === "anomaly") {
+    if (oil) prompts.push(["Условия замера давления", "На каких оборотах замеряют давление масла?"]);
+    else prompts.push(["Причины отклонения", "Какие причины отклонения указаны в руководстве?"]);
+    prompts.push(["Риск перегона", "Можно ли своим ходом перегнать машину?"]);
+    if (coolant) {
+      prompts.push(["Возможные работы", "Какие работы предусмотрены руководством?"]);
+      prompts.push(["Норматив температуры", "Какая норма температуры охлаждающей жидкости?"]);
+    }
+  }
+  for (const [label, question = label] of prompts) {
+    const chip = element("button", "", label);
+    chip.type = "button";
     chip.disabled = Boolean(view.busy);
-    chip.addEventListener("click", () => sendQuestion(prompt));
+    chip.addEventListener("click", () => sendQuestion(question));
     suggestions.append(chip);
   }
-  ui["quick-replies"].hidden = diagnosis.status !== "anomaly";
   const replies = ui["reply-options"];
   replies.replaceChildren();
   if (diagnosis.status !== "anomaly") return;
@@ -480,7 +628,7 @@ function renderChat() {
 }
 
 function draftKey() {
-  return JSON.stringify(view.pair);
+  return JSON.stringify([view.pair, view.state?.draft?.anomaly_type]);
 }
 
 function draftVersion() {
@@ -574,30 +722,38 @@ function admissionNotice(admission) {
   const notice = element("div", "alert admission-notice");
   notice.setAttribute("role", "status");
   notice.append(element("strong", "", reason.message), element("p", "", reason.next_action));
-  const copy = button("Скопировать рекомендацию");
-  copy.addEventListener("click", async () => {
-    const text = (view.pair ? view.pair.vehicle_id + " / " + view.pair.session_id + "\n" : "") + reason.message + "\n" + reason.next_action;
-    try { await navigator.clipboard.writeText(text); announce("Рекомендация скопирована"); }
-    catch { announce(copyThroughSelection(text) ? "Рекомендация скопирована" : "Выделите текст рекомендации и скопируйте вручную."); }
+  const text = (view.pair ? view.pair.vehicle_id + " / " + view.pair.session_id + "\n" : "")
+    + reason.message + "\n" + reason.next_action;
+  const actions = element("div", "admission-actions");
+  const handoff = button("Вставить в чат", "primary");
+  handoff.title = "Текст появится в поле сообщения; отправьте его после проверки.";
+  handoff.addEventListener("click", () => {
+    composeAnswer("Передаю на очную дефектовку:\n" + text);
+    announce("Текст добавлен в поле сообщения. Проверьте и отправьте.");
   });
-  notice.append(copy);
+  const copy = button("Скопировать текст");
+  copy.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(text); announce("Текст скопирован"); }
+    catch { announce(copyThroughSelection(text) ? "Текст скопирован" : "Выделите текст рекомендации и скопируйте вручную."); }
+  });
+  actions.append(handoff, copy);
+  notice.append(actions);
   return notice;
 }
 
 function operationEvidence(draft, admission) {
-  const group = element("section", "operation-evidence");
-  group.append(element("h3", "", "Основания для работ"));
-  for (const row of admission?.approved_operations || []) {
-    if (!draft.operations.includes(row.operation)) continue;
-    const card = element("article", "check-card");
+  const group = element("div", "operation-evidence");
+  const operations = (admission?.approved_operations || []).filter((row) => draft.operations.includes(row.operation));
+  if (!operations.length) group.append(references(draft.references));
+  for (const row of operations) {
+    const card = element("div", "operation-source");
     card.dataset.sourceContext = "";
-    card.append(element("h3", "", row.operation));
-    const evidence = row.evidence || [{text:row.quote, source:{manual:row.manual, pdf_page:row.pdf_page}}];
-    card.append(element("blockquote", "evidence-quote", evidence[0].text.split("\n")[0]));
-    for (const condition of row.conditions || []) card.append(element("p", "muted", "Условие: " + condition.text));
+    if (operations.length > 1) card.append(element("p", "operation-name", row.operation));
+    const evidence = row.evidence || [{ text: row.quote, source: { manual: row.manual, pdf_page: row.pdf_page } }];
     card.append(references(evidence.map((item) => item.source)));
     const full = element("details", "evidence-full");
-    full.append(element("summary", "", "Проверенные выдержки полностью"));
+    full.append(element("summary", "", "Выдержки и условия"));
+    for (const condition of row.conditions || []) full.append(element("p", "muted", condition.text));
     for (const item of evidence) {
       full.append(element("p", "ref-title", item.source.manual + " · PDF " + item.source.pdf_page),
                   element("blockquote", "evidence-quote", item.text));
@@ -608,26 +764,40 @@ function operationEvidence(draft, admission) {
   return group;
 }
 
-function editableDraft(draft, pending) {
+function editableDraft(draft, pending, partsExpanded) {
   const key = draftKey();
   const version = pending?.version ?? draftVersion();
   const edits = pending?.edits ?? draft;
   const form = element("form", "ticket-form");
   const admission = view.state.admission;
-  const conclusion = textarea(edits.conclusion, 3, true);
-  const operations = textarea(edits.operations.join("\n"), 4, true);
+  const conclusion = textarea(edits.conclusion, 2, true);
+  const operations = textarea(edits.operations.join("\n"), 2, true);
   operations.readOnly = true;
   const parts = textarea(edits.spare_parts.join("\n"), 2);
   const priority = element("select");
   priority.required = true;
   priority.add(option("", "Выберите приоритет"));
-  for (const [value, label] of Object.entries(urgencyNames)) priority.add(option(value, label + " — " + urgencyDescriptions[value]));
+  for (const [value, label] of Object.entries(urgencyNames)) priority.add(option(value, label));
   priority.value = edits.urgency || "";
-  form.append(field("conclusion", "Заключение", conclusion), field("urgency", "Приоритет", priority),
-    field("operations", "Работы по проверенным основаниям", operations), field("parts", "Запчасти, по одной на строку", parts));
+  const priorityExplanation = element("p", "priority-explanation");
+  priorityExplanation.id = "priority-explanation";
+  priority.setAttribute("aria-describedby", priorityExplanation.id);
+  const showPriority = () => {
+    const suggested = urgencyNames[admission?.suggested_urgency];
+    priorityExplanation.textContent = [suggested && "Предложен: " + suggested, urgencyDescriptions[priority.value]]
+      .filter(Boolean).join(". ");
+  };
+  priority.addEventListener("change", showPriority);
+  showPriority();
+  const work = element("section", "draft-work");
+  work.append(field("operations", "Работы", operations), operationEvidence(draft, admission));
+  const extras = element("details", "draft-parts");
+  extras.open = partsExpanded || edits.spare_parts.some((item) => item.trim());
+  extras.append(element("summary", "", "Запчасти"), field("parts", "По одной на строку", parts));
   parts.placeholder = "Не определены";
-  form.append(element("p", "priority-explanation", "Предложен: " + (urgencyNames[admission?.suggested_urgency] || "Не определён")
-    + ". Приоритет задаёт срок дефектовки и сам по себе не является запретом на перегон."), operationEvidence(draft, admission));
+  form.append(field("conclusion", "Заключение", conclusion), work, field("urgency", "Приоритет", priority),
+    priorityExplanation, extras);
+  const confirmations = element("div", "draft-confirmations");
   const required = new Map();
   for (const operation of admission?.approved_operations || []) {
     if (!draft.operations.includes(operation.operation)) continue;
@@ -643,7 +813,7 @@ function editableDraft(draft, pending) {
     input.checked = (view.state.applicability_confirmations || []).includes(id);
     label.append(input, document.createTextNode("Подтверждаю условие: " + condition.text));
     conditionChecks.push({id, input});
-    form.append(label);
+    confirmations.append(label);
   }
   const warning = element("input");
   warning.type = "checkbox";
@@ -651,7 +821,7 @@ function editableDraft(draft, pending) {
   if (admission?.warning_ack_required) {
     const label = element("label", "priority-confirm warning-confirm");
     label.append(warning, document.createTextNode("Запись с помехами. Предупреждение прочитал, сознательно продолжаю."));
-    form.append(label);
+    confirmations.append(label);
   }
   const confirm = element("label", "priority-confirm");
   const checkbox = element("input");
@@ -671,7 +841,8 @@ function editableDraft(draft, pending) {
   submit.disabled = true;
   for (const control of [conclusion, operations, parts, priority, checkbox, warning, ...conditionChecks.map((row) => row.input)]) control.disabled = Boolean(view.busy);
   actions.append(status, submit, save);
-  form.append(confirm, actions);
+  confirmations.append(confirm);
+  form.append(confirmations, actions);
 
   function values(trim) {
     const lines = trim ? listItems : (text) => text.split("\n");
@@ -701,8 +872,8 @@ function editableDraft(draft, pending) {
       conditions:conditionChecks.filter((row) => row.input.checked).map((row) => row.id)};
     const conditionalBlock = ["warning_ack_required", "applicability_required"].includes(admission?.block_reason?.code);
     const allowed = admission?.can_submit || (admission?.can_prepare && conditionalBlock);
-    submit.disabled = Boolean(view.busy) || !allowed || !checkbox.checked
-      || (admission.warning_ack_required && !warning.checked) || conditionChecks.some((row) => !row.input.checked);
+    submit.disabled = Boolean(view.busy) || !allowed || !checkbox.checked || !priority.value
+      || (admission?.warning_ack_required && !warning.checked) || conditionChecks.some((row) => !row.input.checked);
   }
   checkbox.addEventListener("change", updateSubmit);
   warning.addEventListener("change", updateSubmit);
@@ -758,7 +929,7 @@ function renderDraftConflict(panel, draft, pending) {
   panel.append(actions);
 }
 
-function reconcileForm() {
+function reconcileForm(version = draftVersion(), fieldId = "reconcile-ticket-id") {
   const form = element("form", "reconcile-form");
   const ticketId = element("input", "ticket-number");
   ticketId.type = "text";
@@ -768,12 +939,12 @@ function reconcileForm() {
   ticketId.maxLength = 40;
   ticketId.placeholder = "TKT-0001";
   ticketId.disabled = Boolean(view.busy);
-  form.append(element("h3", "", "Сверка с ТОиР"), field("reconcile-ticket-id", "Номер заявки в ТОиР", ticketId));
+  form.append(element("h3", "", "Сверка с ТОиР"), field(fieldId, "Номер заявки в ТОиР", ticketId));
 
   const confirmation = element("label", "priority-confirm");
   const verified = element("input");
   verified.type = "checkbox";
-  verified.id = "reconcile-verified";
+  verified.id = fieldId === "reconcile-ticket-id" ? "reconcile-verified" : fieldId + "-verified";
   verified.disabled = Boolean(view.busy);
   confirmation.append(verified, document.createTextNode("Номер сверил в ТОиР"));
   const submit = button(view.busy === "reconcile" ? "Сохраняем номер…" : "Сохранить номер", "primary", "submit");
@@ -783,10 +954,9 @@ function reconcileForm() {
   actions.append(submit);
   form.append(confirmation, actions);
 
-  const version = draftVersion();
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (verified.checked) reconcileDraft(ticketId.value.trim(), version);
+    if (verified.checked) reconcileDraft(ticketId.value.trim(), version, fieldId);
   });
   return form;
 }
@@ -842,9 +1012,14 @@ function renderTicket() {
   const panel = ui["ticket-panel"];
   const draft = view.state?.draft;
   const ticket = view.state?.ticket;
-  panel.hidden = !draft;
+  const previous = view.state?.previous_drafts ?? [];
+  const partsExpanded = panel.dataset.draftId === view.state?.draft_id && Boolean(panel.querySelector(".draft-parts")?.open);
+  panel.hidden = !draft && !previous.length;
   if (!draft || !ticket) {
+    delete panel.dataset.draftId;
     panel.replaceChildren();
+    if (view.ticketError && previous.length) panel.append(alert(view.ticketError, "error"));
+    renderPreviousDrafts(panel, previous);
     return;
   }
   const title = element("h2", "", ticket.status === "created" ? "Заявка на дефектовку" : "Черновик дефектовки");
@@ -854,15 +1029,19 @@ function renderTicket() {
   header.append(title);
   if (ticket.ticket_id) header.append(ticketReceipt(ticket.ticket_id));
   panel.replaceChildren(header);
-  if (view.state.admission?.block_reason && !["created", "sending", "unknown"].includes(ticket.status)) panel.append(admissionNotice(view.state.admission));
-  if (view.state.confirmed_urgency) panel.append(element("p", "", "Подтверждён механиком: " + urgencyNames[view.state.confirmed_urgency]));
-  if (view.state.draft_origin === "fixture") panel.append(element("p", "origin", "Тестовый черновик"));
+  panel.dataset.draftId = view.state.draft_id;
 
   const ids = element("div", "ticket-ids");
   for (const text of ["ТС " + draft.vehicle_id, "Сессия " + draft.session_id, "Код ML " + draft.anomaly_type]) {
     ids.append(element("span", "", text));
   }
   panel.append(ids);
+  const admission = view.state.admission;
+  const awaitingConfirmation = ["warning_ack_required", "applicability_required"].includes(admission?.block_reason?.code);
+  if (admission?.block_reason && !awaitingConfirmation && !["created", "sending", "unknown"].includes(ticket.status)) {
+    panel.append(admissionNotice(admission));
+  }
+  if (view.state.confirmed_urgency) panel.append(element("p", "context-key", "Подтверждённый приоритет — " + urgencyNames[view.state.confirmed_urgency]));
 
   if (view.ticketError) panel.append(alert(view.ticketError, "error"));
   if (ticket.status === "created") panel.append(alert("Заявка зарегистрирована в ТОиР.", "success"));
@@ -884,17 +1063,38 @@ function renderTicket() {
   const conflict = Boolean(pending && (!sameDraftVersion(pending.version, draftVersion()) ||
     ["sending", "created", "unknown"].includes(ticket.status)));
   if (conflict) renderDraftConflict(panel, draft, pending);
-  else panel.append(canEdit ? editableDraft(draft, pending) : fieldSummary(draft));
+  else panel.append(canEdit ? editableDraft(draft, pending, partsExpanded) : fieldSummary(draft));
   if (!conflict && !view.needsTicketCheck && ticket.status === "unknown" && view.state.reconcile_available) {
     panel.append(reconcileForm());
   }
+  renderPreviousDrafts(panel, previous);
+}
+
+function renderPreviousDrafts(panel, drafts) {
+  if (!drafts.length) return;
+  const section = element("section", "previous-drafts");
+  section.append(element("h3", "", "Заявки по предыдущим отклонениям"));
+  const list = element("ul", "history-list");
+  for (const draft of drafts) {
+    const row = element("li");
+    row.append(element("strong", "", draft.anomaly_type),
+      element("span", "", ticketStatusNames[draft.status]));
+    if (draft.ticket_id) row.append(element("span", "muted", draft.ticket_id));
+    if (draft.status === "unknown") {
+      row.append(reconcileForm(draft, "reconcile-" + draft.draft_id));
+    }
+    list.append(row);
+  }
+  section.append(list);
+  panel.append(section);
 }
 
 function renderJournal() {
   const calls = view.state?.calls;
+  ui["journal-panel"].hidden = !calls?.length;
   if (!calls?.length) {
-    ui.journal.replaceChildren(element("p", "muted", view.pair ? "Вызовов пока нет."
-      : "Выберите сессию, чтобы увидеть её вызовы."));
+    ui["journal-panel"].open = false;
+    ui.journal.replaceChildren();
     return;
   }
   const list = element("ol", "calls");
@@ -917,11 +1117,12 @@ function renderContext() {
   const collapsed = Boolean(collapsible && !view.editingContext);
   if (collapsed) {
     ui["context-vehicle"].textContent = view.pair.vehicle_id;
-    ui["context-session"].textContent = vehiclePicker.selected.engine_model;
+    ui["context-session"].textContent = [view.pair.session_id, vehiclePicker.selected?.engine_model].filter(Boolean).join(" · ");
   }
   ui["context-summary"].hidden = !collapsed;
   ui.selection.hidden = collapsed;
   ui["collapse-context"].hidden = !collapsible || collapsed;
+  ui["selection-hint"].hidden = !vehiclePicker.selected || Boolean(view.pair);
 }
 
 function updateLayout() {
@@ -935,6 +1136,240 @@ function updateLayout() {
   renderContext();
 }
 
+async function loadHistory(vehicleId, force = false) {
+  if (!vehicleId || (!force && view.historyVehicle === vehicleId)) return;
+  const request = ++view.historyRequest;
+  const generation = view.generation;
+  const isCurrent = () => request === view.historyRequest && generation === view.generation;
+  view.historyVehicle = vehicleId;
+  view.historyError = null;
+  try {
+    const history = await api("history?" + new URLSearchParams({ vehicle_id: vehicleId }));
+    if (!isCurrent()) return;
+    view.history = history;
+  } catch (error) {
+    if (!isCurrent()) return;
+    view.historyError = error;
+  }
+  renderHistory();
+}
+
+function renderHistory() {
+  const panel = ui["vehicle-history"];
+  const content = ui["history-content"];
+  const vehicleId = view.pair?.vehicle_id;
+  const loaded = view.history?.vehicle_id === vehicleId;
+  panel.hidden = !(view.state?.diagnosis && (loaded || view.historyError));
+  if (panel.hidden) {
+    panel.open = false;
+    content.replaceChildren();
+    return;
+  }
+  const nodes = [];
+  if (view.historyError) {
+    nodes.push(alert("Историю не удалось загрузить. " + view.historyError.message, "error"));
+  } else {
+    const sessions = view.history.sessions;
+    const trend = element("div", "history-trend");
+    const values = sessions.map((step) => step.anomaly_score == null ? "—" : score.format(step.anomaly_score));
+    trend.append(fleetSparkline(sessions), element("span", "muted", values.join(" → ")));
+    nodes.push(trend);
+    nodes.push(element("p", "trend-note", historyTrend(sessions, view.pair?.session_id)));
+    const list = element("ul", "history-list");
+    for (const step of sessions) {
+      const row = element("li", step.session_id === view.pair.session_id ? "current" : "");
+      const verdict = step.anomaly_title || outcomes[step.status];
+      const checkedAt = element("time", "", formatDate(step.checked_at));
+      checkedAt.dateTime = step.checked_at;
+      row.append(checkedAt, element("span", "", verdict));
+      if (step.ticket.status !== "idle") {
+        row.append(element("span", "muted", step.ticket.ticket_id || ticketStatusNames[step.ticket.status] || ""));
+      }
+      list.append(row);
+    }
+    nodes.push(list);
+  }
+  content.replaceChildren(...nodes);
+}
+
+function historyTrend(sessions, currentId) {
+  const index = sessions.findIndex((step) => step.session_id === currentId);
+  const end = index >= 0 ? index : sessions.length - 1;
+  if (end < 1) return "Недостаточно данных для оценки динамики.";
+  const current = sessions[end].anomaly_score;
+  const previous = sessions[end - 1].anomaly_score;
+  if (current == null || previous == null) {
+    return "В одной из проверок балл не определён; динамику оценить нельзя.";
+  }
+  const delta = current - previous;
+  if (delta >= 0.2) return "Резкий рост аномальности к текущей проверке — приоритет высокий.";
+  if (delta <= -0.2) return "Аномальность заметно снизилась к текущей проверке.";
+  if (Math.abs(delta) < 0.05) return "Аномальность без выраженной динамики.";
+  return delta > 0 ? "Аномальность умеренно растёт." : "Аномальность умеренно снижается.";
+}
+
+const fleetLabels = {
+  quarantine: "Карантин", attention: "Требует внимания",
+  recheck: "Повторить запись", ready: "Готово к работе",
+};
+const fleetTones = { quarantine: "danger", attention: "warn", recheck: "warn", ready: "good" };
+const ticketStatusNames = {
+  idle: "Заявки нет", draft: "Есть черновик", sending: "Отправляется",
+  created: "Заявка зарегистрирована", unknown: "Нужна сверка номера", error: "Ошибка отправки",
+};
+
+function fleetSparkline(history) {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 90 24");
+  svg.setAttribute("class", "sparkline");
+  svg.setAttribute("aria-hidden", "true");
+  const line = document.createElementNS(ns, "path");
+  line.setAttribute("fill", "none");
+  line.setAttribute("stroke", "currentColor");
+  line.setAttribute("stroke-width", "2");
+  svg.append(line);
+  const path = [];
+  let command = "M";
+  for (const [index, { anomaly_score: value }] of history.entries()) {
+    if (value == null) {
+      command = "M";
+      continue;
+    }
+    const x = (3 + index * 84 / Math.max(history.length - 1, 1)).toFixed(1);
+    const y = (21 - value * 18).toFixed(1);
+    path.push(command + x + " " + y);
+    command = "L";
+    const dot = document.createElementNS(ns, "circle");
+    dot.setAttribute("cx", x);
+    dot.setAttribute("cy", y);
+    dot.setAttribute("r", "2");
+    dot.setAttribute("fill", "currentColor");
+    svg.append(dot);
+  }
+  line.setAttribute("d", path.join(" "));
+  return svg;
+}
+
+function renderFleet() {
+  const panel = ui["fleet-panel"];
+  panel.hidden = !view.fleetOpen;
+  ui.context.hidden = view.fleetOpen;
+  ui.workarea.hidden = view.fleetOpen;
+  ui.workspace.dataset.page = view.fleetOpen ? "fleet" : "diagnosis";
+  ui["fleet-toggle"].setAttribute("aria-expanded", String(view.fleetOpen));
+  ui["fleet-toggle"].textContent = view.fleetOpen ? "К диагностике" : "Состояние парка";
+  if (!view.fleetOpen) return;
+
+  const heading = element("h2", "", "Состояние парка");
+  heading.id = "fleet-title";
+  const nodes = [heading];
+  if (view.fleetLoading) {
+    nodes.push(progress("Загружаем сводку по парку…"));
+  } else if (view.fleetError) {
+    nodes.push(alert("Сводка недоступна. " + view.fleetError.message, "error"));
+    const retry = button("Повторить загрузку");
+    retry.addEventListener("click", () => loadFleet(true));
+    nodes.push(retry);
+  } else if (view.fleet) {
+    const summary = element("div", "fleet-summary");
+    const addChip = (key, label, count, tone) => {
+      const chip = element("button", "fleet-chip " + tone);
+      chip.type = "button";
+      chip.dataset.filter = key || "all";
+      chip.setAttribute("aria-pressed", String(view.fleetFilter === key));
+      chip.append(element("strong", "", String(count)), document.createTextNode(" " + label));
+      chip.addEventListener("click", () => {
+        view.fleetFilter = view.fleetFilter === key ? null : key;
+        renderFleet();
+        panel.querySelector('[data-filter="' + chip.dataset.filter + '"]')?.focus({ preventScroll: true });
+      });
+      summary.append(chip);
+    };
+    addChip(null, "Все", view.fleet.summary.total, "");
+    for (const key of ["quarantine", "attention", "recheck", "ready"]) {
+      addChip(key, fleetLabels[key], view.fleet.summary[key] || 0, fleetTones[key]);
+    }
+    nodes.push(summary);
+    const criteria = element("details", "fleet-criteria");
+    criteria.open = Boolean(panel.querySelector(".fleet-criteria")?.open);
+    const rules = element("ul");
+    for (const description of Object.values(view.fleet.criteria)) rules.append(element("li", "", description));
+    criteria.append(element("summary", "", "Как определяются категории"), rules);
+    nodes.push(criteria);
+
+    const list = element("div", "fleet-list");
+    const rows = view.fleetFilter
+      ? view.fleet.vehicles.filter((row) => row.category === view.fleetFilter)
+      : view.fleet.vehicles;
+    if (!rows.length) list.append(element("p", "muted", "В этой категории пока нет машин."));
+    else {
+      const headings = element("div", "fleet-columns");
+      for (const title of ["Машина", "Состояние", "Последняя проверка", "Балл по записям", "Заявка"]) {
+        headings.append(element("span", "", title));
+      }
+      list.append(headings);
+    }
+    for (const row of rows) {
+      const item = element("article", "fleet-row");
+      const name = element("div", "fleet-name");
+      const model = row.model?.startsWith(row.make) ? row.model : [row.make, row.model].filter(Boolean).join(" ");
+      name.append(element("strong", "", row.vehicle_id),
+        element("span", "muted", [model, row.engine_model].filter(Boolean).join(" · ")));
+      const category = element("span", "fleet-chip " + fleetTones[row.category], fleetLabels[row.category]);
+      const latest = element("div", "fleet-latest");
+      latest.append(element("strong", "", row.latest.anomaly_title || outcomes[row.latest.status]),
+        element("span", "muted", `${date.format(new Date(row.latest.checked_at))} · ${row.latest.session_id}`));
+      const history = element("div", "fleet-history");
+      const trend = row.history.map((step) => step.anomaly_score == null ? "—" : score.format(step.anomaly_score)).join(" → ");
+      history.append(fleetSparkline(row.history), element("span", "muted", trend));
+      const ticket = element("div", "fleet-ticket",
+        row.ticket.status === "idle" ? "" : row.ticket.ticket_id || ticketStatusNames[row.ticket.status] || row.ticket.status);
+      const open = button("К проверке");
+      open.addEventListener("click", () => openFleetVehicle(row));
+      item.append(name, category, latest, history, ticket, open);
+      list.append(item);
+    }
+    nodes.push(list);
+  }
+  panel.replaceChildren(...nodes);
+}
+
+async function loadFleet(force = false) {
+  if (view.fleetLoading && !force) return;
+  view.fleetLoading = true;
+  view.fleetError = null;
+  if (force) view.fleet = null;
+  renderFleet();
+  try {
+    view.fleet = await api("fleet");
+  } catch (error) {
+    view.fleetError = error;
+  } finally {
+    view.fleetLoading = false;
+    renderFleet();
+  }
+}
+
+function toggleFleet() {
+  view.fleetOpen = !view.fleetOpen;
+  renderFleet();
+  window.scrollTo(0, 0);
+  // Сводка обновляется при каждом открытии: статусы заявок могли измениться.
+  if (view.fleetOpen) loadFleet(true);
+}
+
+function openFleetVehicle(row) {
+  const vehicle = view.catalog?.vehicles.find((item) => item.vehicle_id === row.vehicle_id);
+  view.fleetOpen = false;
+  renderFleet();
+  if (!vehicle) return;
+  selectVehicle(vehicle);
+  ui.session.value = row.latest.session_id;
+  choose(row.vehicle_id, row.latest.session_id);
+  ui.diagnostic.scrollIntoView({ block: "start" });
+}
+
 function render() {
   setControls();
   renderContext();
@@ -942,6 +1377,8 @@ function render() {
   renderChat();
   renderTicket();
   renderJournal();
+  renderHistory();
+  renderFleet();
 }
 
 function stateRoute() {
@@ -1054,7 +1491,7 @@ function showSessions(vehicle, selected = "") {
   ui["vehicle-facts"].replaceChildren(element("strong", "", vehicle.engine_model),
     document.createTextNode([vehicle.model || vehicle.make, vehicle.fuel].filter(Boolean).join(" · ")));
   for (const session of [...vehicle.sessions].reverse()) {
-    ui.session.add(option(session.session_id, formatDate(session.checked_at) + " МСК · " + session.session_id));
+    ui.session.add(option(session.session_id, session.session_id + " · " + formatDate(session.checked_at, sessionDate)));
   }
   ui.session.value = selected;
 }
@@ -1090,13 +1527,23 @@ async function choose(vehicleId, sessionId, restore = false) {
   }
   view.pair = !invalid && vehicle && sessionId ? { vehicle_id: vehicleId, session_id: sessionId } : null;
   Object.assign(view, { state: null, diagnosisError: invalid, chatError: null, ticketError: null,
-    needsTicketCheck: false, pendingQuestion: "", busy: view.pair ? "load" : null, editingContext: false });
+    needsTicketCheck: false, pendingQuestion: "", busy: view.pair ? "load" : null, editingContext: false,
+    history: null, historyVehicle: null, historyError: null });
   setAlert(ui["selection-error"], invalid?.message);
   render();
   if (!view.pair) return;
   try {
     const state = await api(stateRoute());
-    if (generation === view.generation) view.state = state;
+    if (generation === view.generation) {
+      view.state = state;
+      const pendingDraft = restore ? history.state?.sourceOrigin?.pendingDraft : null;
+      if (pendingDraft && (pendingDraft.key === draftKey() ||
+          (state?.draft_id && pendingDraft.edits?.version?.draft_id === state.draft_id))) {
+        if (pendingDraft.edits) view.pendingEdits.set(draftKey(), pendingDraft.edits);
+        view.consents = pendingDraft.consents || null;
+      }
+      if (state?.diagnosis) loadHistory(vehicleId);
+    }
   } catch (error) {
     if (generation === view.generation) view.diagnosisError = error;
   } finally {
@@ -1122,21 +1569,11 @@ async function loadCatalog() {
     const sessionId = params.get("session_id") || "";
     const vehicle = view.catalog.vehicles.find((item) => item.vehicle_id === vehicleId);
     ui["catalog-size"].textContent = view.catalog.vehicles.length + " ТС в каталоге";
-    ui.mode.textContent = ({
-      demo: "Синтетические данные · тестовый чат",
-      hybrid: "Синтетические данные · агент команды",
-      team: "Синтетические данные · стенд команды",
-    })[view.catalog.mode] || "Синтетические данные";
+    ui.mode.title = view.catalog.mode === "demo" ? "Тестовый чат" : "Агент команды";
     vehiclePicker.selected = vehicle || null;
     restoreVehicleInput();
     showSessions(vehicle, vehicle?.sessions.some((item) => item.session_id === sessionId) ? sessionId : "");
     ui.vehicle.disabled = false;
-    const pendingDraft = history.state?.sourceOrigin?.pendingDraft;
-    const key = JSON.stringify({ vehicle_id: vehicleId, session_id: sessionId });
-    if (pendingDraft?.key === key) {
-      if (pendingDraft.edits) view.pendingEdits.set(key, pendingDraft.edits);
-      view.consents = pendingDraft.consents || null;
-    }
     await choose(vehicleId, sessionId, true);
     requestAnimationFrame(restoreSourceOrigin);
   } catch (error) {
@@ -1175,6 +1612,7 @@ async function refreshTicket(explicit) {
   if (view.busy || !view.pair) return;
   const generation = view.generation;
   view.busy = "verify";
+  setControls();
   if (explicit) renderTicket();
   try {
     const state = await api(stateRoute());
@@ -1218,7 +1656,11 @@ async function action(kind, path, method, payload = {}) {
     if (updatesDraft && view.pendingEdits.get(key) === pending) view.pendingEdits.delete(key);
     if (generation !== view.generation) return null;
     view.state = state;
-    if (kind === "diagnose") view.editingContext = false;
+    if (kind === "diagnose") {
+      view.editingContext = false;
+      loadHistory(view.pair.vehicle_id, true);
+    }
+    if (kind === "submit" || kind === "reconcile") loadHistory(view.pair.vehicle_id, true);
     return state;
   } catch (error) {
     if (generation !== view.generation) return null;
@@ -1241,7 +1683,9 @@ async function action(kind, path, method, payload = {}) {
       view.ticketError = error.message;
     }
     if (kind === "submit") {
-      view.needsTicketCheck = !error.admission && (error.status === 0 || error.status >= 500 || error.status === 409);
+      const uncertain = error.status === 0 || error.status >= 500 ||
+        error.status === 409 || ["delivery_unknown", "team_timeout", "client_timeout", "server_error", "offline"].includes(error.code);
+      view.needsTicketCheck = uncertain && !error.admission && !error.state;
       view.ticketError = view.needsTicketCheck
         ? "Результат отправки неизвестен. Проверьте статус заявки. " + error.message : error.message;
     }
@@ -1259,19 +1703,30 @@ async function action(kind, path, method, payload = {}) {
   }
 }
 
-async function sendQuestion(value) {
+async function sendQuestion(value, fromComposer = false) {
   const message = value.trim();
   if (!message || !view.state?.diagnosis || view.busy) return;
   const generation = view.generation;
   const hadDraft = Boolean(view.state?.draft);
   const result = await action("chat", "chat", "POST", { message });
-  if (!result || generation !== view.generation) return;
-  if (ui.question.value.trim() === message) {
+  if (generation !== view.generation) return;
+  if (!result) {
+    if (!ui.question.value.trim()) ui.question.value = message;
+    ui.question.dispatchEvent(new Event("input"));
+    if (fromComposer) ui.question.focus({ preventScroll: true });
+    return;
+  }
+  if (fromComposer && ui.question.value.trim() === message) {
     ui.question.value = "";
     ui.question.dispatchEvent(new Event("input"));
   }
-  if (result.draft && (!hadDraft || /заявк/i.test(message))) revealTicket();
-  else ui.messages.lastElementChild?.scrollIntoView({ block: "nearest" });
+  if (result.draft && (!hadDraft || /заявк|наряд|черновик/i.test(message))) revealTicket();
+  else {
+    const answer = ui.messages.lastElementChild;
+    answer?.focus({ preventScroll: true });
+    answer?.scrollIntoView({ block: "start" });
+  }
+  return result;
 }
 
 async function updateDraft(edits, version, submit, acknowledgements = {}) {
@@ -1290,16 +1745,19 @@ async function updateDraft(edits, version, submit, acknowledgements = {}) {
   } else announce("Изменения сохранены.");
 }
 
-async function reconcileDraft(ticketId, version) {
+async function reconcileDraft(ticketId, version, fieldId) {
   const generation = view.generation;
   const state = await action("reconcile", "drafts/" + encodeURIComponent(version.draft_id) + "/reconcile", "POST",
     { revision: version.revision, ticket_id: ticketId, verified: true });
   if (generation !== view.generation) return;
-  if (state?.ticket?.ticket_id) {
-    announce("Сохранён подтверждённый номер " + state.ticket.ticket_id + ".");
-    revealTicket();
+  const current = state?.draft_id === version.draft_id;
+  const saved = current ? state.ticket.ticket_id
+    : state?.previous_drafts?.find((draft) => draft.draft_id === version.draft_id)?.ticket_id;
+  if (saved) {
+    announce("Сохранён подтверждённый номер " + saved + ".");
+    if (current) revealTicket();
   } else {
-    const field = byId("reconcile-ticket-id");
+    const field = byId(fieldId);
     if (field) {
       field.value = ticketId;
       field.focus();
@@ -1347,18 +1805,28 @@ ui["ask-question"].addEventListener("click", () => {
 ui.selection.addEventListener("submit", (event) => event.preventDefault());
 ui.composer.addEventListener("submit", (event) => {
   event.preventDefault();
-  sendQuestion(ui.question.value);
+  sendQuestion(ui.question.value, true);
 });
 ui.question.addEventListener("input", () => {
   ui.question.style.height = "auto";
   ui.question.style.height = ui.question.scrollHeight + "px";
+  setChatSubmit();
 });
 ui.question.addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
   event.preventDefault();
-  sendQuestion(ui.question.value);
+  sendQuestion(ui.question.value, true);
+});
+ui["pressure-form"].addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (ui["pressure-helper"].hidden || view.busy) return;
+  const values = new FormData(event.currentTarget);
+  const question = values.get("pressure") + " кПа, " + values.get("regime") + ", "
+    + values.get("warm") + ", " + values.get("tolerance");
+  if (await sendQuestion(question)) ui["pressure-helper"].open = false;
 });
 ui["retry-catalog"].addEventListener("click", loadCatalog);
+ui["fleet-toggle"].addEventListener("click", toggleFleet);
 
 compactLayout.addEventListener("change", updateLayout);
 document.addEventListener("click", (event) => {

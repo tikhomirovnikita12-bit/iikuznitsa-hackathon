@@ -21,6 +21,7 @@ from .upstream import Problem, post
 class Catalog:
     def __init__(self, path: Path):
         data = json.loads(path.read_text(encoding="utf-8"))
+        self.fuels = {item["vehicle_id"]: item.get("fuel", "") for item in data["vehicles"]}
         self.vehicles = {}
         self.sessions = {}
         for item in data["vehicles"]:
@@ -141,10 +142,12 @@ class Workflow:
             raise Problem(404, "draft_not_found", "Черновик не найден.")
         return row
 
-    def create_draft(self, pair: Pair) -> DraftView:
+    def create_draft(self, pair: Pair, *, expected_diagnosis: Diagnosis | None = None) -> DraftView:
         vehicle = self.catalog.validate_pair(pair)
         with self.store.connection(write=True) as conn:
             diagnosis = self.diagnosis(conn, pair)
+            if expected_diagnosis is not None and diagnosis != expected_diagnosis:
+                raise Problem(409, "diagnosis_changed", "Диагностика изменилась. Обновите результат проверки.")
             admission = evaluate_admission(vehicle, diagnosis, mechanic=self.mechanic)
             self.require_admission(admission, prepare=True)
             fields = self.mechanic.suggest_draft(diagnosis, vehicle.engine_model)

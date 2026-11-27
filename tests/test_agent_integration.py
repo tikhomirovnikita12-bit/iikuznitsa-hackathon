@@ -18,7 +18,11 @@ from mechanic.state import Store
 class EvidenceSelector:
     """Only the provider is simulated. Lookup, page resolution and storage are real."""
 
+    def __init__(self):
+        self.requests = 0
+
     def ask(self, prompt, schema, trace):
+        self.requests += 1
         fields = schema["properties"]
         if "items" in fields:
             choices = fields["items"]["items"]["properties"]["source"]["enum"]
@@ -27,6 +31,8 @@ class EvidenceSelector:
             return {"items": [{"source": choices[0], "field": "checks"}]}
         if "action" in fields:
             return {"action": "ticket", "query": "", "question": ""}
+        if "topic" in fields:
+            return {"topic": "mechanic"}
         if "query" in fields:
             return {"query": "определение картера"}
         raise AssertionError(fields)
@@ -39,7 +45,8 @@ class Member4Tests(unittest.TestCase):
         corpus = folder / "corpus.json"
         corpus.write_text(json.dumps({"fragments": verified_fragments()}))
         agent = CaseAgent(corpus, folder / "turns.jsonl")
-        agent.agent.provider = EvidenceSelector()
+        self.provider = EvidenceSelector()
+        agent.agent.provider = self.provider
         stack.enter_context(patch.object(main, "case_agent", agent))
         stack.enter_context(patch.object(main, "store", Store(folder / "ui.db", 10)))
         workflow = main.team.workflow
@@ -62,6 +69,7 @@ class Member4Tests(unittest.TestCase):
         self.client = TestClient(main.app)
         self.addCleanup(self.client.close)
         self.oil = dict(vehicle_id="E549YT198", session_id="S-0011")
+        self.fuel = dict(vehicle_id="M333YK47", session_id="S-0005")
 
     def post(self, route, pair, **extra):
         response = self.client.post("/api/" + route, json={**pair, **extra})
@@ -69,7 +77,7 @@ class Member4Tests(unittest.TestCase):
         return response.json()
 
     def test_first_result_and_confirmation(self):
-        pair = dict(vehicle_id="M333YK47", session_id="S-0005")
+        pair = self.fuel
         first = self.post("diagnose", pair)
         self.assertEqual(first["brief"]["origin"], "team")
         self.assertEqual(first["brief"]["references"][0]["pdf_page"], 16)
@@ -77,13 +85,17 @@ class Member4Tests(unittest.TestCase):
         draft = proposed["draft"]
         self.assertEqual(draft["vehicle_id"], pair["vehicle_id"])
         self.assertEqual(draft["session_id"], pair["session_id"])
-        self.assertTrue(draft["operations"] and draft["references"])
+        self.assertTrue(draft["operations"])
+        self.assertIn(16, {reference["pdf_page"] for reference in draft["references"]})
+        repeat = self.post("chat", pair, message="Оформи наряд механика")
+        self.assertEqual(repeat["draft_id"], proposed["draft_id"])
+        self.assertEqual(repeat["draft_revision"], proposed["draft_revision"])
         self.assertFalse(self.sent)
-        self.assertTrue(any(call["tool"] == "agent.search" and call["pages"] for call in proposed["calls"]))
         receipt = self.post("ticket", pair, draft_id=proposed["draft_id"], revision=proposed["draft_revision"],
-                            edits={k: draft[k] for k in ("operations", "spare_parts", "urgency", "conclusion")},
                             diagnosis_revision=proposed["admission"]["diagnosis_revision"],
                             applicability_confirmations=["initial_start_or_long_storage"],
+                            edits={**{k: draft[k] for k in ("operations", "spare_parts", "conclusion")},
+                                   "urgency": "medium"},
                             priority_confirmed=True)
         self.assertEqual(receipt["ticket"]["ticket_id"], "TKT-0001")
         self.assertEqual(len(self.sent), 1)
@@ -96,6 +108,82 @@ class Member4Tests(unittest.TestCase):
         self.assertIn("400–635 кПа", analysis["checks"][0]["text"])
         self.assertIn("80–100 °C", analysis["checks"][0]["text"])
         self.assertEqual(analysis["references"][0]["url"], "/sources/yamz536-rk/13")
+
+    def test_known_diagnoses_and_first_checks_without_model(self):
+        for pair, code, page, subject in (
+            (self.oil, "F02", 53, "масл"),
+            (self.fuel, "F08", 16, "топливопровод"),
+        ):
+            with self.subTest(code=code):
+                before = self.provider.requests
+                state = self.post("diagnose", pair)
+                self.assertEqual(state["diagnosis"]["anomaly_type"], code)
+                self.assertIn(subject, state["brief"]["first_check"].casefold())
+                self.assertIn(page, {ref["pdf_page"] for ref in state["brief"]["references"]})
+                reply = self.post("chat", pair, message="Что проверить сначала?")["messages"][-1]["analysis"]
+                checks = [check["text"].casefold() for check in reply["checks"]]
+                self.assertTrue(checks)
+                self.assertIn(subject, checks[0])
+                self.assertEqual(len(checks), len(set(checks)))
+                self.assertIn(f"/sources/yamz236-re/{page}", {ref["url"] for ref in reply["references"]})
+                self.assertEqual(self.provider.requests, before)
+
+    def test_pressure_in_bar_and_ambiguous_range(self):
+        self.post("diagnose", self.oil)
+        state = self.post("chat", self.oil, message="3,5 бар, двигатель прогрет, 2100 об/мин, без допуска")
+        reading = state["messages"][-1]["analysis"]
+        comparison = reading["checks"][0]["text"]
+        self.assertRegex(comparison, r"350(?:[.,]0+)?\s*кПа")
+        self.assertIn("ниже", comparison.casefold())
+        self.assertIn(19, {ref["pdf_page"] for ref in reading["references"]})
+        state = self.post("chat", self.oil, message="350–450 кПа")
+        ambiguous = state["messages"][-1]["analysis"]
+        self.assertTrue(ambiguous["clarifying_question"])
+        self.assertFalse(ambiguous["checks"], ambiguous)
+
+    def test_fluid_report_keeps_distinct_levels(self):
+        self.post("diagnose", self.oil)
+        state = self.post("chat", self.oil, message="Масло в норме и антифриза мало")
+        report = state["messages"][-1]["analysis"]
+        self.assertEqual(report["fluid_check"]["oil"], "ok")
+        self.assertEqual(report["fluid_check"]["coolant"], "low")
+        self.assertIn(53, {ref["pdf_page"] for ref in report["references"]})
+        self.assertIsNone(state["draft"])
+
+    def test_f02_agent_continues_after_manometer_check(self):
+        self.post("diagnose", self.oil)
+        before = self.provider.requests
+        first = self.post("chat", self.oil, message="Масло и охл. жидкость в норме")["messages"][-1]
+        self.assertIn("Проверьте исправность манометра", first["summary"])
+        for message in ("Он в норме, что дальше?", "Что проверять первым делом?", "Какую гипотезу проверять?"):
+            state = self.post("chat", self.oil, message=message)
+            analysis = state["messages"][-1]["analysis"]
+            self.assertEqual(analysis["fluid_check"], {"oil": "ok", "coolant": "ok", "gauge": "ok"})
+            self.assertIn("давления масла замером", analysis["checks"][0]["text"])
+            self.assertEqual([ref["pdf_page"] for ref in analysis["references"]], [19])
+            self.assertIsNone(state["draft"])
+        result = self.post("chat", self.oil, message="350 кПа, прогрет, 2100 об/мин, без допуска")
+        analysis = result["messages"][-1]["analysis"]
+        self.assertIn("350 кПа — ниже", analysis["checks"][0]["text"])
+        self.assertIn("загрязнение фильтра грубой очистки", analysis["checks"][1]["text"])
+        self.assertEqual([ref["pdf_page"] for ref in analysis["references"]], [19, 53])
+        self.assertEqual(self.provider.requests, before)
+        self.assertFalse(self.sent)
+
+    def test_movement_question_does_not_create_a_draft(self):
+        self.post("diagnose", self.fuel)
+        movement = self.post("chat", self.fuel, message="Можно ли ехать?")
+        self.assertRegex(movement["messages"][-1]["summary"].casefold(), r"не подтвержд[её]н|нельзя|не разреш")
+        self.assertIsNone(movement["draft"])
+        self.assertFalse(self.sent)
+
+    def test_negated_and_explanatory_ticket_questions_do_not_create_drafts(self):
+        self.post("diagnose", self.fuel)
+        for message in ("Не создавай заявку, скажи, что проверить", "Объясни, как оформить заявку на дефектовку"):
+            with self.subTest(message=message):
+                state = self.post("chat", self.fuel, message=message)
+                self.assertIsNone(state["draft"])
+        self.assertFalse(self.sent)
 
     def test_measurement_switch_and_recording(self):
         self.post("diagnose", self.oil)

@@ -25,6 +25,8 @@ def normalized_words(text):
 
 
 def term(word):
+    if re.fullmatch(r"цеп(?:ь|и|ей|ям|ью|ях|ями)", word):
+        return "цеп"
     if len(word) > 4 and re.fullmatch(r"[а-я]+", word):
         return RUSSIAN_ENDING.sub("", word)
     return word
