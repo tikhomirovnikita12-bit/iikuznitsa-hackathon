@@ -255,6 +255,15 @@ def admission_checks(browser, base, out, results, *, mobile=False):
         results.append({"step": "Причины отказа: F04 без процедуры, confidence 0.48, bad и несовместимый F08", "mobile": mobile, "result": "passed"})
 
         open_pair(page, base, OIL)
+        ask(page, "Что проверить сначала?", "Проверка по руководству выбранного двигателя.")
+        last_reply = page.locator("#messages .bubble:not(.user)").last
+        last_reply.get_by_role("button", name="Сообщить результат").click()
+        prompt = page.locator("#question").input_value()
+        assert "PDF, стр. 53" in prompt
+        ask(page, prompt + "уровень масла в норме, уровень охлаждающей жидкости в норме", "Оба уровня в норме")
+        expect(last_reply).to_contain_text("Проверьте исправность манометра")
+        expect(last_reply.locator('a[href="/sources/yamz236-re/53"]')).to_be_visible()
+        assert page_state(page, base, OIL)["draft"] is None
         draft(page, from_result=True)
         state = page_state(page, base, OIL)
         assert state["draft"]["operations"] == [
@@ -263,7 +272,7 @@ def admission_checks(browser, base, out, results, *, mobile=False):
         expect(page.locator('#ticket-panel a[href="/sources/yamz236-re/53"]').first).to_be_visible()
         submit(page)
         expect(page.locator(".ticket-badge")).to_be_visible()
-        results.append({"pair": OIL, "step": "Первичная проверка F02 по PDF 53 и подтверждение",
+        results.append({"pair": OIL, "step": "Результат проверки уровней F02 по PDF 53 и подтверждение заявки",
                         "mobile": mobile, "result": "passed"})
 
         # F08 has a real but conditional startup operation; choosing a priority isn't enough.

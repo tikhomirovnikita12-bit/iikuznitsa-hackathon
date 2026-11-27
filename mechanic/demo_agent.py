@@ -2,12 +2,12 @@
 
 import re
 
+from agent.tools import fluid_check
+from backend.mechanic import conflict_case
 from manual_search.corpus import verified_fragments
 
 from .contracts import Brief, Diagnosis, DraftFields, Reference, Reply, Section
 from .sources import YAMZ236, ZMZ409, ZMZ5234
-from backend.mechanic import conflict_case
-from manual_search.corpus import verified_fragments
 
 
 OIL_LEVELS = YAMZ236.reference(53)
@@ -282,7 +282,21 @@ def valve_reply(signs: Section, signal_quality: str) -> Reply:
     )
 
 
-def answer(vehicle: dict, diagnosis: Diagnosis, question: str) -> Reply:
+def fluid_report_reply(question: str, history) -> Reply | None:
+    previous = next((analysis["fluid_check"] for message in reversed(history)
+                     if message["role"] == "assistant" and (analysis := message.get("analysis"))
+                     and isinstance(analysis.get("fluid_check"), dict)), None)
+    levels = fluid_check.report(question, previous)
+    if levels is None:
+        return None
+    action, clarification = fluid_check.next_action(levels)
+    guidance = action or clarification
+    return Reply(summary=guidance,
+                 sections=[source_section("checks" if action else "clarify", [guidance], OIL_LEVELS)],
+                 analysis={"fluid_check": levels})
+
+
+def answer(vehicle: dict, diagnosis: Diagnosis, question: str, *, history=()) -> Reply:
     text = question.casefold()
     signs = source_section("signs", [diagnosis.description])
     if diagnosis.status == "check_failed":
@@ -302,6 +316,9 @@ def answer(vehicle: dict, diagnosis: Diagnosis, question: str) -> Reply:
     case = case_for(vehicle, diagnosis)
     if case == "mismatch":
         return Reply(summary=mismatch(vehicle, diagnosis), sections=[signs])
+    if case == "oil" and not (DRIVE.search(text) or MEASUREMENT.search(text)):
+        if reply := fluid_report_reply(question, history):
+            return reply
     if case == "coolant" and NORM.search(text):
         return Reply(
             summary=COOLANT_NORM,

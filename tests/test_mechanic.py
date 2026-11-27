@@ -217,6 +217,35 @@ def test_mock_payload_receipt_and_concurrent_duplicate(stand, monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("reports", [
+    ["Результат проверки по руководству (PDF, стр. 53):\n"
+     "уровень масла в норме, уровень охлаждающей жидкости в норме"],
+    ["Уровень масла в норме", "Уровень охлаждающей жидкости в норме"],
+])
+def test_demo_f02_continues_after_fluid_check(stand, monkeypatch, reports):
+    client, deliveries = stand
+    monkeypatch.setattr(main, "case_agent", None)
+    diagnose(client)
+
+    def ask(message):
+        response = client.post("/api/chat", json={**OIL, "message": message})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    first = ask("Что проверить сначала?")["messages"][-1]
+    assert any(ref["pdf_page"] == 53 for section in first["sections"] for ref in section["references"])
+    for message in reports:
+        result = ask(message)
+    reply = result["messages"][-1]
+    assert "Оба уровня в норме" in reply["summary"]
+    assert "манометра" in reply["summary"]
+    assert reply["analysis"]["fluid_check"] == {"oil": "ok", "coolant": "ok"}
+    assert any(ref["pdf_page"] == 53 for section in reply["sections"] for ref in section["references"])
+    assert state(client)["messages"][-1] == reply
+    assert result["draft"] is None
+    assert deliveries == []
+
+
 def test_case_agent_preserves_measurements_without_inventing_draft_procedure(stand, monkeypatch, tmp_path):
     client, calls = stand
     corpus = tmp_path / "corpus.json"

@@ -698,7 +698,7 @@ def response_to_chat(vehicle, diagnosis, state, question):
             Section(kind="clarify", items=["Ограничения и условия: " + " ".join(conditions)]),
         ])
         return reply, None, "fixture", [], None
-    return demo_agent.answer(vehicle, diagnosis, question), None, "fixture", [], None
+    return demo_agent.answer(vehicle, diagnosis, question, history=state["messages"]), None, "fixture", [], None
 
 
 def draft_available(vehicle: dict, state: dict) -> bool:
