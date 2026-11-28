@@ -13,6 +13,14 @@ CREATE TABLE IF NOT EXISTS diagnoses (
     PRIMARY KEY (vehicle_id, session_id)
 );
 
+CREATE TABLE IF NOT EXISTS diagnosis_requests (
+    vehicle_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    started_version INTEGER NOT NULL,
+    saved_version INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (vehicle_id, session_id)
+);
+
 CREATE TABLE IF NOT EXISTS drafts (
     draft_id TEXT PRIMARY KEY,
     vehicle_id TEXT NOT NULL,

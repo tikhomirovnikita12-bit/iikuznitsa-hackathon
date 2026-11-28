@@ -1,6 +1,8 @@
 """Changing the diagnosis must select its own draft without deleting history."""
 
+from concurrent.futures import ThreadPoolExecutor
 import json
+from threading import Event
 
 import httpx
 import pytest
@@ -194,3 +196,49 @@ def test_get_restores_new_diagnosis_and_clears_cached_draft_context(changing_cas
     assert result["ticket"]["status"] == "idle"
     assert not any(message.get("summary") == "Старый ответ F02" for message in result["messages"])
     assert adapter.workflow.get_draft(oil["draft_id"]).anomaly_type == "F02"
+
+
+@pytest.mark.parametrize("newer_succeeds", [True, False])
+def test_overlapping_diagnoses_keep_latest_successful_result(changing_case, monkeypatch, newer_succeeds):
+    client, adapter, response, sent = changing_case
+    old_draft = create_oil(client)
+    older = {**response, "description": "Результат первого запроса."}
+    set_valves(response)
+    pending, release = Event(), Event()
+
+    def ml(_request):
+        if pending.is_set():
+            return httpx.Response(200, json=response) if newer_succeeds else httpx.Response(503)
+        pending.set()
+        assert release.wait(10)
+        return httpx.Response(200, json=older)
+
+    with httpx.Client(base_url=main.ML_URL, transport=httpx.MockTransport(ml)) as upstream:
+        monkeypatch.setattr(adapter.workflow, "ml", upstream)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(diagnose, client)
+            try:
+                assert pending.wait(10)
+                second = client.post("/api/diagnose", json=PAIR)
+                if newer_succeeds:
+                    assert second.status_code == 200, second.text
+                    assert second.json()["diagnosis"]["anomaly_type"] == "F01"
+                    turn = client.post("/api/chat", json={**PAIR, "message": "Какие последствия у отклонения?"})
+                    assert turn.status_code == 200, turn.text
+                else:
+                    assert second.status_code == 502, second.text
+                    assert second.json()["error"]["code"] == "ml_unexpected_status"
+            finally:
+                release.set()
+            first_result = first.result(timeout=10)
+
+    restored = client.get("/api/state", params=PAIR).json()
+    assert first_result["diagnosis"] == restored["diagnosis"] == (response if newer_succeeds else older)
+    if newer_succeeds:
+        assert restored["messages"] == turn.json()["messages"]
+        assert restored["draft"] is None
+        assert adapter.workflow.get_draft(old_draft["draft_id"]).revision == old_draft["draft_revision"]
+    else:
+        assert restored["draft_id"] == old_draft["draft_id"]
+        assert restored["draft_revision"] > old_draft["draft_revision"]
+    assert sent == []

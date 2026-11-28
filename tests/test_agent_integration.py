@@ -119,20 +119,32 @@ class Member4Tests(unittest.TestCase):
         chain_question = "Как проверить гидронатяжитель цепи?"
         summary = "При температуре масла 80–100 °C и номинальных оборотах давление должно быть 400–635 кПа."
         requests = []
+        timeouts = []
+        clock = 100.0
         provider = Ollama()
 
         def ollama(_url, body, timeout):
             requests.append(body)
+            timeouts.append(timeout)
             if len(requests) > 1:
                 raise TimeoutError("Generator unavailable")
             return {"model": body["model"], "message": {"content": json.dumps({"answer": summary})}}
 
-        with (patch.dict("os.environ", {"AGENT_MODEL": "router", "OLLAMA_GENERATION_MODEL": "writer"}),
+        def translate(*args, **kwargs):
+            nonlocal clock
+            clock += 50
+            return [question]
+
+        with (patch.dict("os.environ", {"AGENT_MODEL": "router", "OLLAMA_GENERATION_MODEL": "writer",
+                                        "OLLAMA_TIMEOUT_SECONDS": "180"}),
               patch.object(main.case_agent.agent, "provider", provider),
               patch.object(provider, "ask", side_effect=self.provider.ask),
+              patch("agent.timing.monotonic", side_effect=lambda: clock),
               patch("agent.dialog.post", side_effect=ollama)):
             answer = self.post("chat", norm, message=question)["messages"][-1]
-            norm_fallback = self.post("chat", norm, message=question)["messages"][-1]
+            with patch.object(main.localization, "translate", side_effect=translate):
+                norm_fallback = self.post("chat", norm, message="Տեխնիկական հարց",
+                                          input_language="hy")["messages"][-1]
             self.assertEqual(len(requests), 2)
 
             chain_fallback = self.post("chat", chain, message=chain_question)["messages"][-1]
@@ -142,6 +154,7 @@ class Member4Tests(unittest.TestCase):
 
         self.assertEqual(answer["summary"], summary)
         self.assertEqual([request["model"] for request in requests], ["writer"] * 3)
+        self.assertEqual(timeouts, [55, 5, 55])
         excerpts = json.loads(requests[0]["messages"][-1]["content"])["excerpts"]
         self.assertEqual(excerpts, [{"text": check["text"]} for check in answer["analysis"]["checks"]])
         self.assertEqual(norm_fallback["analysis"]["references"], answer["analysis"]["references"])
@@ -244,6 +257,11 @@ class Member4Tests(unittest.TestCase):
         self.assertIn("локализовать стук", risk["items"][0])
         self.assertEqual([ref["pdf_page"] for ref in risk["references"]], [143])
         self.assertIsNone(response["draft"])
+        effect = self.post("chat", pair, message="Какие последствия у такого отклонения?")["messages"][-1]
+        effect_risk, = effect["sections"]
+        self.assertEqual(effect_risk["kind"], "risk")
+        self.assertIn("не удерживать натяжение цепи", effect_risk["items"][0])
+        self.assertEqual(effect_risk["references"], risk["references"])
 
         def old_brief(state):
             state["brief"].update(rationale="Уровень риска по имеющимся данным не установлен.",

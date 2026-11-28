@@ -392,6 +392,39 @@ def late_response_check(browser, directory, results):
 
 
 
+def chat_conflict_check(browser, base, results):
+    page = browser.new_page()
+    try:
+        open_pair(page, base, OIL)
+        concurrent_question = "Какое давление масла на прогретом двигателе?"
+        response = page.request.post(base + "/api/chat", data={
+            "vehicle_id": OIL[0], "session_id": OIL[1], "message": concurrent_question,
+        })
+        assert response.ok, response.text()
+        latest = response.json()
+        pending = "Что проверить в первую очередь?"
+        path = "**/api/chat"
+        page.route(path, lambda route: route.fulfill(status=409, json={
+            "error": {"code": "stale_chat", "message": "В чате появились новые сообщения."},
+            "state": latest,
+        }), times=1)
+
+        question = page.locator("#question")
+        question.fill(pending)
+        page.locator("#send").click()
+        expect(page.locator("#chat-error")).to_contain_text("В чате появились новые сообщения")
+        expect(page.locator("#messages .user").last).to_contain_text(concurrent_question)
+        expect(question).to_have_value(pending)
+
+        page.locator("#send").click()
+        expect(page.locator("#messages .user").last).to_contain_text(pending)
+        expect(question).to_have_value("")
+        expect(page.locator("#chat-error")).to_be_hidden()
+    finally:
+        page.close()
+    results.append({"check": "chat_conflict_preserves_composer", "result": "passed"})
+
+
 def fleet_and_history_check(browser, base, results):
     context = browser.new_context(viewport={"width": 1280, "height": 850}, locale="ru-RU")
     try:
@@ -721,6 +754,7 @@ def main():
                 pressure_form_check(browser, directory, results)
                 stored_recommendations_check(browser, base, results)
                 dictation_check(browser, base, results)
+                chat_conflict_check(browser, base, results)
                 (out / "browser-results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
                 print(f"{len(results)} browser checks passed", flush=True)
         browser.close()

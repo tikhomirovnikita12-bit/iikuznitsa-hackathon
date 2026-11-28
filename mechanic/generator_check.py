@@ -10,6 +10,7 @@ from .sources import YAMZ236
 
 SOURCE = YAMZ236.reference(55)
 QUESTION = "Что показывает амперметр на номинальных оборотах?"
+RATED_SPEED = "на номинальных оборотах"
 INSPECTION = "При заглушенном двигателе проверьте натяжение ремней привода и состояние подшипников генератора."
 REPORTS = {
     "discharge": "На номинальных оборотах амперметр показывает разряд.",
@@ -22,19 +23,27 @@ TOPIC = re.compile(
 )
 
 
-def reported_reading(message: str) -> GeneratorReading | None:
+def reported_reading(message: str) -> tuple[GeneratorReading, bool] | None:
     text = " ".join(message.casefold().split()).strip(" .!")
     if text.startswith("результат проверки") and ":" in text:
         text = text.split(":", 1)[1].strip()
+    report = text.removeprefix(RATED_SPEED + " ").removesuffix(" " + RATED_SPEED)
     result = re.fullmatch(
-        r"(?:на номинальных оборотах )?(?:амперметр )?"
-        r"(?P<negative>нет разряда|разряда нет|не показывает разряд)|"
-        r"(?:на номинальных оборотах )?(?:амперметр )?(?:показывает разряд|есть разряд)",
-        text,
+        r"(?:амперметр )?(?:(?P<negative>нет разряда|разряда нет|не показывает разряд)|показывает разряд|есть разряд)",
+        report,
     )
     if result:
-        return "no_discharge" if result.group("negative") else "discharge"
+        return ("no_discharge" if result.group("negative") else "discharge"), report != text
     return None
+
+
+def awaiting_reading(messages: list[dict]) -> bool:
+    if not messages:
+        return False
+    last = messages[-1]
+    return last["role"] == "assistant" and last.get("origin") == "rule" and any(
+        section["kind"] == "checks" and QUESTION in section["items"] for section in last.get("sections", [])
+    )
 
 
 def applies(vehicle: dict, diagnosis: dict | None) -> bool:
@@ -80,15 +89,17 @@ def brief(value: GeneratorReading | None) -> dict:
     ).model_dump()}
 
 
-def reply(value: GeneratorReading | None) -> Reply:
+def reply(value: GeneratorReading | None, *, clarify_regime: bool = False) -> Reply:
     result = brief(value)
     summary = result["rationale"]
-    if result["risk"] == "high":
+    if clarify_regime:
+        summary = "Уточните показание амперметра именно на номинальных оборотах."
+    elif result["risk"] == "high":
         summary = "Предварительно высокий риск для эксплуатации. " + summary
     elif value in (None, "unknown"):
         summary = "Чтобы оценить риск, укажите фактическое показание в карточке диагностики."
     return Reply(
         summary=summary,
-        sections=[Section(kind="checks", items=[result["first_check"]], references=[SOURCE])],
-        analysis={"generator_reading": value, "risk_level": result["risk"]},
+        sections=[Section(kind="checks", items=[QUESTION if clarify_regime else result["first_check"]], references=[SOURCE])],
+        analysis={"generator_reading": None if clarify_regime else value, "risk_level": result["risk"]},
     )

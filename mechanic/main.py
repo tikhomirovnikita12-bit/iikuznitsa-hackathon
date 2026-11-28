@@ -23,6 +23,7 @@ from agent import case_context
 from agent.dialog import MOVEMENT, incompatible_fault
 from .case_agent import CaseAgent
 from agent.dialog import history_entry
+from agent.timing import reply_budget, timeout_within_reply
 from agent.tools.ticket import wants_draft
 from .config import CORPUS, DEFAULT_ML, DEFAULT_TOIR, MATERIALS, MOCKS, MOCK_VEHICLES, ROOT, WEB, endpoint
 from .contracts import (
@@ -522,7 +523,7 @@ def agent_call(action: str, vehicle: dict, diagnosis: Diagnosis, state: dict, me
         payload["source_candidates"] = candidates
         available = {hit["fragment_id"] for hit in candidates}
     try:
-        response = post(f"{TEAM_AGENT_URL}/respond", payload, TEAM_TIMEOUT)
+        response = post(f"{TEAM_AGENT_URL}/respond", payload, timeout_within_reply(TEAM_TIMEOUT))
         response.raise_for_status()
         body = response.json()
         if not isinstance(body, dict):
@@ -531,7 +532,7 @@ def agent_call(action: str, vehicle: dict, diagnosis: Diagnosis, state: dict, me
             resolve_agent_sources(body, vehicle["engine_model"], available)
         calls = [ToolCall.model_validate(item).model_dump() for item in body.get("calls", [])]
         return body, calls
-    except httpx.TimeoutException as error:
+    except (httpx.TimeoutException, TimeoutError) as error:
         raise ApiError(504, "agent_timeout", "Агент команды не ответил вовремя. Повторите запрос.") from error
     except httpx.HTTPError as error:
         raise ApiError(503, "agent_unavailable", "Агент команды недоступен.") from error
@@ -649,6 +650,7 @@ def overview(vehicle: dict, diagnosis: Diagnosis):
 
 
 @app.post("/api/diagnose")
+@reply_budget()
 def diagnose(pair: Pair):
     vehicle = vehicle_for(pair)
     requested = time()
@@ -673,10 +675,12 @@ def diagnose(pair: Pair):
     def save(state):
         for call in calls:
             record_call(state, call)
-        if requested < state.get("diagnosis_requested", 0):
+        diagnosis_data = diagnosis.model_dump()
+        if team and team.stored_diagnosis(pair) != diagnosis_data:
             return
         saved_diagnosis = state["diagnosis"]
-        diagnosis_data = diagnosis.model_dump()
+        if requested < state.get("diagnosis_requested", 0) and (not team or saved_diagnosis == diagnosis_data):
+            return
         if saved_diagnosis != diagnosis_data:
             state["generator_reading"] = None
         if saved_diagnosis and (saved_diagnosis["status"], saved_diagnosis["anomaly_type"]) != (
@@ -701,7 +705,19 @@ def diagnose(pair: Pair):
                      diagnosis_requested=requested, draft_unavailable_reason=None)
         state["messages"] = chat_history(state)
 
-    return present(pair, store.update(pair.key(), save))
+    state = store.update(pair.key(), save)
+    return session_response(pair, team.populate(state, pair, restore_diagnosis=True) if team else state)
+
+
+def assessed_risk_reply(vehicle, diagnosis):
+    assessment = policy_mechanic.assess(diagnosis, vehicle["engine_model"])
+    if not assessment.risk or assessment.risk == UNKNOWN_RISK or not assessment.evidence:
+        return None
+    source = assessment.evidence[0].source
+    return Reply(summary=assessment.risk, sections=[
+        Section(kind="risk", items=[assessment.risk],
+                references=[Reference(manual=source.manual, pdf_page=source.pdf_page)]),
+    ])
 
 
 def response_to_chat(vehicle, diagnosis, state, question):
@@ -729,7 +745,15 @@ def response_to_chat(vehicle, diagnosis, state, question):
     if not draft_requested and not MOVEMENT.search(question):
         effect = consequences.for_diagnosis(vehicle, diagnosis.model_dump())
         if effect and consequences.QUESTION.search(question.casefold()) and not RISK_QUESTION.match(question):
-            return Reply(summary=effect), None, "fixture", [], None
+            reply = generator_check.reply(check["value"]) if check else assessed_risk_reply(vehicle, diagnosis)
+            reply = reply or Reply(
+                summary="В руководстве для выбранного двигателя пока нет подтверждения последствий этого отклонения.",
+                sections=[Section(kind="clarify", items=[
+                    "Нужны результаты очной дефектовки.",
+                    case_context.diagnostic_observation(diagnosis.anomaly_type),
+                ])],
+            )
+            return reply, None, "rule", [], None
         index = policy_mechanic.search if policy_mechanic else (retrieval.index if retrieval else None)
         if effect and demo_case != "oil" and (reply := followup.next_hypothesis(vehicle, diagnosis, state, question, index)):
             entry = None
@@ -774,13 +798,7 @@ def response_to_chat(vehicle, diagnosis, state, question):
         message = case_context.blocked_message(reason, data, vehicle["engine_model"])
         return Reply(summary=message), None, "fixture", [], None
     if diagnosis.status == "anomaly" and demo_case != "coolant" and RISK_QUESTION.match(question):
-        assessment = policy_mechanic.assess(diagnosis, vehicle["engine_model"])
-        if assessment.risk and assessment.risk != UNKNOWN_RISK and assessment.evidence:
-            source = assessment.evidence[0].source
-            reply = Reply(summary=assessment.risk, sections=[
-                Section(kind="risk", items=[assessment.risk],
-                        references=[Reference(manual=source.manual, pdf_page=source.pdf_page)]),
-            ])
+        if reply := assessed_risk_reply(vehicle, diagnosis):
             return reply, None, "rule", [], None
     first_check = (state.get("brief") or {}).get("first_check", "")
     if demo_case == "oil" and (reply := demo_agent.oil_followup_reply(question, state["messages"], first_check)):
@@ -927,6 +945,7 @@ def prepare_draft(pair: Pair):
 
 
 @app.post("/api/chat")
+@reply_budget()
 def chat(request: ChatRequest):
     vehicle = vehicle_for(request)
     snapshot = read_state(request)
@@ -981,11 +1000,18 @@ def chat(request: ChatRequest):
                 generator = generator_check.session_check(vehicle, snapshot)
                 typed_reading = generator_check.reported_reading(message) if generator else None
                 if typed_reading:
-                    reading = GeneratorReport(value=typed_reading, diagnosis_revision=generator["diagnosis_revision"])
-                    reply, draft, origin, calls, agent_entry = generator_check.reply(typed_reading), None, "rule", [], None
+                    value, rated = typed_reading
+                    if rated or generator_check.awaiting_reading(snapshot["messages"]):
+                        reading = GeneratorReport(value=value, diagnosis_revision=generator["diagnosis_revision"])
+                        reply = generator_check.reply(value)
+                    else:
+                        reply = generator_check.reply(generator["value"], clarify_regime=True)
+                    draft, origin, calls, agent_entry = None, "rule", [], None
                 else:
                     reply, draft, origin, calls, agent_entry = response_to_chat(vehicle, diagnosis, snapshot, message)
-                tool = {"team": "agent.chat", "fixture": "agent.fixture", "rule": "agent.generator_check"}[origin]
+                tool = {"team": "agent.chat", "fixture": "agent.fixture", "rule": "agent.rule"}[origin]
+                if "generator_reading" in (reply.analysis or {}):
+                    tool = "agent.generator_check"
             if input_text != message:
                 message_metadata["input_text"] = input_text
             if request.match_input_language:
@@ -1018,23 +1044,28 @@ def chat(request: ChatRequest):
         raise ApiError(502, "agent_invalid_response", "Ответ агента не соответствует схеме.") from error
 
     calls = [*translation_calls, *calls]
+    conflict = False
 
     def save(state):
+        nonlocal conflict
         current = team.stored_diagnosis(request) if team else state["diagnosis"]
         if current != snapshot["diagnosis"]:
             raise ApiError(409, "diagnosis_changed", "Результат изменился. Задайте вопрос по обновлённой проверке.")
         if team:
             team.restore_diagnosis(state, current)
-        if reading:
-            report = reading.model_dump()
-            if state["generator_reading"] == report:
-                return
-            state["generator_reading"] = report
-        elif any(state[key] != snapshot[key] for key in ("messages", "agent_history", "draft_origin")):
+        if not request.generator_reading and any(
+            state[key] != snapshot[key] for key in ("messages", "agent_history", "draft_origin")
+        ):
+            conflict = True
             record_call(state, audit(tool, started, "rejected"))
             for call in calls:
                 record_call(state, call)
             return
+        if reading:
+            report = reading.model_dump()
+            if request.generator_reading and state["generator_reading"] == report:
+                return
+            state["generator_reading"] = report
         state["messages"].extend([
             {"role": "user", "text": message, **message_metadata},
             {"role": "assistant", "origin": origin, **reply.model_dump(), **({"localized": display} if display else {})},
@@ -1048,7 +1079,10 @@ def chat(request: ChatRequest):
         if draft is not None:
             save_proposal(state, request, diagnosis, draft, origin)
 
-    return present(request, store.update(request.key(), save))
+    state = present(request, store.update(request.key(), save))
+    if conflict:
+        raise ApiError(409, "stale_chat", "В чате появились новые сообщения. Проверьте их и отправьте вопрос ещё раз.", state)
+    return state
 
 
 def stale_draft(pair: Pair, state: dict | None = None) -> ApiError:

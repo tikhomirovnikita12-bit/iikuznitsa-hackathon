@@ -1807,7 +1807,7 @@ async function action(kind, path, method, payload = {}) {
       }
       return null;
     }
-    if (error.state && (["prepare", "save", "submit"].includes(kind) || payload.generator_reading)) view.state = error.state;
+    if (error.state && ["prepare", "save", "submit", "chat"].includes(kind)) view.state = error.state;
     else if (error.admission && view.state) view.state = {...view.state, admission: error.admission};
     if (kind === "diagnose") view.diagnosisError = error;
     if (kind === "chat") view.chatError = error.message;

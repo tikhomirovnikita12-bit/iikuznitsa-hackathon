@@ -15,6 +15,7 @@ from .diagnostic_agent import DiagnosticAgent, MOVEMENT
 from .generation import answer_request, read_answer
 from .manual_agent import ManualAgent, STRING, schema
 from .measurement_agent import MeasurementAgent
+from .timing import timeout_within_reply
 from .tools.ticket import wants_draft
 
 
@@ -84,7 +85,8 @@ class Ollama:
         base = os.getenv("OLLAMA_HOST_URL") or os.getenv("OLLAMA_URL") or "http://127.0.0.1:11434"
         start = time.monotonic()
         try:
-            result = post(base.rstrip("/") + "/api/chat", body, timeout=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180")))
+            timeout = timeout_within_reply(float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180")))
+            result = post(base.rstrip("/") + "/api/chat", body, timeout=timeout)
         except (OSError, ValueError):
             trace["calls"].append(dict(model=model, seconds=time.monotonic()-start, status="error",
                                        input_tokens=None, output_tokens=None))

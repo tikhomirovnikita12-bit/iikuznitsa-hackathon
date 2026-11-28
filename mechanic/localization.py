@@ -12,6 +12,8 @@ import unicodedata
 
 import httpx
 
+from agent.timing import timeout_within_reply
+
 from .config import ROOT, WEB, endpoint
 from .contracts import Reference, Reply, Section
 
@@ -224,11 +226,11 @@ def cloud_configured():
 
 def local_request(action, payload):
     try:
-        with httpx.Client(timeout=22, trust_env=False) as client:
+        with httpx.Client(timeout=timeout_within_reply(22), trust_env=False) as client:
             response = client.post(f"{endpoint('LOCAL_TRANSLATION_URL')}/{action}", json=payload)
             response.raise_for_status()
             return response.json()
-    except (httpx.HTTPError, ValueError) as error:
+    except (httpx.HTTPError, ValueError, TimeoutError) as error:
         raise TranslationError(UNAVAILABLE) from error
 
 
@@ -282,13 +284,18 @@ def google_request(url, payload):
 
     headers = {}
     try:
-        credentials, _ = default(scopes=["https://www.googleapis.com/auth/cloud-translation"])
-        credentials.before_request(Request(), "POST", url, headers)
-        with httpx.Client(timeout=8) as client:
+        transport = Request()
+
+        def authorize(*args, timeout=8, **kwargs):
+            return transport(*args, timeout=timeout_within_reply(timeout or 8), **kwargs)
+
+        credentials, _ = default(scopes=["https://www.googleapis.com/auth/cloud-translation"], request=authorize)
+        credentials.before_request(authorize, "POST", url, headers)
+        with httpx.Client(timeout=timeout_within_reply(8)) as client:
             response = client.post(url, headers=headers, json=payload)
             response.raise_for_status()
         return response.json()
-    except (GoogleAuthError, httpx.HTTPError, ValueError, TypeError, AttributeError) as error:
+    except (GoogleAuthError, httpx.HTTPError, ValueError, TypeError, AttributeError, TimeoutError) as error:
         raise TranslationError(UNAVAILABLE) from error
 
 

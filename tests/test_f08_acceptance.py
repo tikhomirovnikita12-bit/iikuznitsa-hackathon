@@ -240,9 +240,11 @@ def test_late_chat_draft_keeps_newer_case_facts(integrated, monkeypatch):
             finish.set()
         late = pending.result(timeout=10)
 
-    assert late.status_code == 200, late.text
+    assert late.status_code == 409, late.text
+    rejected = late.json()
+    assert rejected["error"]["code"] == "stale_chat"
     latest = client.get("/api/state", params=CHAIN).json()
-    assert latest["messages"] == fresh.json()["messages"] == late.json()["messages"]
+    assert latest["messages"] == fresh.json()["messages"] == rejected["state"]["messages"]
     assert latest["draft"] is None
     assert main.store.read((CHAIN["vehicle_id"], CHAIN["session_id"]))["agent_history"][-1] == fresh_entry
     assert adapter.workflow.drafts(adapter.Pair(**CHAIN)) == []

@@ -62,26 +62,41 @@ class Workflow:
 
     def diagnose(self, pair: Pair) -> DiagnosticResult:
         vehicle = self.catalog.validate_pair(pair)
+        key = (pair.vehicle_id, pair.session_id)
+        with self.store.connection(write=True) as conn:
+            conn.execute("""
+                INSERT INTO diagnosis_requests (vehicle_id, session_id, started_version) VALUES (?, ?, 1)
+                ON CONFLICT (vehicle_id, session_id) DO UPDATE SET started_version = started_version + 1
+            """, key)
+            version = conn.execute("""
+                SELECT started_version FROM diagnosis_requests WHERE vehicle_id = ? AND session_id = ?
+            """, key).fetchone()[0]
         diagnosis = post(self.ml, "ml", "/diagnose", pair, Diagnosis, 200)
         if (diagnosis.vehicle_id, diagnosis.session_id) != (pair.vehicle_id, pair.session_id):
             raise Problem(502, "ml_pair_mismatch", "ML-сервис вернул результат другой пары ТС и сессии.")
         result = self.result(diagnosis, vehicle)
         with self.store.connection(write=True) as conn:
-            conn.execute("""
-                INSERT INTO diagnoses (vehicle_id, session_id, payload) VALUES (?, ?, ?)
-                ON CONFLICT (vehicle_id, session_id) DO UPDATE SET payload = excluded.payload
-            """, (pair.vehicle_id, pair.session_id, diagnosis.model_dump_json()))
-            # A quality/confidence/model change invalidates both human decisions,
-            # including when the F-code itself stays the same.
-            fingerprint = diagnosis_revision(diagnosis)
-            conn.execute("""
-                UPDATE drafts SET diagnosis_revision = ?, revision = revision + 1,
-                    applicability_confirmations = '[]', confirmed_urgency = NULL
-                WHERE vehicle_id = ? AND session_id = ? AND anomaly_type = ?
-                    AND state IN ('draft', 'delivery_failed')
-                    AND diagnosis_revision IS NOT NULL AND diagnosis_revision IS NOT ?
-            """, (fingerprint, pair.vehicle_id, pair.session_id, diagnosis.anomaly_type, fingerprint))
-        return result
+            is_latest = conn.execute("""
+                UPDATE diagnosis_requests SET saved_version = ?
+                WHERE vehicle_id = ? AND session_id = ? AND saved_version < ?
+            """, (version, *key, version)).rowcount == 1
+            if is_latest:
+                conn.execute("""
+                    INSERT INTO diagnoses (vehicle_id, session_id, payload) VALUES (?, ?, ?)
+                    ON CONFLICT (vehicle_id, session_id) DO UPDATE SET payload = excluded.payload
+                """, (*key, diagnosis.model_dump_json()))
+                # Changes to quality, confidence or the model invalidate human confirmations.
+                fingerprint = diagnosis_revision(diagnosis)
+                conn.execute("""
+                    UPDATE drafts SET diagnosis_revision = ?, revision = revision + 1,
+                        applicability_confirmations = '[]', confirmed_urgency = NULL
+                    WHERE vehicle_id = ? AND session_id = ? AND anomaly_type = ?
+                        AND state IN ('draft', 'delivery_failed')
+                        AND diagnosis_revision IS NOT NULL AND diagnosis_revision IS NOT ?
+                """, (fingerprint, *key, diagnosis.anomaly_type, fingerprint))
+            else:
+                diagnosis = self.diagnosis(conn, pair)
+        return result if is_latest else self.result(diagnosis, vehicle)
 
     def admission_for(self, pair, fields=None, **kwargs):
         vehicle = self.catalog.validate_pair(pair)

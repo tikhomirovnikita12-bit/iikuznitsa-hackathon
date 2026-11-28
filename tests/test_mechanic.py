@@ -449,6 +449,41 @@ def test_mock_payload_receipt_and_concurrent_duplicate(stand, monkeypatch):
     assert len(calls) == 1
 
 
+def test_chat_conflict_returns_new_history_and_allows_resend(stand, monkeypatch):
+    client, _ = stand
+    monkeypatch.setattr(main, "case_agent", None)
+    diagnose(client)
+    first = {**OIL, "message": "Что проверить сначала?"}
+    second = {**OIL, "message": "Какое должно быть давление масла?"}
+    pending, release = Event(), Event()
+    respond = main.response_to_chat
+
+    def delayed_reply(vehicle, diagnosis, snapshot, question):
+        if question == first["message"] and not pending.is_set():
+            pending.set()
+            assert release.wait(10)
+        return respond(vehicle, diagnosis, snapshot, question)
+
+    monkeypatch.setattr(main, "response_to_chat", delayed_reply)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        slower = executor.submit(client.post, "/api/chat", json=first)
+        try:
+            assert pending.wait(10)
+            newer = client.post("/api/chat", json=second)
+            assert newer.status_code == 200, newer.text
+        finally:
+            release.set()
+        conflict = slower.result(timeout=10)
+
+    assert conflict.status_code == 409, conflict.text
+    assert conflict.json()["error"]["code"] == "stale_chat"
+    assert conflict.json()["state"]["messages"] == newer.json()["messages"]
+    retried = client.post("/api/chat", json=first)
+    assert retried.status_code == 200, retried.text
+    questions = [item["text"] for item in state(client)["messages"] if item["role"] == "user"]
+    assert questions == [second["message"], first["message"]]
+
+
 @pytest.mark.parametrize("reports", [
     ["Результат проверки по руководству (PDF, стр. 53):\n"
      "уровень масла в норме, уровень охлаждающей жидкости в норме"],
@@ -781,7 +816,9 @@ def test_normal_belt_check_leads_to_tensioner_hypothesis(stand, monkeypatch, tmp
     assert "шум и люфт" in check["items"][0]
     assert [ref["pdf_page"] for ref in check["references"]] == [162]
     assert state(client, pair)["messages"][-1] == next_reply
-    assert "перегреву" in ask("Какие возможны последствия?")["summary"]
+    effect = ask("Какие возможны последствия?")
+    assert "приводимый агрегат может работать нестабильно" in effect["summary"]
+    assert effect["sections"][0]["references"][0]["pdf_page"] == 161
     assert "натяжителя" not in ask("Натяжитель в норме")["summary"]
     assert deliveries == []
 
@@ -925,6 +962,38 @@ def test_diagnostic_report_advances_across_sessions(stand, monkeypatch, pair, re
     assert ask("Что проверить первым?")["summary"] == result["summary"]
 
 
+def test_negative_leak_report_does_not_confirm_fault(stand, monkeypatch):
+    client, _ = stand
+    monkeypatch.setattr(main, "case_agent", None)
+    pair = {"vehicle_id": "B332BP98", "session_id": "S-0159"}
+    diagnose(client, pair)
+
+    def ask(question):
+        response = client.post("/api/chat", json={**pair, "message": question})
+        assert response.status_code == 200, response.text
+        return response.json()["messages"][-1]
+
+    ask("Что проверить первым?")
+    assert "признак не подтвердился" in ask("Охлаждающая жидкость не подтекает")["summary"]
+    mixed = ask("Охлаждающая жидкость не подтекает, уровень ниже нормы.")
+    assert mixed["summary"].startswith("Отклонение учтено.")
+    assert any(ref["pdf_page"] == 97 for section in mixed["sections"] for ref in section["references"])
+
+
+def test_consequences_without_documented_risk_request_an_observation(stand, monkeypatch):
+    client, _ = stand
+    monkeypatch.setattr(main, "case_agent", None)
+    pair = {"vehicle_id": "C933KX98", "session_id": "S-0163"}
+    diagnose(client, pair)
+    response = client.post("/api/chat", json={**pair, "message": "Какие последствия у такого отклонения?"})
+    assert response.status_code == 200, response.text
+    reply = response.json()["messages"][-1]
+    assert "пока нет подтверждения последствий" in reply["summary"]
+    clarification, = reply["sections"]
+    assert clarification["kind"] == "clarify" and not clarification["references"]
+    assert any("очной дефектовки" in text for text in clarification["items"])
+
+
 def test_typed_generator_report_updates_check(stand):
     client, _ = stand
     vehicle = next(vehicle for vehicle in main.VEHICLES if vehicle["engine_model"] == "ЯМЗ-236М2"
@@ -932,11 +1001,26 @@ def test_typed_generator_report_updates_check(stand):
     session = next(item for item in vehicle["sessions"] if item["anomaly_type"] == "F05" and item["signal_quality"] == "good")
     pair = {"vehicle_id": vehicle["vehicle_id"], "session_id": session["session_id"]}
     diagnose(client, pair)
-    response = client.post("/api/chat", json={**pair, "message": "Амперметр показывает разряд"})
-    assert response.status_code == 200, response.text
-    result = response.json()
+    def report(message):
+        response = client.post("/api/chat", json={**pair, "message": message})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    result = report("Амперметр показывает разряд")
+    assert result["generator_check"]["value"] is None
+    assert result["brief"]["risk"] == "unassessed"
+    assert "именно на номинальных оборотах" in result["messages"][-1]["summary"]
+
+    result = report("Амперметр показывает разряд")
     assert result["generator_check"]["value"] == "discharge"
+    assert result["brief"]["risk"] == "high"
     assert "подшипников генератора" in result["brief"]["first_check"]
+    result = report("Разряда нет")
+    assert result["generator_check"]["value"] == "discharge"
+    assert result["brief"]["risk"] == "high"
+    result = report("Амперметр не показывает разряд на номинальных оборотах")
+    assert result["generator_check"]["value"] == "no_discharge"
+    assert result["brief"]["risk"] == "unassessed"
 
 
 def test_guided_result_for_all_compatible_catalog_sessions():

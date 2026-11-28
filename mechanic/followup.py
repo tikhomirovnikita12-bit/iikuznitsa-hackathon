@@ -87,6 +87,8 @@ ABNORMAL = re.compile(
     r"ниже нормы|выше нормы)\b"
 )
 CONDITIONAL = re.compile(r"\b(?:если|вроде|кажется|не уверен\w*|возможно|пока не)\b")
+NEGATED_BEFORE = re.compile(r"\b(?:не(?:\s+(?:было|обнаружено|выявлено|замечено))?|нет|без|отсутству(?:ет|ют))\s*$")
+NEGATED_AFTER = re.compile(r"^\s*(?:нет\b|отсутству(?:ет|ют)\b|не\s+(?:наблюда\w*|обнаружен\w*|подтвержд[её]н\w*))")
 ABNORMAL_SHORT = re.compile(r"(?:да[, ]+)?(?:(?:он|она|они) )?(?:есть отклонение|неисправен|неисправна|неисправны|не в норме)")
 DIAGNOSTIC_LINE = re.compile(r"^(?:\d+[.)]\s*)?(?:проверить|измерить|осмотреть|сверить)\s", re.I)
 REPAIR_LINE = re.compile(r"\b(?:заменить|отрегулировать|запустить|отсоединить|снять|разобрать|затянуть|промыть)\b", re.I)
@@ -233,11 +235,19 @@ def next_hypothesis(vehicle, diagnosis, state, question, index=None) -> Reply | 
     if reply := clutch_followup(engine, code, state, question, previous):
         return reply
     finding = report_text(question)
-    abnormal = "?" not in finding and not CONDITIONAL.search(finding) and ABNORMAL.search(finding) and (
+    observations = list(ABNORMAL.finditer(finding))
+    report_matches = "?" not in finding and not CONDITIONAL.search(finding) and observations and (
         ABNORMAL_SHORT.fullmatch(finding) or REPORT_PREFIX.match(question.casefold()) or same_subject(finding, previous)
         or same_subject(finding, diagnosis.description)
         or any(re.search(pattern, finding) and re.search(pattern, previous) for pattern, *_ in steps)
     )
+    abnormal = report_matches and any(
+        not NEGATED_BEFORE.search(finding[:match.start()]) and not NEGATED_AFTER.match(finding[match.end():])
+        for match in observations
+    )
+    if report_matches and not abnormal and subject is None:
+        return Reply(summary="Указанный признак не подтвердился. Сообщите результат назначенной проверки "
+                             "или уточните, какие симптомы сохраняются.")
     if subject is None and not abnormal:
         if FIRST_CHECK.fullmatch(question.strip()) or wants_next_check(question):
             last_reply = next((item for item in reversed(state["messages"]) if item["role"] == "assistant" and (
